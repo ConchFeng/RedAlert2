@@ -52,7 +52,8 @@ git clone https://github.com/JohnUzoka/bevy-horizon.git $HOME/ws/toolchains/swit
 git -C $HOME/ws/toolchains/switch/bevy-horizon-reference checkout 3eac779b232ee47cd0eb957676c64386ac7b0f1d
 ```
 
-本机以上环境已安装，直接构建：
+本机以上环境已安装。构建入口如下；当前参考仓库包含本地 NVK 探针提交，
+再次构建前需按 [HANDOFF.md](HANDOFF.md#下一阶段与已知缺口) 处理固定版本检查：
 
 ```bash
 cd $HOME/ws/projects/vera20k-switch/platform/switch
@@ -63,6 +64,16 @@ bash run_eden.sh
 键盘 A 对应 Switch A，键盘 M 对应 `+`。退出后报告在：
 `target/emulator/xdg-data/eden/sdmc/switch/vera20k/core-probe-nro.txt`。
 截图在 `target/emulator/evidence/input-layer.png`。
+
+常规核心验证使用已安装的 Eden 0.2.1 发布版，不需要构建模拟器。
+另行构建 Eden master 仅用于排查 NVK 图形兼容性，不是 Vera 构建的前置步骤。
+
+启动脚本使用独立的 Eden 配置。首次运行若该配置没有 `prod.keys`，
+会依次从 `SWITCH_KEYS`、`~/.switch/prod.keys`、默认 Eden 的
+`~/.local/share/eden/keys/prod.keys` 导入本机已有密钥，副本权限为 0600。
+密钥副本保存在被 Git 忽略的 `target/emulator/xdg-data/eden/keys/`。
+若这些位置均无密钥，脚本会明确报错。应用菜单中的 **Eden (Switch Rust Smoke)**
+属于另一个工程，其 NRO 配置现已补齐密钥；该工程的 NSP 仍使用独立测试密钥。
 
 `build.py --host-test` 在主机执行同一个生产核心探针。
 `build.py --check` 仅执行交叉编译检查。
@@ -113,8 +124,8 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 | Switch 原生窗口 / EGL / GLES2 图形层 | 已在 NRO 和 NSP 的 Eden 运行中画出 1280×720 画面；尚不是 Vera 生产渲染器 |
 | wgpu 27 / rodio 0.22 / cpal 0.17 | 使用上游 Horizon 补丁、Vulkan-only 配置时，依赖编译检查通过；尚未链接/运行游戏图形和声音 |
 | 桌面 winit / Wayland / rustix | 无法直接用于 Horizon；包含窗口栈的实际依赖检查在 rustix 0.38 报错，winit 本身也没有 Horizon backend |
-| Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；能力枚举已通过，逻辑设备仍被 Eden 的模拟 GPU bug 阻塞 |
-| NVK 最小探针 | 已链接为 AArch64 NRO；`vkCreateInstance`、GM20B 能力查询和 Vi 表面通过，Eden 在 `vkCreateDevice` 前崩溃 |
+| Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；实例、能力枚举、Vi 表面和逻辑设备已通过 |
+| NVK 最小探针 | 本地 Eden master `989768a` 已创建交换链和 NAK 图形管线；关闭 macro JIT/HLE 后，30 秒清屏呈现与自动退出通过，但三角形因模拟器未实现 `IMUL (imm)` 着色器指令而未显示 |
 | 原版 RA2 / YR 游戏资源 | 尚未找到，需要本地资源目录，才能验证零售地图和游戏启动 |
 | 真机密钥 | 已取得并存入本机私有目录；正式 NSP 已构建、校验并通过核心真机运行测试 |
 
@@ -135,8 +146,8 @@ python3 build.py --check-client-deps --without-winit
 当前堆内存后备映射会把 MIX 整包读入内存；真实资源加载后还需要测量峰值内存。
 此探针不验证大型纹理图集、所有文件操作或真实对局性能。
 
-下一阶段是取得可运行 NVK 的 Eden/Ryujinx 构建，完成最小 Vulkan 三角形；
-然后接原生窗口/输入前端、原有 wgpu 渲染路径和音频。
+下一阶段仍需完成最小 Vulkan 三角形；当前已能清屏呈现，尚有模拟器着色器兼容性阻塞。
+生产客户端还需要接原生窗口/输入前端、原有 wgpu 渲染路径和音频。
 需要原版资源后再执行真实地图加载、渲染和游戏操作验证。
 
 ## Git 代理

@@ -23,3 +23,24 @@ the same project at local commit `7a656fd` on top of `3eac779b`, under MIT.
 device, swapchain and pipeline creation. The probe is not part of the Vera20k
 game; it separates NVK and emulator failures from wgpu and production renderer
 failures.
+
+`third_party/eden-local-ffmpeg.patch` is a local build compatibility patch for
+Eden master `989768aa46720e3fcab9e2111e3ddd70819c382b` (GPL-3.0-or-later).
+It compares the native host and target names as strings and uses the C compiler
+driver for FFmpeg's link checks. It permits using Eden's pinned FFmpeg source
+instead of the prebuilt FFmpeg package whose VA-API dependencies are unavailable
+on this Ubuntu 22.04 workstation. This patch does not change emulated GPU behavior.
+
+`third_party/eden-cli-lifecycle.patch` targets the same Eden commit. The source
+file `src/yuzu_cmd/yuzu.cpp` declares GPL-2.0-or-later. This local patch retains
+SDL3 callback state and the input subsystem, returns the continuation result
+during startup and events, captures callback state by value, and handles core
+exit requests and partial initialization during cleanup. Both Eden patches are
+preserved here for reproduction; the Eden checkout remains uncommitted and
+nothing has been submitted upstream. Neither patch adds GPU instruction support.
+
+The resulting local CLI, with macro JIT and macro HLE disabled in its isolated
+configuration, ran the NVK probe for 30 seconds with successful acquire/present
+and automatic exit. The visible result was only the clear colour: Eden rejected
+the shader with `Instruction IMUL (imm) is not implemented`, so this is not a
+successful Vulkan triangle or production Vera renderer test.
