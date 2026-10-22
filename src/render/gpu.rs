@@ -122,12 +122,15 @@ impl GpuContext {
         });
 
         // Create the surface from our window. The surface is what we draw pixels to.
+        log::info!("gpu_surface_create_started");
         let surface: wgpu::Surface<'static> = instance
             .create_surface(window.surface_handle())
             .context("Failed to create wgpu surface from window")?;
+        log::info!("gpu_surface_created");
 
         // Request a GPU adapter (physical device) that can render to our surface.
         // HighPerformance prefers discrete GPUs over integrated ones.
+        log::info!("gpu_adapter_request_started");
         let adapter: wgpu::Adapter = instance
             .request_adapter(&wgpu::RequestAdapterOptions {
                 power_preference: wgpu::PowerPreference::HighPerformance,
@@ -136,6 +139,7 @@ impl GpuContext {
             })
             .await
             .context("No suitable GPU adapter found — is a GPU available?")?;
+        log::info!("gpu_adapter_request_finished");
 
         let adapter_info = adapter.get_info();
         log::info!(
@@ -168,6 +172,7 @@ impl GpuContext {
                 .min(MAX_USEFUL_TEXTURE_DIM),
             ..wgpu::Limits::default()
         };
+        log::info!("gpu_device_request_started");
         let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("RA2 Device"),
@@ -177,6 +182,7 @@ impl GpuContext {
             })
             .await
             .context("Failed to create wgpu device")?;
+        log::info!("gpu_device_request_finished");
 
         // Pick the best texture format for the surface.
         // This is usually Bgra8UnormSrgb on Windows, Bgra8Unorm on some other platforms.

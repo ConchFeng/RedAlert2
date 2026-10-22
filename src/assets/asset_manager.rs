@@ -1137,7 +1137,10 @@ impl AssetManager {
             MediaArchiveMode::Numbered { media_index } => {
                 let number = media_index.wrapping_add(1);
                 if !self.mount_named_archive(&format!("movmd{number:02}.mix"), false)? {
-                    self.mount_named_archive(&format!("movies{number:02}.mix"), true)?;
+                    // Retail probes the selected movie family, but campaign and
+                    // skirmish can still start when that optional media slot is
+                    // absent. Missing video is reported by the movie owner.
+                    self.mount_named_archive(&format!("movies{number:02}.mix"), false)?;
                 }
             }
             MediaArchiveMode::CdWildcard => {
@@ -1203,6 +1206,10 @@ impl AssetManager {
             if !retail_enumerated_file(&path) {
                 continue;
             }
+            if std::fs::metadata(&path)?.len() == 0 {
+                log::debug!("Skipping empty optional media archive {}", path.display());
+                continue;
+            }
             let Some(file_name) = path.file_name().and_then(OsStr::to_str) else {
                 continue;
             };
@@ -1255,6 +1262,19 @@ impl AssetManager {
         }
 
         if let Some(disk_path) = self.loose_path(name).map(Path::to_path_buf) {
+            if std::fs::metadata(&disk_path)?.len() == 0 {
+                log::debug!(
+                    "Skipping empty optional archive {} at {}",
+                    name,
+                    disk_path.display()
+                );
+                if required {
+                    return Err(AssetError::AssetNotFound {
+                        name: name.to_string(),
+                    });
+                }
+                return Ok(false);
+            }
             let archive = MixArchive::load(&disk_path)?;
             if let Some(position) = self
                 .archive_catalog
@@ -1866,6 +1886,24 @@ mod tests {
                 "movies03.mix".to_string(),
             ]
         );
+    }
+
+    #[test]
+    fn numbered_media_skips_empty_movie_placeholder_without_failing_startup() {
+        let directory = TestDirectory::new("empty-numbered-movie");
+        directory.write_mix("MAPSMD03.MIX", "md-map.bin", b"md");
+        std::fs::write(directory.path().join("MOVMD03.MIX"), b"")
+            .expect("write empty movie placeholder");
+
+        let mut manager = empty_manager(directory.path());
+        manager
+            .mount_native_map_media(MediaArchiveMode::STOCK_DIGITAL)
+            .expect("numbered map media");
+        manager
+            .mount_native_movie_media(MediaArchiveMode::STOCK_DIGITAL)
+            .expect("empty movie media is optional");
+
+        assert_eq!(manager.loaded_archive_names(), ["mapsmd03.mix"]);
     }
 
     #[test]

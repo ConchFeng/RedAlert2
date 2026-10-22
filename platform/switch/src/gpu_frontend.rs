@@ -15,11 +15,12 @@ use wgpu::rwh::{
     DisplayHandle, HasDisplayHandle, HasWindowHandle, HorizonWindowHandle, WindowHandle,
 };
 
-use crate::assets::asset_manager::AssetManager;
+use crate::assets::asset_manager::{AssetManager, MediaArchiveMode};
 use crate::assets::mix_hash::mix_hash;
 use crate::gpu::{GpuContext, NativeWindow};
 use crate::map::map_file::MapFile;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
+use crate::map::source::{LoadedMapSource, load_map_by_name_or_path_with_assets};
 use crate::map::terrain::{TerrainGrid, TilePlacement, build_terrain_grid_from_resolved};
 use crate::map::theater::{TileImage, TileKey, collect_used_tiles, load_theater, load_tile_images};
 use crate::map::tile_variant_selector::TileVariantSelectorCache;
@@ -251,25 +252,23 @@ fn map_fixture() -> Vec<u8> {
     .into_bytes()
 }
 
-fn build_map_terrain(
+struct LoadedMapTerrain {
+    map: MapFile,
+    resolved: ResolvedTerrainGrid,
+    grid: TerrainGrid,
+}
+
+struct FileMapTerrain {
+    terrain: LoadedMapTerrain,
+    path: String,
+    payload_len: usize,
+}
+
+fn resolve_map_terrain(
+    map: MapFile,
     theater: &crate::map::theater::TheaterData,
     assets: &AssetManager,
-) -> Result<(MapFile, ResolvedTerrainGrid, TerrainGrid)> {
-    let map = MapFile::from_bytes(&map_fixture()).context("production map parser failed")?;
-    anyhow::ensure!(
-        map.header.theater.eq_ignore_ascii_case("TEMPERATE"),
-        "fixture map selected theater {}",
-        map.header.theater
-    );
-    anyhow::ensure!(
-        map.header.width == 3 && map.header.height == 3,
-        "fixture map has unexpected Size"
-    );
-    anyhow::ensure!(
-        map.cells.len() == 9 && map.iso_map_pack_lookups.len() == 9,
-        "IsoMapPack5 did not produce its nine records"
-    );
-
+) -> Result<LoadedMapTerrain> {
     let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
         "[General]\n\
              [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
@@ -294,8 +293,36 @@ fn build_map_terrain(
         &mut fill_ranged,
         &mut selector,
     );
+    let grid = build_terrain_grid_from_resolved(&resolved, None);
+    Ok(LoadedMapTerrain {
+        map,
+        resolved,
+        grid,
+    })
+}
+
+fn build_fixture_map_terrain(
+    theater: &crate::map::theater::TheaterData,
+    assets: &AssetManager,
+) -> Result<LoadedMapTerrain> {
+    let map = MapFile::from_bytes(&map_fixture()).context("production map parser failed")?;
     anyhow::ensure!(
-        resolved.iter().count() == 15,
+        map.header.theater.eq_ignore_ascii_case("TEMPERATE"),
+        "fixture map selected theater {}",
+        map.header.theater
+    );
+    anyhow::ensure!(
+        map.header.width == 3 && map.header.height == 3,
+        "fixture map has unexpected Size"
+    );
+    anyhow::ensure!(
+        map.cells.len() == 9 && map.iso_map_pack_lookups.len() == 9,
+        "IsoMapPack5 did not produce its nine records"
+    );
+
+    let loaded = resolve_map_terrain(map, theater, assets)?;
+    anyhow::ensure!(
+        loaded.resolved.iter().count() == 15,
         "production Size-diamond did not materialize fifteen cells"
     );
     let expected_center = [
@@ -310,7 +337,8 @@ fn build_map_terrain(
         (4, 4, 2, 0),
     ];
     for &(rx, ry, tile, level) in &expected_center {
-        let cell = resolved
+        let cell = loaded
+            .resolved
             .cell(rx, ry)
             .context("central Pack5 cell missing")?;
         anyhow::ensure!(
@@ -320,8 +348,90 @@ fn build_map_terrain(
             cell.level
         );
     }
-    let terrain = build_terrain_grid_from_resolved(&resolved, None);
-    Ok((map, resolved, terrain))
+    Ok(loaded)
+}
+
+fn load_retail_theater() -> Result<AssetManager> {
+    const RETAIL_ROOT: &str = "sdmc:/game";
+    let assets = AssetManager::new(Path::new(RETAIL_ROOT), MediaArchiveMode::STOCK_DIGITAL)
+        .with_context(|| format!("open retail Yuri's Revenge archives at {RETAIL_ROOT}"))?;
+    anyhow::ensure!(
+        assets.contains("ra2md.mix") && assets.contains("ra2.mix"),
+        "retail root did not expose both Yuri's Revenge master archives"
+    );
+    anyhow::ensure!(
+        assets.contains("rulesmd.ini"),
+        "retail root did not resolve rulesmd.ini"
+    );
+    anyhow::ensure!(
+        assets.contains("artmd.ini"),
+        "retail root did not resolve artmd.ini"
+    );
+    log::info!("retail_master_archives_loaded=true root={RETAIL_ROOT}");
+    Ok(assets)
+}
+
+fn load_file_map_terrain(
+    theater: &crate::map::theater::TheaterData,
+    assets: &AssetManager,
+) -> Result<FileMapTerrain> {
+    const MAP_ROOT: &str = "sdmc:/switch/vera20k";
+    const MAP_NAME: &str = "maps/ai_dred_bombard.map";
+    let loaded = load_map_by_name_or_path_with_assets(Path::new(MAP_ROOT), MAP_NAME, assets)
+        .with_context(|| format!("load file-backed map {MAP_ROOT}/{MAP_NAME}"))?;
+    let LoadedMapSource::Loose {
+        path, payload_len, ..
+    } = &loaded.source
+    else {
+        anyhow::bail!("file-backed map did not resolve as a loose map file");
+    };
+    anyhow::ensure!(
+        *payload_len > 0,
+        "file-backed map source {} is empty",
+        path.display()
+    );
+    anyhow::ensure!(
+        loaded.map.header.theater.eq_ignore_ascii_case("TEMPERATE"),
+        "file-backed map selected theater {}",
+        loaded.map.header.theater
+    );
+    anyhow::ensure!(
+        loaded.map.header.width == 48 && loaded.map.header.height == 48,
+        "file-backed map has unexpected Size {}x{}",
+        loaded.map.header.width,
+        loaded.map.header.height
+    );
+    anyhow::ensure!(
+        loaded.map.cells.len() == 4560 && loaded.map.iso_map_pack_lookups.len() == 4560,
+        "file-backed map produced {} cells and {} lookups, expected 4560",
+        loaded.map.cells.len(),
+        loaded.map.iso_map_pack_lookups.len()
+    );
+    let terrain = resolve_map_terrain(loaded.map, theater, assets)?;
+    anyhow::ensure!(
+        terrain.resolved.iter().count() == 4560,
+        "file-backed Size diamond produced {} cells, expected 4560",
+        terrain.resolved.iter().count()
+    );
+    anyhow::ensure!(
+        terrain.grid.cells.len() == 4560,
+        "file-backed terrain grid produced {} cells, expected 4560",
+        terrain.grid.cells.len()
+    );
+    log::info!(
+        "file_map_loaded path={} payload={} cells={} lookups={} entities={} overlays={}",
+        path.display(),
+        payload_len,
+        terrain.map.cells.len(),
+        terrain.map.iso_map_pack_lookups.len(),
+        terrain.map.entities.len(),
+        terrain.map.overlays.len(),
+    );
+    Ok(FileMapTerrain {
+        terrain,
+        path: path.display().to_string(),
+        payload_len: *payload_len,
+    })
 }
 
 /// Write one active-YR theater resource root and keep every resource in the
@@ -422,6 +532,34 @@ fn terrain_sample_at_center(
         (instance.position[0] + instance.size[0] / 2.0 - camera[0]).round() as u32,
         (instance.position[1] + instance.size[1] / 2.0 - camera[1]).round() as u32,
     )
+}
+
+fn visible_terrain_center(instance: &SpriteInstance, camera: [f32; 2]) -> Option<[u32; 2]> {
+    let center = [
+        (instance.position[0] + instance.size[0] / 2.0 - camera[0]).round(),
+        (instance.position[1] + instance.size[1] / 2.0 - camera[1]).round(),
+    ];
+    if (0.0..1280.0).contains(&center[0]) && (0.0..720.0).contains(&center[1]) {
+        Some([center[0] as u32, center[1] as u32])
+    } else {
+        None
+    }
+}
+
+fn nearest_visible_terrain_center(
+    instances: &[SpriteInstance],
+    camera: [f32; 2],
+    uv_origin: [f32; 2],
+) -> Option<[u32; 2]> {
+    instances
+        .iter()
+        .filter(|instance| instance.uv_origin == uv_origin)
+        .filter_map(|instance| visible_terrain_center(instance, camera))
+        .min_by_key(|[x, y]| {
+            let dx = i64::from(*x) - 640;
+            let dy = i64::from(*y) - 360;
+            dx * dx + dy * dy
+        })
 }
 
 unsafe extern "C" {
@@ -739,6 +877,132 @@ fn validate_terrain_output(
     Ok(())
 }
 
+fn validate_retail_terrain_output(
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    atlas: &TileAtlas,
+    pool: &InstanceBufferPool,
+    depth: &wgpu::TextureView,
+    camera: [f32; 2],
+    water_screen: [u32; 2],
+    terrain_screen: [u32; 2],
+) -> Result<()> {
+    let target = gpu.device.create_texture(&wgpu::TextureDescriptor {
+        label: Some("Switch retail terrain pixel probe"),
+        size: wgpu::Extent3d {
+            width: 1280,
+            height: 720,
+            depth_or_array_layers: 1,
+        },
+        mip_level_count: 1,
+        sample_count: 1,
+        dimension: wgpu::TextureDimension::D2,
+        format: gpu.surface_format,
+        usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC,
+        view_formats: &[],
+    });
+    let view = target.create_view(&Default::default());
+    let read = gpu.device.create_buffer(&wgpu::BufferDescriptor {
+        label: Some("Switch retail terrain pixel readback"),
+        size: 512,
+        usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ,
+        mapped_at_creation: false,
+    });
+    batch.update_camera(
+        &gpu,
+        1280.0,
+        720.0,
+        camera[0],
+        camera[1],
+        1.0,
+        DepthAxis::NONE,
+    );
+    let mut commands = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = commands.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.5,
+                        g: 0.0,
+                        b: 0.5,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: &depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        let (buffer, count) = pool.get("terrain").context("terrain buffer missing")?;
+        batch.draw_with_buffer_zdepth(&mut pass, &atlas.zdepth_bind_group, buffer, count);
+    }
+    for (index, &[x, y]) in [water_screen, terrain_screen].iter().enumerate() {
+        commands.copy_texture_to_buffer(
+            wgpu::TexelCopyTextureInfo {
+                texture: &target,
+                mip_level: 0,
+                origin: wgpu::Origin3d { x, y, z: 0 },
+                aspect: wgpu::TextureAspect::All,
+            },
+            wgpu::TexelCopyBufferInfo {
+                buffer: &read,
+                layout: wgpu::TexelCopyBufferLayout {
+                    offset: (index * 256) as u64,
+                    bytes_per_row: Some(256),
+                    rows_per_image: Some(1),
+                },
+            },
+            wgpu::Extent3d {
+                width: 1,
+                height: 1,
+                depth_or_array_layers: 1,
+            },
+        );
+    }
+    let submission = gpu.queue.submit([commands.finish()]);
+    let (tx, rx) = std::sync::mpsc::channel();
+    read.slice(..)
+        .map_async(wgpu::MapMode::Read, move |result| {
+            let _ = tx.send(result);
+        });
+    gpu.device
+        .poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(Duration::from_secs(15)),
+        })
+        .map_err(|error| anyhow::anyhow!("retail pixel readback polling failed: {error:?}"))?;
+    rx.recv_timeout(Duration::from_secs(1))??;
+    let bytes = read.slice(..).get_mapped_range();
+    let water: [u8; 4] = bytes[0..4].try_into().unwrap();
+    let terrain: [u8; 4] = bytes[256..260].try_into().unwrap();
+    drop(bytes);
+    read.unmap();
+    log::info!(
+        "retail_terrain_pixels water_at={water_screen:?}={water:?} terrain_at={terrain_screen:?}={terrain:?}"
+    );
+    anyhow::ensure!(
+        water[..3] != [128, 0, 128] && terrain[..3] != [128, 0, 128],
+        "retail terrain samples hit the probe background"
+    );
+    anyhow::ensure!(
+        water != terrain,
+        "retail water09 and land rendered the same pixels"
+    );
+    log::info!("retail_terrain_readback=true water_and_land_distinct=true");
+    Ok(())
+}
+
 fn run() -> Result<String> {
     unsafe { platform_console_init() };
     let address = NonZeroUsize::new(unsafe { platform_window_init() } as usize)
@@ -838,17 +1102,96 @@ fn run() -> Result<String> {
         theater.tilesets,
         terrain_images.len()
     );
-    let (map, resolved, terrain_grid) = build_map_terrain(&theater.data, &theater.assets)?;
-    let map_cell_count = map.cells.len();
-    let map_lookup_count = map.iso_map_pack_lookups.len();
-    let resolved_cell_count = resolved.iter().count();
-    let terrain_render_instance_count = terrain_grid.cells.len();
+    let fixture = build_fixture_map_terrain(&theater.data, &theater.assets)?;
+    let map_cell_count = fixture.map.cells.len();
+    let map_lookup_count = fixture.map.iso_map_pack_lookups.len();
+    let resolved_cell_count = fixture.resolved.iter().count();
+    let terrain_render_instance_count = fixture.grid.cells.len();
     log::info!(
         "production_map_loaded theater={} cells={} lookups={}",
-        map.header.theater,
+        fixture.map.header.theater,
         map_cell_count,
         map_lookup_count
     );
+    let mut retail_assets = load_retail_theater()?;
+    let retail_theater = load_theater(&mut retail_assets, "TEMPERATE")
+        .context("production retail TEMPERATE theater load failed")?;
+    anyhow::ensure!(
+        retail_theater.lookup.len() > 322,
+        "retail TEMPERATE theater has only {} tile slots, so water09 tile 322 cannot resolve",
+        retail_theater.lookup.len()
+    );
+    anyhow::ensure!(
+        retail_theater
+            .lookup
+            .filename(322)
+            .is_some_and(|name| name.eq_ignore_ascii_case("water09.tem")),
+        "retail TEMPERATE tile 322 did not resolve water09.tem"
+    );
+    log::info!(
+        "retail_theater_loaded=TEMPERATE slots={} tilesets={} tile_322={}",
+        retail_theater.lookup.len(),
+        retail_theater.lookup.bounds().len(),
+        retail_theater.lookup.filename(322).unwrap_or("<missing>")
+    );
+    let file_map = load_file_map_terrain(&retail_theater, &retail_assets)?;
+    let file_map_cell_count = file_map.terrain.map.cells.len();
+    let file_map_lookup_count = file_map.terrain.map.iso_map_pack_lookups.len();
+    let file_resolved_cell_count = file_map.terrain.resolved.iter().count();
+    let file_terrain_render_instance_count = file_map.terrain.grid.cells.len();
+    let file_fallback_tile_cells = file_map
+        .terrain
+        .resolved
+        .iter()
+        .filter(|cell| {
+            cell.source_tile_index >= 0
+                && cell.source_tile_index != 0xFFFF
+                && cell.source_tile_index as usize >= retail_theater.lookup.len()
+        })
+        .count();
+    log::info!(
+        "file_map_resolved cells={} fallback_tiles={} entity_placements={} overlay_entries={}",
+        file_resolved_cell_count,
+        file_fallback_tile_cells,
+        file_map.terrain.map.entities.len(),
+        file_map.terrain.map.overlays.len(),
+    );
+    let retail_needed = collect_used_tiles(&[(0, 0), (322, 0)]);
+    let retail_images = load_tile_images(
+        &retail_assets,
+        &retail_theater.lookup,
+        &retail_theater.iso_palette,
+        &retail_needed,
+    );
+    let retail_missing: Vec<TileKey> = retail_needed
+        .iter()
+        .filter(|key| !retail_images.contains_key(key))
+        .copied()
+        .collect();
+    anyhow::ensure!(
+        retail_missing.is_empty(),
+        "retail theater loader did not decode requested TMP tiles: {retail_missing:?}; decoded {} total tiles",
+        retail_images.len(),
+    );
+    let retail_atlas = build_atlas(&gpu.device, &gpu.queue, &batch, &retail_images);
+    anyhow::ensure!(
+        retail_atlas.tile_count() == retail_images.len(),
+        "retail atlas lost TMP tiles"
+    );
+    let retail_lookup = |tile_id, sub_tile, variant| {
+        retail_atlas
+            .get_uv(TileKey {
+                tile_id,
+                sub_tile,
+                variant,
+            })
+            .map(|uv| TilePlacement {
+                uv_origin: uv.uv_origin,
+                uv_size: uv.uv_size,
+                pixel_size: uv.pixel_size,
+                draw_offset: uv.draw_offset,
+            })
+    };
     let atlas = build_atlas(&gpu.device, &gpu.queue, &batch, &terrain_images);
     anyhow::ensure!(
         atlas.tile_count() == terrain_images.len(),
@@ -869,21 +1212,21 @@ fn run() -> Result<String> {
             })
     };
     let camera = [
-        terrain_grid.origin_x - (1280.0 - terrain_grid.world_width) / 2.0,
-        terrain_grid.origin_y - (720.0 - terrain_grid.world_height) / 2.0,
+        fixture.grid.origin_x - (1280.0 - fixture.grid.world_width) / 2.0,
+        fixture.grid.origin_y - (720.0 - fixture.grid.world_height) / 2.0,
     ];
     let visible = build_visible_instances(
-        &terrain_grid,
+        &fixture.grid,
         None,
         camera[0],
         camera[1],
         1280.0,
         720.0,
         Some(&lookup),
-        Some(&resolved),
+        Some(&fixture.resolved),
     );
     anyhow::ensure!(
-        visible.normal.len() == terrain_grid.cells.len(),
+        visible.normal.len() == fixture.grid.cells.len(),
         "production terrain culling lost visible TMP instances"
     );
     for instance in &visible.normal {
@@ -1004,12 +1347,86 @@ fn run() -> Result<String> {
     )?;
     log::info!("terrain_tmp_zdepth_occlusion=true near_passes=true far_rejected=true");
 
+    let file_camera = [
+        file_map.terrain.grid.origin_x - (1280.0 - file_map.terrain.grid.world_width) / 2.0,
+        file_map.terrain.grid.origin_y - (720.0 - file_map.terrain.grid.world_height) / 2.0,
+    ];
+    let file_visible = build_visible_instances(
+        &file_map.terrain.grid,
+        None,
+        file_camera[0],
+        file_camera[1],
+        1280.0,
+        720.0,
+        Some(&retail_lookup),
+        Some(&file_map.terrain.resolved),
+    );
+    anyhow::ensure!(
+        !file_visible.normal.is_empty(),
+        "file-backed map produced no visible terrain instances"
+    );
+    log::info!(
+        "file_map_visible instances={} camera={:?} world={}x{}",
+        file_visible.normal.len(),
+        file_camera,
+        file_map.terrain.grid.world_width,
+        file_map.terrain.grid.world_height,
+    );
+    let water_cells = file_map
+        .terrain
+        .resolved
+        .iter()
+        .filter(|cell| {
+            cell.final_tile_index == 322
+                && file_map.terrain.resolved.presentation_tile(cell) == (322, 0)
+        })
+        .count();
+    anyhow::ensure!(
+        water_cells == 234,
+        "retail map resolved {water_cells} water09 cells"
+    );
+    let water_sample = file_map
+        .terrain
+        .resolved
+        .iter()
+        .find(|cell| {
+            cell.final_tile_index == 322
+                && file_map.terrain.resolved.presentation_tile(cell) == (322, 0)
+        })
+        .context("retail map has no water09 cell")?;
+    let water_uv = retail_lookup(322, 0, 0).context("retail water09 atlas entry missing")?;
+    let terrain_uv = retail_lookup(0, 0, 0).context("retail land atlas entry missing")?;
+    let water_screen =
+        nearest_visible_terrain_center(&file_visible.normal, file_camera, water_uv.uv_origin)
+            .context("retail water09 has no visible tile center inside the viewport")?;
+    let terrain_screen =
+        nearest_visible_terrain_center(&file_visible.normal, file_camera, terrain_uv.uv_origin)
+            .context("retail land has no visible tile center inside the viewport")?;
+    log::info!(
+        "retail_terrain_samples water_cell=({}, {}) level={} water_screen={:?} land_screen={:?}",
+        water_sample.rx,
+        water_sample.ry,
+        water_sample.level,
+        water_screen,
+        terrain_screen,
+    );
+    pool.upload(&gpu, "terrain", &file_visible.normal);
+    validate_retail_terrain_output(
+        &gpu,
+        &batch,
+        &retail_atlas,
+        &pool,
+        &depth,
+        file_camera,
+        water_screen,
+        terrain_screen,
+    )?;
     batch.update_camera(
         &gpu,
         1280.0,
         720.0,
-        camera[0],
-        camera[1],
+        file_camera[0],
+        file_camera[1],
         1.0,
         DepthAxis::NONE,
     );
@@ -1028,7 +1445,6 @@ fn run() -> Result<String> {
             break;
         }
         presses += u32::from(edges.a);
-        pool.upload(&gpu, "terrain", &visible.normal);
         let Some(frame) = gpu.acquire_frame()? else {
             continue;
         };
@@ -1061,7 +1477,12 @@ fn run() -> Result<String> {
                 ..Default::default()
             });
             let (buffer, count) = pool.get("terrain").context("terrain buffer missing")?;
-            batch.draw_with_buffer_zdepth(&mut pass, &atlas.zdepth_bind_group, buffer, count);
+            batch.draw_with_buffer_zdepth(
+                &mut pass,
+                &retail_atlas.zdepth_bind_group,
+                buffer,
+                count,
+            );
         }
         gpu.queue.submit([commands.finish()]);
         frame.present();
@@ -1081,10 +1502,20 @@ fn run() -> Result<String> {
          theater_loaded=TEMPERATE\ntheater_ini_source={}\n\
          theater_tile_slots={}\ntheater_tilesets={}\n\
          theater_tile_images_loaded={}\nproduction_map_parse=true\n\
+         retail_theater_load=true\nretail_master_archives_loaded=true\n\
+         retail_theater_tile_slots={}\nretail_tile_322=water09.tem\n\
+         retail_tile_images_loaded={}\nretail_terrain_readback=true\n\
          production_resolved_terrain=true\nmap_theater={}\n\
          map_cell_count={}\nmap_lookup_count={}\n\
          resolved_cell_count={}\nterrain_render_instance_count={}\n\
          terrain_tile_count={}\nterrain_instance_count={}\n\
+         file_map_load=true\nfile_map_source=loose\n\
+         file_map_name=ai_dred_bombard.map\nfile_map_payload_bytes={}\n\
+         file_map_cells={}\nfile_map_lookups={}\n\
+         file_map_entity_placements={}\nfile_map_overlay_entries={}\n\
+         file_resolved_cell_count={}\nfile_fallback_tile_cells={}\n\
+         file_terrain_render_instance_count={}\n\
+         file_terrain_visible_instance_count={}\n\
          frames_presented={frames}\nrender_elapsed_ms={render_elapsed_ms}\n\
          a_button_presses={presses}\nexit_reason={exit_reason}\n\
          normal_exit=true\ngpu_probe_passed=true\n",
@@ -1093,13 +1524,24 @@ fn run() -> Result<String> {
         theater.tile_slots,
         theater.tilesets,
         terrain_images.len(),
-        map.header.theater,
+        retail_theater.lookup.len(),
+        retail_images.len(),
+        fixture.map.header.theater,
         map_cell_count,
         map_lookup_count,
         resolved_cell_count,
         terrain_render_instance_count,
         terrain_images.len(),
         visible.normal.len(),
+        file_map.payload_len,
+        file_map_cell_count,
+        file_map_lookup_count,
+        file_map.terrain.map.entities.len(),
+        file_map.terrain.map.overlays.len(),
+        file_resolved_cell_count,
+        file_fallback_tile_cells,
+        file_terrain_render_instance_count,
+        file_visible.normal.len(),
     ))
 }
 

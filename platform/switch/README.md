@@ -95,7 +95,17 @@ bash run_eden.sh
 `build_visible_instances` 和逐像素 R8 Z 深度绘制全部 15 个 TMP 地形实例。
 最终运行呈现 2007 帧、约 33.4 秒后以 A 键和 `+` 正常退出。截图见
 `target/emulator/evidence/production-terrain.png`。
-地图、theater、TMP 和 palette 都是合成 fixture，不能据此推断零售地图已加载或游戏帧率。
+这个合成 fixture 仍用于验证颜色、UV 和逐像素 Z 深度回归。
+
+同一入口还从 `sdmc:/game` 的生产 `AssetManager` 挂载真实
+`ra2md.mix`、`ra2.mix` 和数字媒体 MIX，加载零售 TEMPERATE theater。
+`sdmc:/switch/vera20k/maps/ai_dred_bombard.map` 是 74,307 字节的真实
+`IsoMapPack5` 地图，解析出 4,560 格和 4,560 条 lookup，全部在 838 个
+theater slot 内解析，fallback 为 0；其中 234 格使用 `water09.tem`
+（tile 322）。主循环把文件地图的 UV 绑定到零售图集并绘制 1,749 个初始可见
+实例。实际水陆像素回读分别为 `[17,20,25,255]` 和 `[85,111,17,255]`，
+最后呈现 2,853 帧，A 键计数 1，`+` 正常退出。这证明零售 MIX、TEMPERATE
+地形、文件地图与主画面图集绑定已连通；SHP/VXL、游戏对象和完整客户端仍未接入。
 
 ```bash
 python3 build.py --gpu
@@ -106,8 +116,10 @@ python3 verify.py --probe gpu
 GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 `target/emulator/master-xdg-data/eden/sdmc/switch/vera20k/gpu-probe-nro.txt`，
 详细 wgpu 日志为同目录的 `gpu-wgpu.log`。程序最多运行 60 秒后自动退出；
-校验器还要求运行中测试过 A 键。生产地形截图为
-`target/emulator/evidence/production-terrain.png`。
+校验器还要求运行中测试过 A 键。合成地形截图为
+`target/emulator/evidence/production-terrain.png`，零售地图运行截图为
+`target/emulator/evidence/retail-terrain-final.png`；完整桌面运行证据为
+`retail-terrain-live.png`，客户区裁剪为 `retail-terrain-live-crop.png`。
 
 此模式使用带本地 SDL3 生命周期修复、立即数乘法支持的 Eden master，
 并在配置中关闭 macro JIT/HLE；复现见 [HANDOFF.md](HANDOFF.md#nvk-当前进度与模拟器阻塞)。
@@ -119,7 +131,7 @@ Horizon NVK 现在通过 `third_party/mesa-switch-graphics-ubo.patch` 的可选�
 把该 UBO 直接绑定为常量缓冲区，并将选项计入着色器缓存键。
 生产 theater/MIX、`MapFile`、`IsoMapPack5`、Size diamond、
 `ResolvedTerrainGrid`、`load_tile_images` 和主画面地形绘制链路已接入；
-零售地图、SHP/VXL、完整客户端和声音尚未接入此入口。
+零售地图和零售 TEMPERATE 地形已接入；SHP/VXL、完整客户端和声音尚未接入此入口。
 退出时仍有 NVK VA teardown 警告，资源释放还需排查。
 
 ## 正式 NSP 与 FTP 真机测试
@@ -168,7 +180,7 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 | 桌面 winit / Wayland / rustix | 无法直接用于 Horizon；包含窗口栈的实际依赖检查在 rustix 0.38 报错，winit 本身也没有 Horizon backend |
 | Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；实例、能力枚举、Vi 表面和逻辑设备已通过 |
 | NVK 最小探针 | 本地 Eden master `989768a` 加入低 32 位 `IMUL (imm)` 支持并关闭 macro JIT/HLE 后，旋转三角形、30 秒呈现和自动退出通过 |
-| 原版 RA2 / YR 游戏资源 | 尚未找到，需要本地资源目录，才能验证零售地图和游戏启动 |
+| 原版 RA2 / YR 游戏资源 | 已接入本地 YR 资源；真实主 MIX、TEMPERATE theater 和文件地图地形已通过，游戏对象与完整启动尚未验证 |
 | 真机密钥 | 已取得并存入本机私有目录；正式 NSP 已构建、校验并通过核心真机运行测试 |
 
 依赖检查可以复现：

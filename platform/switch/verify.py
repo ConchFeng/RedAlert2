@@ -77,7 +77,9 @@ def main():
                   "production_gpu_context", "wgsl_pipeline", "batch_renderer", "textured_sprite",
                   "gpu_pixel_readback", "camera_transform_readback", "terrain_tmp_atlas_readback",
                   "terrain_tmp_zdepth_occlusion", "production_theater_load",
-                  "theater_tile_loader", "gpu_probe_passed", "normal_exit"]
+                  "theater_tile_loader", "retail_theater_load",
+                  "retail_master_archives_loaded", "retail_terrain_readback",
+                  "file_map_load", "gpu_probe_passed", "normal_exit"]
     for field in fields:
         require(re.search(r"(?m)^" + field + r"=true\b", report), f"Missing/failed runtime check: {field}")
     presses = re.search(r"(?m)^a_button_presses=(\d+)$", report)
@@ -108,6 +110,26 @@ def main():
                 "Production Size diamond did not materialize 15 cells")
         require(render_instances and int(render_instances.group(1)) == 15,
                 "Production terrain grid did not contain 15 cells")
+        payload = re.search(r"(?m)^file_map_payload_bytes=(\d+)$", report)
+        require(payload and int(payload.group(1)) >= 70_000,
+                "File-backed map payload was not read")
+        for field, expected, label in (
+            ("file_map_cells", 4560, "IsoMapPack5 cells"),
+            ("file_map_lookups", 4560, "IsoMapPack5 lookups"),
+            ("file_resolved_cell_count", 4560, "resolved terrain cells"),
+            ("file_terrain_render_instance_count", 4560, "terrain grid cells"),
+            ("file_fallback_tile_cells", 0, "retail theater fallback tiles"),
+        ):
+            match = re.search(r"(?m)^" + field + r"=(\d+)$", report)
+            require(match and int(match.group(1)) == expected,
+                    f"File-backed map {label} mismatch")
+        file_visible = re.search(r"(?m)^file_terrain_visible_instance_count=(\d+)$", report)
+        require(file_visible and int(file_visible.group(1)) > 0,
+                "File-backed map produced no visible terrain instances")
+        require(re.search(r"(?m)^file_map_source=loose$", report),
+                "File-backed map was not loaded from a loose file")
+        require(re.search(r"(?m)^file_map_name=ai_dred_bombard\.map$", report),
+                "Unexpected file-backed map identity")
         require(re.search(r"(?m)^theater_loaded=TEMPERATE$", report),
                 "Production theater identity missing")
         require(re.search(r"(?m)^theater_ini_source=temperat\.mix$", report),
@@ -117,6 +139,14 @@ def main():
                 "Production load_tile_images did not decode the requested TMP set")
         require(terrain_tiles and int(terrain_tiles.group(1)) == int(theater_images.group(1)),
                 "Atlas and theater loader disagree on decoded TMP count")
+        retail_slots = re.search(r"(?m)^retail_theater_tile_slots=(\d+)$", report)
+        require(retail_slots and int(retail_slots.group(1)) > 322,
+                "Retail TEMPERATE theater does not contain tile 322")
+        require(re.search(r"(?m)^retail_tile_322=water09\.tem$", report),
+                "Retail TEMPERATE tile 322 is not water09.tem")
+        retail_images = re.search(r"(?m)^retail_tile_images_loaded=(\d+)$", report)
+        require(retail_images and int(retail_images.group(1)) >= 2,
+                "Retail atlas did not decode land and water09 TMP tiles")
         elapsed = re.search(r"(?m)^render_elapsed_ms=(\d+)$", report)
         require(elapsed and int(elapsed.group(1)) > 0, "Missing rendering duration")
         if "exit_reason=timeout" in report:
@@ -124,12 +154,16 @@ def main():
         print(f"GPU NRO: {len(artifact)} bytes; ARM64 + TLS + production GpuContext + "
               f"BatchRenderer + {sprites.group(1)} textured instances + "
               f"pixel readback + camera scroll/zoom + {terrain_tiles.group(1)} parsed TMP tiles + "
-              f"{terrain_instances.group(1)} terrain instances + per-pixel Z occlusion + "
+              f"{terrain_instances.group(1)} fixture terrain instances + per-pixel Z occlusion + "
+              f"{file_visible.group(1)} file-backed terrain instances + "
               f"{frames.group(1)} frames + input + normal exit passed")
         print("Scope: synthetic RGBA sprites plus nine IsoMapPack5 records over a 15-cell "
-              "production Size diamond; TMP/palette/INI resources load through production "
-              "theater and MIX APIs. Retail map streaming, SHP/voxel paths, full client, "
-              "gameplay and audio remain unverified.")
+              "production Size diamond, and a 4560-cell loose authored map loaded through "
+              "the production map source, parser and terrain path. The same map also loads "
+              f"through the retail ra2md.mix/ra2.mix stack; {retail_slots.group(1)} theater "
+              "slots resolve tile 322 to water09.tem, and land/water pixels are distinct. "
+              "The synthetic fixture retains its pixel/Z regression. SHP/voxel paths, full "
+              "client, gameplay and audio remain unverified.")
         print(f"Report source: {report_path}")
         return
     require(re.search(r"(?m)^retail_assets_present=(true|false)\b", report),
