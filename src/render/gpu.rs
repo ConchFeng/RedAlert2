@@ -21,6 +21,18 @@ use std::task::{Context as TaskContext, Poll, Wake, Waker};
 use anyhow::{Context, Result, bail};
 use winit::window::Window;
 
+/// A platform window and logical drawable size for wgpu surface creation.
+///
+/// `surface_handle` returns an owned handle. A native backend must keep the
+/// underlying window alive through that handle for as long as wgpu owns the
+/// resulting `'static` surface.
+pub trait NativeWindow: Clone + Send + Sync {
+    type Handle: wgpu::rwh::HasWindowHandle + wgpu::rwh::HasDisplayHandle + Send + Sync + 'static;
+
+    fn surface_handle(&self) -> Self::Handle;
+    fn inner_size(&self) -> (u32, u32);
+}
+
 /// Largest 2D texture edge the renderer will ask for.
 ///
 /// Atlases are packed against the requested limit, so this is the real ceiling on how
@@ -85,8 +97,20 @@ impl GpuContext {
         block_on(Self::new_async(window))
     }
 
+    /// Initialize wgpu from a platform-owned surface handle.
+    pub fn new_with_native_window<W: NativeWindow>(window: W) -> Result<Self>
+    where
+        W::Handle: 'static,
+    {
+        block_on(Self::new_async(window))
+    }
+
     /// Async initialization — called by new() via block_on().
-    async fn new_async(window: Arc<Window>) -> Result<Self> {
+    async fn new_async<W>(window: W) -> Result<Self>
+    where
+        W: NativeWindow,
+        W::Handle: 'static,
+    {
         // wgpu 27's standard override selects a backend for reproducible
         // shroud GPU comparisons while retaining primary backends by default.
         // https://docs.rs/wgpu-types/27.0.1/wgpu_types/struct.Backends.html#method.with_env
@@ -97,7 +121,7 @@ impl GpuContext {
 
         // Create the surface from our window. The surface is what we draw pixels to.
         let surface: wgpu::Surface<'static> = instance
-            .create_surface(window.clone())
+            .create_surface(window.surface_handle())
             .context("Failed to create wgpu surface from window")?;
 
         // Request a GPU adapter (physical device) that can render to our surface.
@@ -194,12 +218,12 @@ impl GpuContext {
             .unwrap_or(surface_caps.formats[0]);
 
         // Configure the surface with our chosen format and the window's current size.
-        let window_size: winit::dpi::PhysicalSize<u32> = window.inner_size();
+        let (window_width, window_height) = window.inner_size();
         let config: wgpu::SurfaceConfiguration = wgpu::SurfaceConfiguration {
             usage: required_surface_usages,
             format: surface_format,
-            width: window_size.width.max(1), // wgpu panics on 0-sized surfaces
-            height: window_size.height.max(1),
+            width: window_width.max(1), // wgpu panics on 0-sized surfaces
+            height: window_height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
@@ -287,6 +311,19 @@ impl GpuContext {
             view_formats: &[],
         });
         texture.create_view(&Default::default())
+    }
+}
+
+impl NativeWindow for Arc<Window> {
+    type Handle = Arc<Window>;
+
+    fn surface_handle(&self) -> Self::Handle {
+        Arc::clone(self)
+    }
+
+    fn inner_size(&self) -> (u32, u32) {
+        let size = self.as_ref().inner_size();
+        (size.width, size.height)
     }
 }
 

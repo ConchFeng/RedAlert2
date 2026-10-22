@@ -141,17 +141,17 @@ fn format_local_system_time(system: &NativeSystemTime) -> Option<(String, String
 
 /// The user's LC_TIME locale (the C locale when it cannot load), created
 /// once for the process and never freed.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "horizon")))]
 struct TimeLocale(libc::locale_t);
 
 // SAFETY: the handle is never mutated after creation; strftime_l only reads
 // it, and POSIX allows a locale object to be used from any thread.
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "horizon")))]
 unsafe impl Send for TimeLocale {}
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "horizon")))]
 unsafe impl Sync for TimeLocale {}
 
-#[cfg(unix)]
+#[cfg(all(unix, not(target_os = "horizon")))]
 fn time_locale() -> Option<libc::locale_t> {
     static LOCALE: std::sync::OnceLock<Option<TimeLocale>> = std::sync::OnceLock::new();
     LOCALE
@@ -179,6 +179,7 @@ pub fn format_file_time_parts(ticks: u64) -> Option<(String, String)> {
     }
     let seconds = (ticks / TICKS_PER_SECOND).checked_sub(WINDOWS_EPOCH_SECONDS)?;
     let seconds = libc::time_t::try_from(seconds).ok()?;
+    #[cfg(not(target_os = "horizon"))]
     let locale = time_locale()?;
     // SAFETY: `tm` is plain data that localtime_r fills; strftime_l writes at
     // most the buffer length and reads the live process locale.
@@ -187,6 +188,22 @@ pub fn format_file_time_parts(ticks: u64) -> Option<(String, String)> {
         if libc::localtime_r(&seconds, &mut local).is_null() {
             return None;
         }
+        // Horizon/newlib has no per-locale newlocale/strftime_l interface.
+        // Keep the console's local time and use an unambiguous numeric format.
+        #[cfg(target_os = "horizon")]
+        return Some((
+            format!(
+                "{:04}-{:02}-{:02}",
+                local.tm_year + 1900,
+                local.tm_mon + 1,
+                local.tm_mday
+            ),
+            format!(
+                "{:02}:{:02}:{:02}",
+                local.tm_hour, local.tm_min, local.tm_sec
+            ),
+        ));
+        #[cfg(not(target_os = "horizon"))]
         let format = |pattern: &std::ffi::CStr| {
             let mut out = [0u8; 128];
             let len = libc::strftime_l(
@@ -198,6 +215,7 @@ pub fn format_file_time_parts(ticks: u64) -> Option<(String, String)> {
             );
             (len > 0).then(|| String::from_utf8_lossy(&out[..len]).into_owned())
         };
+        #[cfg(not(target_os = "horizon"))]
         format(c"%x").zip(format(c"%X"))
     }
 }
