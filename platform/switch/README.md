@@ -52,8 +52,9 @@ git clone https://github.com/JohnUzoka/bevy-horizon.git $HOME/ws/toolchains/swit
 git -C $HOME/ws/toolchains/switch/bevy-horizon-reference checkout 3eac779b232ee47cd0eb957676c64386ac7b0f1d
 ```
 
-本机以上环境已安装。构建入口如下；当前参考仓库包含本地 NVK 探针提交，
-再次构建前需按 [HANDOFF.md](HANDOFF.md#下一阶段与已知缺口) 处理固定版本检查：
+本机以上环境已安装。构建默认优先使用固定版本的
+`toolchains/switch/bevy-horizon-pinned` worktree，保留另一个参考目录中的 NVK 探针改动。
+未创建 pinned 目录时，仍使用上述 `bevy-horizon-reference`，并检查固定提交。
 
 ```bash
 cd $HOME/ws/projects/vera20k-switch/platform/switch
@@ -80,6 +81,31 @@ bash run_eden.sh
 `build.py --check-libc-abi` 直接复用固定上游版本的 ABI 检查器，在本机比较 SDK C 头与 Rust 类型。
 需要 Python 的 `pyelftools`；构建后检查最终 ELF 的 TLS 对齐。
 运行 `python3 verify.py` 可核对已保存的模拟器报告、按键/退出状态与主机状态哈希。
+
+## 生产 GPU 上下文接入
+
+`dist/vera20k-gpu.nro` 通过 Switch 原生 `NWindow` 直接调用项目的
+`src/render/gpu.rs`，不复制 GPU 初始化和取帧实现。
+已在本地 Eden master 中通过 wgpu 27 / NVK 显示 WGSL 彩色三角形，
+并验证 30 秒连续呈现、A 键和 `+` 退出。首次连续运行呈现了 1,793 帧；
+这是合成场景，不能据此推断游戏帧率。
+
+```bash
+python3 build.py --gpu
+DISPLAY=:1 SDL_AUDIODRIVER=disk bash run_eden.sh --gpu
+python3 verify.py --probe gpu
+```
+
+GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
+`target/emulator/master-xdg-data/eden/sdmc/switch/vera20k/gpu-probe-nro.txt`，
+详细 wgpu 日志为同目录的 `gpu-wgpu.log`。程序会在 30 秒后自动退出；
+校验器还要求运行中测试过 A 键。截图为 `target/emulator/evidence/vera-wgpu-input.png`。
+
+此模式使用带本地 SDL3 生命周期修复、立即数乘法支持的 Eden master，
+并在配置中关闭 macro JIT/HLE；复现见 [HANDOFF.md](HANDOFF.md#nvk-当前进度与模拟器阻塞)。
+核心模式仍使用 Eden 0.2.1 发布版。GPU 模式目前只生成 NRO。
+生产精灵/地形管线、完整客户端、零售资源和声音尚未接入此入口。
+退出时仍有 NVK VA teardown 警告，资源释放还需排查。
 
 ## 正式 NSP 与 FTP 真机测试
 
@@ -122,10 +148,11 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 | MIX、INI、模拟核心 / Rayon | 核心 NSP 已通过模拟器和真机验证；范围为合成资源与空场景 |
 | Switch SDL2 / EGL / GLES 库 | SDK 中已有，目前客户端尚未接入 |
 | Switch 原生窗口 / EGL / GLES2 图形层 | 已在 NRO 和 NSP 的 Eden 运行中画出 1280×720 画面；尚不是 Vera 生产渲染器 |
-| wgpu 27 / rodio 0.22 / cpal 0.17 | 使用上游 Horizon 补丁、Vulkan-only 配置时，依赖编译检查通过；尚未链接/运行游戏图形和声音 |
+| wgpu 27 | 使用 Horizon 补丁、Vulkan-only 配置，已链接并通过生产 `GpuContext` 显示 WGSL 三角形；完整游戏渲染未接入 |
+| rodio 0.22 / cpal 0.17 | 使用 Horizon 补丁后依赖编译检查通过；尚未链接和播放声音 |
 | 桌面 winit / Wayland / rustix | 无法直接用于 Horizon；包含窗口栈的实际依赖检查在 rustix 0.38 报错，winit 本身也没有 Horizon backend |
 | Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；实例、能力枚举、Vi 表面和逻辑设备已通过 |
-| NVK 最小探针 | 本地 Eden master `989768a` 已创建交换链和 NAK 图形管线；关闭 macro JIT/HLE 后，30 秒清屏呈现与自动退出通过，但三角形因模拟器未实现 `IMUL (imm)` 着色器指令而未显示 |
+| NVK 最小探针 | 本地 Eden master `989768a` 加入低 32 位 `IMUL (imm)` 支持并关闭 macro JIT/HLE 后，旋转三角形、30 秒呈现和自动退出通过 |
 | 原版 RA2 / YR 游戏资源 | 尚未找到，需要本地资源目录，才能验证零售地图和游戏启动 |
 | 真机密钥 | 已取得并存入本机私有目录；正式 NSP 已构建、校验并通过核心真机运行测试 |
 
@@ -146,8 +173,7 @@ python3 build.py --check-client-deps --without-winit
 当前堆内存后备映射会把 MIX 整包读入内存；真实资源加载后还需要测量峰值内存。
 此探针不验证大型纹理图集、所有文件操作或真实对局性能。
 
-下一阶段仍需完成最小 Vulkan 三角形；当前已能清屏呈现，尚有模拟器着色器兼容性阻塞。
-生产客户端还需要接原生窗口/输入前端、原有 wgpu 渲染路径和音频。
+下一阶段是接入生产精灵/地形渲染管线，并逐步接通客户端事件、菜单与音频。
 需要原版资源后再执行真实地图加载、渲染和游戏操作验证。
 
 ## Git 代理

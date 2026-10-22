@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Cross-build the production VERA20k core with Horizon std/newlib."""
+"""Cross-build the production VERA20k core or GPU context with Horizon std/newlib."""
 import argparse
 import json
 import os
@@ -24,6 +24,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Compile-check without linking")
     parser.add_argument("--nsp", action="store_true", help="Also package a standalone NSP with local device keys")
+    parser.add_argument("--gpu", action="store_true",
+                        help="Build the native-window probe using Vera's production GpuContext and wgpu")
     parser.add_argument("--host-test", action="store_true", help="Run the same core probe on the host")
     parser.add_argument("--check-libc-abi", action="store_true", help="Compare patched libc against SDK headers")
     parser.add_argument("--check-client-deps", action="store_true",
@@ -31,10 +33,14 @@ def main():
     parser.add_argument("--without-winit", action="store_true",
                         help="Audit Vulkan/audio for a native Switch frontend instead of the desktop window stack")
     args = parser.parse_args()
+    if args.gpu and args.nsp:
+        parser.error("--gpu currently produces a separate NRO; omit --nsp")
     os.chdir(ROOT)
     rust_bin = Path.home() / ".cargo/bin"
     os.environ["PATH"] = str(rust_bin) + os.pathsep + os.environ["PATH"]
-    upstream = Path(os.environ.get("VERA_SWITCH_UPSTREAM", WORKSPACE / "toolchains/switch/bevy-horizon-reference"))
+    pinned = WORKSPACE / "toolchains/switch/bevy-horizon-pinned"
+    default_upstream = pinned if pinned.is_dir() else WORKSPACE / "toolchains/switch/bevy-horizon-reference"
+    upstream = Path(os.environ.get("VERA_SWITCH_UPSTREAM", default_upstream))
     if not upstream.is_dir():
         raise SystemExit("Missing bevy-horizon reference; see README.md")
     revision = subprocess.check_output(["git", "-C", str(upstream), "rev-parse", "HEAD"], text=True).strip()
@@ -48,8 +54,9 @@ def main():
     config = work / "cargo.toml"
     patches = {name: upstream / "patches" / name for name in ["libc", "memmap2"]}
     if args.check_client_deps:
-        for name in ["cpal", "raw-window-handle"]:
-            patches[name] = upstream / "patches" / name
+        patches["cpal"] = upstream / "patches/cpal"
+    if args.check_client_deps or args.gpu:
+        patches["raw-window-handle"] = upstream / "patches/raw-window-handle"
         for name in ["wgpu", "wgpu-core", "wgpu-hal", "wgpu-core-deps-windows-linux-android"]:
             patches[name] = upstream / "patches/bevy-0.18" / name
     config.write_text("[patch.crates-io]\n" + "\n".join(
@@ -100,7 +107,8 @@ def main():
         (probe / "src/lib.rs").write_text("// Compile the actual client dependency versions, without desktop app code.\n")
         manifest = ["--manifest-path", probe / "Cargo.toml"]
         os.environ["CARGO_TARGET_DIR"] = str(ROOT / "target")
-    run("cargo", f"+{TOOLCHAIN}", "check" if args.check or args.check_client_deps else "build", *manifest,
+    features = ["--features", "gpu"] if args.gpu else []
+    run("cargo", f"+{TOOLCHAIN}", "check" if args.check or args.check_client_deps else "build", *manifest, *features,
         "--release", "--config", config, "--target", target,
         "-Zbuild-std=std,panic_abort", "-Zjson-target-spec", "--lib")
     if args.check or args.check_client_deps:
@@ -123,17 +131,28 @@ def main():
     original = original.replace("--nx-module-name", "--nx-module-name --wrap=threadCreate")
     specs.write_text(original)
     cc = sdk / "devkitA64/bin/aarch64-none-elf-gcc"
+    artifact = "vera20k-gpu" if args.gpu else "vera20k-core"
+    graphics = ["-DVERA_WGPU"] if args.gpu else []
     architecture = ["-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE"]
-    run(cc, *architecture, "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-D__SWITCH__",
+    run(cc, *architecture, *graphics, "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-D__SWITCH__",
         "-ffunction-sections", "-fdata-sections", "-I", sdk / "libnx/include",
         "-I", sdk / "portlibs/switch/include",
         "-c", "runtime.c", "-o", work / "runtime.o")
-    elf = work / "vera20k-core.elf"
+    elf = work / f"{artifact}.elf"
+    if args.gpu:
+        nvk = Path(os.environ.get(
+            "VERA_SWITCH_NVK_LIB", WORKSPACE / "toolchains/switch/bevy-horizon-reference/nvk/lib"))
+        if not (nvk / "libvulkan_bh.a").is_file():
+            raise SystemExit("Missing localized NVK archive; see HANDOFF.md")
+        libraries = ["-L", nvk, "-Wl,--start-group", "-lvulkan_bh", "-lexpat", "-lzstd", "-lz",
+                     "-lnx", "-Wl,--end-group"]
+    else:
+        libraries = ["-Wl,--start-group", "-lEGL", "-lGLESv2", "-lglapi", "-ldrm_nouveau", "-lnx",
+                     "-Wl,--end-group"]
     run(cc, *architecture, f"-specs={specs}", "-g", work / "runtime.o",
         "target/aarch64-nintendo-horizon/release/libvera20k_switch.a",
         "-L", sdk / "libnx/lib", "-L", sdk / "portlibs/switch/lib",
-        "-Wl,--start-group", "-lEGL", "-lGLESv2", "-lglapi", "-ldrm_nouveau", "-lnx",
-        "-Wl,--end-group", "-lstdc++", "-lm", "-o", elf)
+        *libraries, "-lstdc++", "-lm", "-o", elf)
     from elftools.elf.elffile import ELFFile
     with elf.open("rb") as source:
         image = ELFFile(source)
@@ -144,10 +163,11 @@ def main():
         print(f"Final ELF TLS verified: address={tls['p_vaddr']:#x} alignment={alignment}")
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
-    nacp = work / "control.nacp"
-    run(sdk / "tools/bin/nacptool", "--create", "VERA20k Core Probe", "Homebrew", "0.1.0", nacp,
+    nacp = work / f"{artifact}.nacp"
+    title = "VERA20k GPU Probe" if args.gpu else "VERA20k Core Probe"
+    run(sdk / "tools/bin/nacptool", "--create", title, "Homebrew", "0.1.0", nacp,
         f"--titleid={TITLE_ID}")
-    run(sdk / "tools/bin/elf2nro", elf, dist / "vera20k-core.nro", f"--nacp={nacp}",
+    run(sdk / "tools/bin/elf2nro", elf, dist / f"{artifact}.nro", f"--nacp={nacp}",
         f"--icon={sdk}/libnx/default_icon.jpg")
     if args.nsp:
         package(ROOT, sdk, elf, nacp)

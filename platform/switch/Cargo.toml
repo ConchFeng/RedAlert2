@@ -10,9 +10,15 @@ publish = false
 [lib]
 crate-type = ["staticlib", "rlib"]
 
+[features]
+gpu = ["dep:wgpu", "dep:anyhow", "dep:log"]
+
 [dependencies]
 vera20k-core = { path = "../../src" }
 rayon = "1.11"
+wgpu = { version = "=27.0.1", optional = true, default-features = false, features = ["vulkan", "wgsl"] }
+anyhow = { version = "1", optional = true }
+log = { version = "0.4", optional = true }
 
 [profile.release]
 panic = "abort"

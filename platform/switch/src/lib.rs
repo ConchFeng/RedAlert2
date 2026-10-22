@@ -2,6 +2,12 @@
 
 mod input;
 
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+#[path = "../../../src/render/gpu.rs"]
+mod gpu;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod gpu_frontend;
+
 use std::path::Path;
 use vera20k_core::{assets::mix_archive::MixArchive, assets::mix_hash::mix_hash};
 
@@ -96,7 +102,7 @@ fn core_probe(directory: &Path) -> Result<Vec<String>, Box<dyn std::error::Error
     Ok(results)
 }
 
-#[cfg(target_os = "horizon")]
+#[cfg(all(target_os = "horizon", not(feature = "gpu")))]
 mod horizon {
     use std::{io::Write, time::Instant};
 

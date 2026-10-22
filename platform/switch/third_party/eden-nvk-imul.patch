@@ -1,0 +1,58 @@
+diff --git a/src/shader_recompiler/CMakeLists.txt b/src/shader_recompiler/CMakeLists.txt
+index cc9ce95..a6f0c2b 100644
+--- a/src/shader_recompiler/CMakeLists.txt
++++ b/src/shader_recompiler/CMakeLists.txt
+@@ -118,6 +118,7 @@ add_library(shader_recompiler STATIC
+     frontend/maxwell/translate/impl/integer_floating_point_conversion.cpp
+     frontend/maxwell/translate/impl/integer_funnel_shift.cpp
+     frontend/maxwell/translate/impl/integer_minimum_maximum.cpp
++    frontend/maxwell/translate/impl/integer_multiply.cpp
+     frontend/maxwell/translate/impl/integer_popcount.cpp
+     frontend/maxwell/translate/impl/integer_scaled_add.cpp
+     frontend/maxwell/translate/impl/integer_set_predicate.cpp
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
+index 369af8e..267aac8 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
+@@ -139,10 +139,6 @@ void TranslatorVisitor::IMUL_cbuf(u64) {
+     ThrowNotImplemented(Opcode::IMUL_cbuf);
+ }
+ 
+-void TranslatorVisitor::IMUL_imm(u64) {
+-    ThrowNotImplemented(Opcode::IMUL_imm);
+-}
+-
+ void TranslatorVisitor::IMUL32I(u64) {
+     ThrowNotImplemented(Opcode::IMUL32I);
+ }
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/integer_multiply.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_multiply.cpp
+new file mode 100644
+index 0000000..8d47204
+--- /dev/null
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_multiply.cpp
+@@ -0,0 +1,25 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "common/bit_field.h"
++#include "shader_recompiler/exception.h"
++#include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
++
++namespace Shader::Maxwell {
++
++void TranslatorVisitor::IMUL_imm(u64 insn) {
++    // Encoding: Mesa NAK sm50.rs, OpIMul::encode, commit 606441c90e.
++    union {
++        u64 raw;
++        BitField<0, 8, IR::Reg> dest_reg;
++        BitField<39, 1, u64> high;
++        BitField<47, 1, u64> cc;
++    } const imul{insn};
++
++    if (imul.high != 0 || imul.cc != 0) {
++        throw NotImplementedException("IMUL immediate HI/CC");
++    }
++    // The low 32 product bits are identical for signed and unsigned operands.
++    X(imul.dest_reg, ir.IMul(GetReg8(insn), GetImm20(insn)));
++}
++
++} // namespace Shader::Maxwell

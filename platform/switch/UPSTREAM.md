@@ -41,6 +41,20 @@ nothing has been submitted upstream. Neither patch adds GPU instruction support.
 
 The resulting local CLI, with macro JIT and macro HLE disabled in its isolated
 configuration, ran the NVK probe for 30 seconds with successful acquire/present
-and automatic exit. The visible result was only the clear colour: Eden rejected
-the shader with `Instruction IMUL (imm) is not implemented`, so this is not a
-successful Vulkan triangle or production Vera renderer test.
+and automatic exit. Initially the result was only the clear colour because Eden
+rejected the shader with `Instruction IMUL (imm) is not implemented`.
+
+`third_party/eden-nvk-imul.patch` adds the immediate low-32-bit multiply to
+Eden's existing Maxwell-to-IR translator. Its encoding is checked against the
+local Mesa NAK `src/nouveau/compiler/nak/sm50.rs`, `OpIMul::encode`, at commit
+`606441c90e459028a50fca352daebfc20211f890`. It uses the existing immediate decoder
+and IR multiply, and keeps high-half and condition-code forms explicitly
+unsupported. This local patch is GPL-3.0-or-later and remains unsubmitted.
+
+With all three patches, the C NVK probe displayed its rotating coloured
+triangle for 30 seconds and exited normally. Vera's separate GPU NRO then
+rendered a WGSL triangle through the unmodified production `GpuContext`
+initialization and frame-acquisition logic, using the Horizon native-window
+adapter. Desktop-only winit bindings in the shared source are cfg-gated.
+Production sprite/terrain pipelines and retail gameplay have not been tested.
+The NVK VA teardown warnings remain a known issue.

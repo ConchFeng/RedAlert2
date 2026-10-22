@@ -19,6 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll, Wake, Waker};
 
 use anyhow::{Context, Result, bail};
+#[cfg(not(target_os = "horizon"))]
 use winit::window::Window;
 
 /// A platform window and logical drawable size for wgpu surface creation.
@@ -93,6 +94,7 @@ impl GpuContext {
     ///
     /// This blocks on async wgpu calls using [`block_on`]. Safe to call from
     /// winit's sync ApplicationHandler::resumed().
+    #[cfg(not(target_os = "horizon"))]
     pub fn new(window: Arc<Window>) -> Result<Self> {
         block_on(Self::new_async(window))
     }
@@ -314,6 +316,7 @@ impl GpuContext {
     }
 }
 
+#[cfg(not(target_os = "horizon"))]
 impl NativeWindow for Arc<Window> {
     type Handle = Arc<Window>;
 

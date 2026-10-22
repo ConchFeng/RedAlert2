@@ -5,17 +5,21 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#ifndef VERA_WGPU
 #include <EGL/egl.h>
 #include <GLES2/gl2.h>
+#endif
 
 extern int rust_main(void);
 extern void *__aarch64_read_tp(void);
 static PadState pad;
+#ifndef VERA_WGPU
 static EGLDisplay display;
 static EGLContext context;
 static EGLSurface surface;
 static GLuint program;
 static GLuint vertex_buffer;
+#endif
 
 // Based on bevy-horizon compat.rs (MIT), see UPSTREAM.md. C/newlib uses
 // libnx's software thread pointer; LLVM local-exec TLS reads TPIDR_EL0.
@@ -25,7 +29,15 @@ static void setup_rust_tls(void) {
 }
 
 void userAppInit(void) { setup_rust_tls(); }
-int main(int argc, char **argv) { (void)argc; (void)argv; return rust_main(); }
+int main(int argc, char **argv) {
+    (void)argc;
+    (void)argv;
+#ifdef VERA_WGPU
+    setenv("MESA_LOG_FILE", "sdmc:/switch/vera20k/gpu-mesa.log", 1);
+    setenv("MESA_LOG_LEVEL", "debug", 1);
+#endif
+    return rust_main();
+}
 
 typedef struct { ThreadFunc entry; void *argument; } ThreadStart;
 extern Result __real_threadCreate(Thread *, ThreadFunc, void *, void *, size_t, int, int);
@@ -83,6 +95,16 @@ void platform_console_exit(void) { consoleExit(NULL); }
 extern const uint8_t _start[] __attribute__((visibility("hidden")));
 bool platform_is_nro(void) { return memcmp(_start + 0x10, "NRO0", 4) == 0; }
 
+#ifdef VERA_WGPU
+// The default NWindow lives until libnx shuts down after Rust has dropped wgpu.
+void *platform_window_init(void) {
+    if (!platform_running()) return NULL;
+    consoleExit(NULL);
+    NWindow *window = nwindowGetDefault();
+    if (R_FAILED(nwindowSetDimensions(window, 1280, 720))) return NULL;
+    return window;
+}
+#else
 // Stop libnx's CPU text framebuffer before presenting an EGL surface. The
 // caller keeps handling input and completion through the Rust runtime.
 void platform_graphics_init(void) {
@@ -178,3 +200,4 @@ void platform_graphics_exit(void) {
     }
     if (display != EGL_NO_DISPLAY) eglTerminate(display);
 }
+#endif
