@@ -113,8 +113,8 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 | Switch 原生窗口 / EGL / GLES2 图形层 | 已在 NRO 和 NSP 的 Eden 运行中画出 1280×720 画面；尚不是 Vera 生产渲染器 |
 | wgpu 27 / rodio 0.22 / cpal 0.17 | 使用上游 Horizon 补丁、Vulkan-only 配置时，依赖编译检查通过；尚未链接/运行游戏图形和声音 |
 | 桌面 winit / Wayland / rustix | 无法直接用于 Horizon；包含窗口栈的实际依赖检查在 rustix 0.38 报错，winit 本身也没有 Horizon backend |
-| Switch NVK 静态驱动 | 尚未构建，当前 SDK 中没有 `libvulkan_bh.a`，图形链接需要补齐 |
-| NVK 的主机构建工具 | 当前缺 Meson、Flex、Bison、Clang/LLVM 15、LLVM-SPIRV/libclc 和较新的 SPIRV-Tools；详见上游 `scripts/build_nvk.sh` |
+| Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；能力枚举已通过，逻辑设备仍被 Eden 的模拟 GPU bug 阻塞 |
+| NVK 最小探针 | 已链接为 AArch64 NRO；`vkCreateInstance`、GM20B 能力查询和 Vi 表面通过，Eden 在 `vkCreateDevice` 前崩溃 |
 | 原版 RA2 / YR 游戏资源 | 尚未找到，需要本地资源目录，才能验证零售地图和游戏启动 |
 | 真机密钥 | 已取得并存入本机私有目录；正式 NSP 已构建、校验并通过核心真机运行测试 |
 
@@ -135,7 +135,8 @@ python3 build.py --check-client-deps --without-winit
 当前堆内存后备映射会把 MIX 整包读入内存；真实资源加载后还需要测量峰值内存。
 此探针不验证大型纹理图集、所有文件操作或真实对局性能。
 
-下一阶段是原生窗口/输入前端、NVK 驱动构建与原有 wgpu 渲染路径接入，随后接音频。
+下一阶段是取得可运行 NVK 的 Eden/Ryujinx 构建，完成最小 Vulkan 三角形；
+然后接原生窗口/输入前端、原有 wgpu 渲染路径和音频。
 需要原版资源后再执行真实地图加载、渲染和游戏操作验证。
 
 ## Git 代理
