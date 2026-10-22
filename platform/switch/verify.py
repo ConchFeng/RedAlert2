@@ -76,7 +76,8 @@ def main():
               "core_probe_passed", "graphics_context", "normal_exit"] if args.probe == "core" else [
                   "production_gpu_context", "wgsl_pipeline", "batch_renderer", "textured_sprite",
                   "gpu_pixel_readback", "camera_transform_readback", "terrain_tmp_atlas_readback",
-                  "terrain_tmp_zdepth_occlusion", "gpu_probe_passed", "normal_exit"]
+                  "terrain_tmp_zdepth_occlusion", "production_theater_load",
+                  "theater_tile_loader", "gpu_probe_passed", "normal_exit"]
     for field in fields:
         require(re.search(r"(?m)^" + field + r"=true\b", report), f"Missing/failed runtime check: {field}")
     presses = re.search(r"(?m)^a_button_presses=(\d+)$", report)
@@ -91,6 +92,15 @@ def main():
         terrain_instances = re.search(r"(?m)^terrain_instance_count=(\d+)$", report)
         require(terrain_instances and int(terrain_instances.group(1)) >= 9,
                 "Terrain instance construction not tested")
+        require(re.search(r"(?m)^theater_loaded=TEMPERATE$", report),
+                "Production theater identity missing")
+        require(re.search(r"(?m)^theater_ini_source=temperat\.mix$", report),
+                "Theater INI was not loaded through the activated MIX")
+        theater_images = re.search(r"(?m)^theater_tile_images_loaded=(\d+)$", report)
+        require(theater_images and int(theater_images.group(1)) >= 5,
+                "Production load_tile_images did not decode the requested TMP set")
+        require(terrain_tiles and int(terrain_tiles.group(1)) == int(theater_images.group(1)),
+                "Atlas and theater loader disagree on decoded TMP count")
         elapsed = re.search(r"(?m)^render_elapsed_ms=(\d+)$", report)
         require(elapsed and int(elapsed.group(1)) > 0, "Missing rendering duration")
         if "exit_reason=timeout" in report:
@@ -100,8 +110,9 @@ def main():
               f"pixel readback + camera scroll/zoom + {terrain_tiles.group(1)} parsed TMP tiles + "
               f"{terrain_instances.group(1)} terrain instances + per-pixel Z occlusion + "
               f"{frames.group(1)} frames + input + normal exit passed")
-        print("Scope: synthetic RGBA sprites and a 3x3 synthetic TMP terrain grid. "
-              "Retail map streaming, SHP/voxel paths, full client, gameplay and audio remain unverified.")
+        print("Scope: synthetic RGBA sprites and a 3x3 terrain grid whose TMP/palette/INI "
+              "resources load through production theater and MIX APIs. Retail map streaming, "
+              "SHP/voxel paths, full client, gameplay and audio remain unverified.")
         print(f"Report source: {report_path}")
         return
     require(re.search(r"(?m)^retail_assets_present=(true|false)\b", report),

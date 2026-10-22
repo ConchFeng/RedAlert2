@@ -88,10 +88,11 @@ bash run_eden.sh
 `src/render/gpu.rs`，不复制 GPU 初始化和取帧实现。
 已在本地 Eden master 中通过 wgpu 27 / NVK 使用生产 `BatchRenderer` 显示
 12 个合成 RGBA 精灵。像素回读覆盖透明边缘、纹理颜色、全部实例以及相机平移和
-2 倍缩放。同一 GPU 探针还使用共享的生产 TMP、调色板、图集、地形网格和可见实例
-代码，验证了 5 个 TMP、9 个地形实例、高度颜色/UV 和逐像素 R8 Z 深度遮挡。
-最终运行呈现 473 帧、约 7.9 秒后以 A 键和 `+` 正常退出。
-这是合成场景，不能据此推断游戏帧率。
+2 倍缩放。同一 GPU 探针还从模拟器内的 `temperat.mix` 经生产
+`AssetManager`、`load_theater` 和 `load_tile_images` 加载 INI、三套 PAL 与
+5 个 TMP，再用生产图集、地形网格和可见实例代码生成 9 个实例，并验证高度颜色/UV
+和逐像素 R8 Z 深度遮挡。最终运行呈现 884 帧、约 14.7 秒后以 A 键和 `+` 正常退出。
+资源 fixture 是合成的，不能据此推断零售地图已加载或游戏帧率。
 
 ```bash
 python3 build.py --gpu
@@ -111,8 +112,8 @@ GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 纹理采样与完整绘制已通过。此前相机数据在片段阶段正确、在顶点阶段为零；
 Horizon NVK 现在通过 `third_party/mesa-switch-graphics-ubo.patch` 的可选路径
 把该 UBO 直接绑定为常量缓冲区，并将选项计入着色器缓存键。
-生产 TMP 的合成地形链路已接入；真实 theater `load_tile_images`、零售地图、
-SHP/VXL、完整客户端和声音尚未接入此入口。
+生产 theater/MIX 与 `load_tile_images` 地形链路已接入；零售地图、SHP/VXL、
+完整客户端和声音尚未接入此入口。
 退出时仍有 NVK VA teardown 警告，资源释放还需排查。
 
 ## 正式 NSP 与 FTP 真机测试

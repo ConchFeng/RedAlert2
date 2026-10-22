@@ -1,10 +1,11 @@
 //! Exercise production sprite batching through libnx's native window and NVK.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::ffi::c_void;
 use std::fs::File;
 use std::io::Write;
 use std::num::NonZeroUsize;
+use std::path::Path;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
@@ -14,13 +15,13 @@ use wgpu::rwh::{
     DisplayHandle, HasDisplayHandle, HasWindowHandle, HorizonWindowHandle, WindowHandle,
 };
 
-use crate::assets::pal_file::Palette;
-use crate::assets::tmp_file::TmpFile;
+use crate::assets::asset_manager::AssetManager;
+use crate::assets::mix_hash::mix_hash;
 use crate::gpu::{GpuContext, NativeWindow};
 use crate::map::bridge_facts::BridgeCellFacts;
 use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
 use crate::map::terrain::{TerrainGrid, TilePlacement, build_terrain_grid_from_resolved};
-use crate::map::theater::{TileImage, TileKey};
+use crate::map::theater::{TileImage, TileKey, collect_used_tiles, load_theater, load_tile_images};
 use crate::render::batch::{
     BatchRenderer, BatchTexture, DepthAxis, InstanceBufferPool, SpriteInstance,
 };
@@ -137,12 +138,8 @@ fn make_tmp(left: u8, right: u8, depth: u8) -> Vec<u8> {
     data
 }
 
-fn terrain_fixture() -> (
-    ResolvedTerrainGrid,
-    TerrainGrid,
-    HashMap<TileKey, TileImage>,
-) {
-    let palette_bytes: Vec<u8> = (0..256)
+fn fixture_palette_bytes() -> Vec<u8> {
+    (0..256)
         .flat_map(|index| match index {
             1 => [63, 0, 0],
             2 => [0, 62, 0],
@@ -151,38 +148,115 @@ fn terrain_fixture() -> (
             5 => [62, 0, 62],
             _ => [0, 0, 0],
         })
-        .collect();
-    let palette = Palette::from_bytes(&palette_bytes).expect("valid fixture palette");
-    let definitions = [
-        (0_u16, make_tmp(2, 2, 2)),
-        (1_u16, make_tmp(4, 4, 28)),
-        (2_u16, make_tmp(5, 5, 30)),
-        (3_u16, make_tmp(5, 5, 0)),
-        (4_u16, make_tmp(5, 5, 60)),
-    ];
-    let mut images = HashMap::new();
-    for (tile_id, bytes) in definitions {
-        let tmp = TmpFile::from_bytes(&bytes).expect("production TMP parser");
-        let tile = tmp.tiles[0].as_ref().expect("fixture has a tile");
-        let rgba = tmp
-            .tile_to_rgba(0, &palette)
-            .expect("production palette conversion");
-        images.insert(
-            TileKey {
-                tile_id,
-                sub_tile: 0,
-                variant: 0,
-            },
-            TileImage {
-                rgba,
-                depth: tile.depth.clone(),
-                width: tile.pixel_width,
-                height: tile.pixel_height,
-                offset_x: tile.offset_x,
-                offset_y: tile.offset_y,
-            },
+        .collect()
+}
+
+fn fixture_mix(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
+    let file_count = u16::try_from(entries.len()).context("fixture MIX has too many entries")?;
+    let body_size: usize = entries.iter().map(|(_, bytes)| bytes.len()).sum();
+    let mut data = Vec::with_capacity(6 + entries.len() * 12 + body_size);
+    data.extend_from_slice(&file_count.to_le_bytes());
+    data.extend_from_slice(
+        &u32::try_from(body_size)
+            .context("fixture MIX body is too large")?
+            .to_le_bytes(),
+    );
+    let mut offset = 0_u32;
+    for (name, bytes) in entries {
+        data.extend_from_slice(&mix_hash(name).to_le_bytes());
+        data.extend_from_slice(&offset.to_le_bytes());
+        data.extend_from_slice(
+            &u32::try_from(bytes.len())
+                .context("fixture MIX entry is too large")?
+                .to_le_bytes(),
         );
+        offset += u32::try_from(bytes.len()).expect("entry size checked above");
     }
+    for (_, bytes) in entries {
+        data.extend_from_slice(bytes);
+    }
+    Ok(data)
+}
+
+/// Write one active-YR theater resource root and keep every resource in the
+/// production theater MIX. `load_theater` activates the archive before reading
+/// its INI, palettes, or TMPs, so this exercises the same lookup order as the
+/// desktop client instead of constructing TileImages directly.
+fn write_theater_fixture() -> Result<()> {
+    const ROOT: &str = "sdmc:/switch/vera20k/theater-fixture";
+    std::fs::create_dir_all(ROOT)?;
+    let ini = b"[General]\n\
+                [TileSet0000]\n\
+                SetName=Grass\n\
+                FileName=clear\n\
+                TilesInSet=5\n";
+    let palette = fixture_palette_bytes();
+    let mut entries = vec![
+        ("temperatmd.ini".to_string(), ini.to_vec()),
+        ("isotem.pal".to_string(), palette.clone()),
+        ("unittem.pal".to_string(), palette.clone()),
+        ("temperat.pal".to_string(), palette),
+    ];
+    for (tile_id, (left, right, depth)) in
+        [(2, 2, 2), (4, 4, 28), (5, 5, 30), (5, 5, 0), (5, 5, 60)]
+            .into_iter()
+            .enumerate()
+    {
+        entries.push((
+            format!("clear{:02}.tem", tile_id + 1),
+            make_tmp(left, right, depth),
+        ));
+    }
+    std::fs::write(Path::new(ROOT).join("temperat.mix"), fixture_mix(&entries)?)?;
+    Ok(())
+}
+
+struct LoadedTheaterTiles {
+    images: HashMap<TileKey, TileImage>,
+    ini_source: String,
+    tile_slots: usize,
+    tilesets: usize,
+}
+
+fn load_theater_fixture() -> Result<LoadedTheaterTiles> {
+    const ROOT: &str = "sdmc:/switch/vera20k/theater-fixture";
+    let mut assets = AssetManager::from_ini_probe_root(Path::new(ROOT))?;
+    let theater =
+        load_theater(&mut assets, "TEMPERATE").context("production theater load failed")?;
+    let (_, ini_source) = assets
+        .get_with_source("temperatmd.ini")
+        .context("theater INI did not resolve after archive activation")?;
+    anyhow::ensure!(
+        ini_source.eq_ignore_ascii_case("temperat.mix"),
+        "theater INI resolved from {ini_source}, expected temperat.mix"
+    );
+    anyhow::ensure!(
+        theater
+            .lookup
+            .filename(0)
+            .is_some_and(|name| name == "clear01.tem"),
+        "theater tileset did not publish clear01.tem at tile_id 0"
+    );
+    // Tiles 3 and 4 are deliberately outside the map grid because the
+    // occlusion probes request them later. Include them in the production
+    // preloader's requested set, as a real map atlas would.
+    let needed: HashSet<TileKey> = collect_used_tiles(&[(0, 0), (1, 0), (2, 0), (3, 0), (4, 0)]);
+    let images = load_tile_images(&assets, &theater.lookup, &theater.iso_palette, &needed);
+    anyhow::ensure!(
+        images.len() == needed.len(),
+        "production theater loader decoded {} of {} requested TMP tiles",
+        images.len(),
+        needed.len()
+    );
+    Ok(LoadedTheaterTiles {
+        images,
+        ini_source,
+        tile_slots: theater.lookup.len(),
+        tilesets: theater.lookup.bounds().len(),
+    })
+}
+
+fn terrain_grid_fixture() -> (ResolvedTerrainGrid, TerrainGrid) {
     let mut cells = Vec::new();
     for ry in 0..3_u16 {
         for rx in 0..3_u16 {
@@ -242,7 +316,7 @@ fn terrain_fixture() -> (
     }
     let resolved = ResolvedTerrainGrid::from_cells(3, 3, cells);
     let grid = build_terrain_grid_from_resolved(&resolved, None);
-    (resolved, grid, images)
+    (resolved, grid)
 }
 
 fn terrain_sample_at_center(
@@ -664,7 +738,17 @@ fn run() -> Result<String> {
     )?;
     log::info!("camera_transform_readback=true");
 
-    let (resolved, terrain_grid, terrain_images) = terrain_fixture();
+    write_theater_fixture()?;
+    let theater = load_theater_fixture()?;
+    let terrain_images = theater.images;
+    log::info!(
+        "production_theater_loaded=TEMPERATE source={} slots={} tilesets={} images={}",
+        theater.ini_source,
+        theater.tile_slots,
+        theater.tilesets,
+        terrain_images.len()
+    );
+    let (resolved, terrain_grid) = terrain_grid_fixture();
     let atlas = build_atlas(&gpu.device, &gpu.queue, &batch, &terrain_images);
     anyhow::ensure!(
         atlas.tile_count() == terrain_images.len(),
@@ -884,11 +968,20 @@ fn run() -> Result<String> {
          batch_renderer=true\ntextured_sprite=true\nsprites_per_frame={}\n\
          gpu_pixel_readback=true\ncamera_transform_readback=true\n\
          terrain_tmp_atlas_readback=true\nterrain_tmp_zdepth_occlusion=true\n\
-         terrain_tile_count=5\nterrain_instance_count=9\n\
+         production_theater_load=true\ntheater_tile_loader=true\n\
+         theater_loaded=TEMPERATE\ntheater_ini_source={}\n\
+         theater_tile_slots={}\ntheater_tilesets={}\n\
+         theater_tile_images_loaded={}\n\
+         terrain_tile_count={}\nterrain_instance_count=9\n\
          frames_presented={frames}\nrender_elapsed_ms={render_elapsed_ms}\n\
          a_button_presses={presses}\nexit_reason={exit_reason}\n\
          normal_exit=true\ngpu_probe_passed=true\n",
-        instances.len()
+        instances.len(),
+        theater.ini_source,
+        theater.tile_slots,
+        theater.tilesets,
+        terrain_images.len(),
+        terrain_images.len(),
     ))
 }
 
