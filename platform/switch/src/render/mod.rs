@@ -25,3 +25,7 @@ pub mod shroud_buffer;
 pub mod tactical_draw_plan;
 #[path = "../../../../src/render/tactical_shader.rs"]
 pub(crate) mod tactical_shader;
+#[path = "../../../../src/render/terrain_instances.rs"]
+pub mod terrain_instances;
+#[path = "../../../../src/render/tile_atlas.rs"]
+pub mod tile_atlas;

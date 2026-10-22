@@ -56,8 +56,13 @@ triangle for 30 seconds and exited normally. Vera's separate GPU NRO then
 rendered a WGSL triangle through the unmodified production `GpuContext`
 initialization and frame-acquisition logic, using the Horizon native-window
 adapter. Desktop-only winit bindings in the shared source are cfg-gated.
-Production sprite/terrain pipelines and retail gameplay have not been tested.
-The NVK VA teardown warnings remain a known issue.
+The production sprite path then passed synthetic texture, instance and camera
+checks. The same GPU probe now compiles the production TMP parser, palette
+conversion, tile atlas, terrain grid and visible-instance builder, and checks
+five synthetic TMP tiles, nine terrain instances, height colours/UVs and
+per-pixel R8 Z-depth occlusion. These are synthetic fixtures; the retail
+theater `load_tile_images` path, retail maps, SHP/VXL, the client and gameplay
+remain unverified. The NVK VA teardown warnings remain a known issue.
 
 `third_party/mesa-switch-graphics-ubo.patch` adds a Switch-only,
 environment-gated NVK path that binds graphics-stage UBOs directly as constant
@@ -66,5 +71,6 @@ for Vera's camera uniform in the emulator's vertex stage. The flag also keys
 the shader cache. With it, the production batch shader passed texture,
 instance, camera scroll/zoom and 30-second rendering checks. The patch targets
 Mesa Switch commit `606441c90e459028a50fca352daebfc20211f890` and is GPL-3.0-or-later.
-It remains local and unsubmitted; terrain, SHP/VXL and retail-map behavior have
-not yet exercised this path.
+It remains local and unsubmitted. The production synthetic TMP atlas and
+terrain-instance checks now exercise this path; real theater loading, SHP/VXL
+and retail-map behavior have not yet exercised it.

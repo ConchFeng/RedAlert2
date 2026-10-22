@@ -8,17 +8,15 @@ pub use vera20k_core::{assets, map, rules, sim, util};
 #[path = "../../../src/render/gpu.rs"]
 mod gpu;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
-mod render;
-#[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod gpu_frontend;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod render;
 
 use std::path::Path;
 use vera20k_core::{assets::mix_archive::MixArchive, assets::mix_hash::mix_hash};
 
 #[cfg(any(target_os = "horizon", test))]
-fn retail_probe(
-    directory: &Path,
-) -> Result<Vec<String>, Box<dyn std::error::Error>> {
+fn retail_probe(directory: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {
     use vera20k_core::assets::asset_manager::{
         AssetManager, MediaArchiveMode, holds_master_archives,
     };

@@ -75,8 +75,8 @@ def main():
     fields = ["mix_file_load", "ini_parse", "timestamp_format", "rayon", "simulation_construct",
               "core_probe_passed", "graphics_context", "normal_exit"] if args.probe == "core" else [
                   "production_gpu_context", "wgsl_pipeline", "batch_renderer", "textured_sprite",
-                  "gpu_pixel_readback", "camera_transform_readback", "gpu_probe_passed",
-                  "normal_exit"]
+                  "gpu_pixel_readback", "camera_transform_readback", "terrain_tmp_atlas_readback",
+                  "terrain_tmp_zdepth_occlusion", "gpu_probe_passed", "normal_exit"]
     for field in fields:
         require(re.search(r"(?m)^" + field + r"=true\b", report), f"Missing/failed runtime check: {field}")
     presses = re.search(r"(?m)^a_button_presses=(\d+)$", report)
@@ -86,15 +86,22 @@ def main():
         require(frames and int(frames.group(1)) > 0, "No GPU frames presented")
         sprites = re.search(r"(?m)^sprites_per_frame=(\d+)$", report)
         require(sprites and int(sprites.group(1)) > 1, "Sprite instancing not tested")
+        terrain_tiles = re.search(r"(?m)^terrain_tile_count=(\d+)$", report)
+        require(terrain_tiles and int(terrain_tiles.group(1)) >= 3, "TMP atlas not tested")
+        terrain_instances = re.search(r"(?m)^terrain_instance_count=(\d+)$", report)
+        require(terrain_instances and int(terrain_instances.group(1)) >= 9,
+                "Terrain instance construction not tested")
         elapsed = re.search(r"(?m)^render_elapsed_ms=(\d+)$", report)
         require(elapsed and int(elapsed.group(1)) > 0, "Missing rendering duration")
         if "exit_reason=timeout" in report:
             require(int(elapsed.group(1)) >= 30000, "Timed rendering stopped before 30 seconds")
         print(f"GPU NRO: {len(artifact)} bytes; ARM64 + TLS + production GpuContext + "
               f"BatchRenderer + {sprites.group(1)} textured instances + "
-              f"pixel readback + camera scroll/zoom + {frames.group(1)} frames + "
-              "input + normal exit passed")
-        print("Scope: synthetic RGBA sprites. Full terrain/SHP/voxel paths, retail gameplay and audio remain unverified.")
+              f"pixel readback + camera scroll/zoom + {terrain_tiles.group(1)} parsed TMP tiles + "
+              f"{terrain_instances.group(1)} terrain instances + per-pixel Z occlusion + "
+              f"{frames.group(1)} frames + input + normal exit passed")
+        print("Scope: synthetic RGBA sprites and a 3x3 synthetic TMP terrain grid. "
+              "Retail map streaming, SHP/voxel paths, full client, gameplay and audio remain unverified.")
         print(f"Report source: {report_path}")
         return
     require(re.search(r"(?m)^retail_assets_present=(true|false)\b", report),
