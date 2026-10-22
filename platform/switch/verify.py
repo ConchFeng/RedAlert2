@@ -90,8 +90,24 @@ def main():
         terrain_tiles = re.search(r"(?m)^terrain_tile_count=(\d+)$", report)
         require(terrain_tiles and int(terrain_tiles.group(1)) >= 3, "TMP atlas not tested")
         terrain_instances = re.search(r"(?m)^terrain_instance_count=(\d+)$", report)
-        require(terrain_instances and int(terrain_instances.group(1)) >= 9,
-                "Terrain instance construction not tested")
+        require(terrain_instances and int(terrain_instances.group(1)) == 15,
+                "Expected all 15 production Size-diamond cells in the main render pass")
+        production_map = re.search(r"(?m)^production_map_parse=true\b", report)
+        require(production_map, "Production map parser not tested")
+        resolved_terrain = re.search(r"(?m)^production_resolved_terrain=true\b", report)
+        require(resolved_terrain, "Production resolved terrain not tested")
+        map_cells = re.search(r"(?m)^map_cell_count=(\d+)$", report)
+        map_lookups = re.search(r"(?m)^map_lookup_count=(\d+)$", report)
+        require(map_cells and int(map_cells.group(1)) == 9,
+                "IsoMapPack5 fixture did not produce nine records")
+        require(map_lookups and int(map_lookups.group(1)) == 9,
+                "IsoMapPack5 fixture did not retain nine lookups")
+        resolved_cells = re.search(r"(?m)^resolved_cell_count=(\d+)$", report)
+        render_instances = re.search(r"(?m)^terrain_render_instance_count=(\d+)$", report)
+        require(resolved_cells and int(resolved_cells.group(1)) == 15,
+                "Production Size diamond did not materialize 15 cells")
+        require(render_instances and int(render_instances.group(1)) == 15,
+                "Production terrain grid did not contain 15 cells")
         require(re.search(r"(?m)^theater_loaded=TEMPERATE$", report),
                 "Production theater identity missing")
         require(re.search(r"(?m)^theater_ini_source=temperat\.mix$", report),
@@ -110,9 +126,10 @@ def main():
               f"pixel readback + camera scroll/zoom + {terrain_tiles.group(1)} parsed TMP tiles + "
               f"{terrain_instances.group(1)} terrain instances + per-pixel Z occlusion + "
               f"{frames.group(1)} frames + input + normal exit passed")
-        print("Scope: synthetic RGBA sprites and a 3x3 terrain grid whose TMP/palette/INI "
-              "resources load through production theater and MIX APIs. Retail map streaming, "
-              "SHP/voxel paths, full client, gameplay and audio remain unverified.")
+        print("Scope: synthetic RGBA sprites plus nine IsoMapPack5 records over a 15-cell "
+              "production Size diamond; TMP/palette/INI resources load through production "
+              "theater and MIX APIs. Retail map streaming, SHP/voxel paths, full client, "
+              "gameplay and audio remain unverified.")
         print(f"Report source: {report_path}")
         return
     require(re.search(r"(?m)^retail_assets_present=(true|false)\b", report),

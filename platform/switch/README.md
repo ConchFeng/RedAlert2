@@ -90,9 +90,12 @@ bash run_eden.sh
 12 个合成 RGBA 精灵。像素回读覆盖透明边缘、纹理颜色、全部实例以及相机平移和
 2 倍缩放。同一 GPU 探针还从模拟器内的 `temperat.mix` 经生产
 `AssetManager`、`load_theater` 和 `load_tile_images` 加载 INI、三套 PAL 与
-5 个 TMP，再用生产图集、地形网格和可见实例代码生成 9 个实例，并验证高度颜色/UV
-和逐像素 R8 Z 深度遮挡。最终运行呈现 884 帧、约 14.7 秒后以 A 键和 `+` 正常退出。
-资源 fixture 是合成的，不能据此推断零售地图已加载或游戏帧率。
+5 个 TMP。地图 fixture 再通过生产 `MapFile` 解析 9 条 `IsoMapPack5` 记录，
+经 Size diamond 与 `ResolvedTerrainGrid` 物化 15 格，并由主循环以生产
+`build_visible_instances` 和逐像素 R8 Z 深度绘制全部 15 个 TMP 地形实例。
+最终运行呈现 2007 帧、约 33.4 秒后以 A 键和 `+` 正常退出。截图见
+`target/emulator/evidence/production-terrain.png`。
+地图、theater、TMP 和 palette 都是合成 fixture，不能据此推断零售地图已加载或游戏帧率。
 
 ```bash
 python3 build.py --gpu
@@ -102,18 +105,21 @@ python3 verify.py --probe gpu
 
 GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 `target/emulator/master-xdg-data/eden/sdmc/switch/vera20k/gpu-probe-nro.txt`，
-详细 wgpu 日志为同目录的 `gpu-wgpu.log`。程序会在 30 秒后自动退出；
-校验器还要求运行中测试过 A 键。截图为 `target/emulator/evidence/vera-wgpu-input.png`。
+详细 wgpu 日志为同目录的 `gpu-wgpu.log`。程序最多运行 60 秒后自动退出；
+校验器还要求运行中测试过 A 键。生产地形截图为
+`target/emulator/evidence/production-terrain.png`。
 
 此模式使用带本地 SDL3 生命周期修复、立即数乘法支持的 Eden master，
 并在配置中关闭 macro JIT/HLE；复现见 [HANDOFF.md](HANDOFF.md#nvk-当前进度与模拟器阻塞)。
 核心模式仍使用 Eden 0.2.1 发布版。GPU 模式目前只生成 NRO。
 当前工作区已将生产 `BatchRenderer` 编译进该入口，实例属性和合成 RGBA
-纹理采样与完整绘制已通过。此前相机数据在片段阶段正确、在顶点阶段为零；
+纹理采样与完整绘制已通过。主画面现在直接绘制生产地图加载链生成的地形；
+此前相机数据在片段阶段正确、在顶点阶段为零；
 Horizon NVK 现在通过 `third_party/mesa-switch-graphics-ubo.patch` 的可选路径
 把该 UBO 直接绑定为常量缓冲区，并将选项计入着色器缓存键。
-生产 theater/MIX 与 `load_tile_images` 地形链路已接入；零售地图、SHP/VXL、
-完整客户端和声音尚未接入此入口。
+生产 theater/MIX、`MapFile`、`IsoMapPack5`、Size diamond、
+`ResolvedTerrainGrid`、`load_tile_images` 和主画面地形绘制链路已接入；
+零售地图、SHP/VXL、完整客户端和声音尚未接入此入口。
 退出时仍有 NVK VA teardown 警告，资源释放还需排查。
 
 ## 正式 NSP 与 FTP 真机测试

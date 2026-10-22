@@ -18,16 +18,19 @@ use wgpu::rwh::{
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::mix_hash::mix_hash;
 use crate::gpu::{GpuContext, NativeWindow};
-use crate::map::bridge_facts::BridgeCellFacts;
-use crate::map::resolved_terrain::{ResolvedTerrainCell, ResolvedTerrainGrid};
+use crate::map::map_file::MapFile;
+use crate::map::resolved_terrain::ResolvedTerrainGrid;
 use crate::map::terrain::{TerrainGrid, TilePlacement, build_terrain_grid_from_resolved};
 use crate::map::theater::{TileImage, TileKey, collect_used_tiles, load_theater, load_tile_images};
+use crate::map::tile_variant_selector::TileVariantSelectorCache;
 use crate::render::batch::{
     BatchRenderer, BatchTexture, DepthAxis, InstanceBufferPool, SpriteInstance,
 };
 use crate::render::palette_light::PaletteLight;
 use crate::render::terrain_instances::build_visible_instances;
 use crate::render::tile_atlas::{TileAtlas, build_atlas};
+use crate::rules::ruleset::RuleSet;
+use crate::sim::world::Simulation;
 
 #[derive(Debug, Clone, Copy)]
 enum Expect {
@@ -62,7 +65,7 @@ enum TerrainExpect {
 }
 
 impl TerrainExpect {
-    fn matches(self, actual: [u8; 4], background: [u8; 4]) -> bool {
+    fn matches(self, actual: [u8; 4], _background: [u8; 4]) -> bool {
         let expected = match self {
             // Palette bytes enter through an Rgba8UnormSrgb atlas, so the
             // shader's linear output is stored in the Rgba8Unorm target.
@@ -178,6 +181,149 @@ fn fixture_mix(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
     Ok(data)
 }
 
+fn base64_encode(bytes: &[u8]) -> String {
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut output = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let first = u32::from(chunk[0]);
+        let second = u32::from(*chunk.get(1).unwrap_or(&0));
+        let third = u32::from(*chunk.get(2).unwrap_or(&0));
+        let combined = first << 16 | second << 8 | third;
+        output.push(ALPHABET[((combined >> 18) & 0x3f) as usize] as char);
+        output.push(ALPHABET[((combined >> 12) & 0x3f) as usize] as char);
+        output.push(if chunk.len() >= 2 {
+            ALPHABET[((combined >> 6) & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+        output.push(if chunk.len() == 3 {
+            ALPHABET[(combined & 0x3f) as usize] as char
+        } else {
+            '='
+        });
+    }
+    output
+}
+
+fn map_fixture() -> Vec<u8> {
+    // A Size=3 diamond contains 15 materialized cells. These nine Pack5
+    // records overwrite the centre and produce the same visible shape used by
+    // the renderer's pixel probes while preserving six Fill-only cells.
+    let cells = [
+        (2, 2, 0, 0),
+        (2, 3, 0, 0),
+        (2, 4, 0, 0),
+        (3, 2, 0, 0),
+        (3, 3, 1, 1),
+        (3, 4, 0, 0),
+        (4, 2, 1, 0),
+        (4, 3, 0, 0),
+        (4, 4, 2, 0),
+    ];
+    let mut payload = Vec::with_capacity(cells.len() * 11 + 4);
+    for (x, y, tile, z) in cells {
+        payload.extend_from_slice(&(x as i16).to_le_bytes());
+        payload.extend_from_slice(&(y as u16).to_le_bytes());
+        payload.extend_from_slice(&(tile as i32).to_le_bytes());
+        payload.push(0);
+        payload.push(z);
+        payload.push(0);
+    }
+    payload.extend_from_slice(&[0; 4]);
+    let encoded = base64_encode(&crate::util::lzo::compress_chunks(&payload, 0x2000));
+    let packed_lines = encoded
+        .as_bytes()
+        .chunks(0x7f)
+        .enumerate()
+        .map(|(index, line)| {
+            format!(
+                "{}={}\n",
+                index + 1,
+                std::str::from_utf8(line).expect("Base64 is ASCII")
+            )
+        })
+        .collect::<String>();
+    format!(
+        "[Basic]\nName=Switch GPU Terrain Probe\n\
+         [Map]\nTheater=TEMPERATE\nSize=0,0,3,3\nLocalSize=0,0,3,3\nFill=Clear\nLevel=0\n\
+         [IsoMapPack5]\n{packed_lines}"
+    )
+    .into_bytes()
+}
+
+fn build_map_terrain(
+    theater: &crate::map::theater::TheaterData,
+    assets: &AssetManager,
+) -> Result<(MapFile, ResolvedTerrainGrid, TerrainGrid)> {
+    let map = MapFile::from_bytes(&map_fixture()).context("production map parser failed")?;
+    anyhow::ensure!(
+        map.header.theater.eq_ignore_ascii_case("TEMPERATE"),
+        "fixture map selected theater {}",
+        map.header.theater
+    );
+    anyhow::ensure!(
+        map.header.width == 3 && map.header.height == 3,
+        "fixture map has unexpected Size"
+    );
+    anyhow::ensure!(
+        map.cells.len() == 9 && map.iso_map_pack_lookups.len() == 9,
+        "IsoMapPack5 did not produce its nine records"
+    );
+
+    let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[General]\n\
+             [InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n",
+    ))
+    .context("minimal rules fixture failed")?;
+    let mut selector_cache = TileVariantSelectorCache::default();
+    selector_cache.complete_theater_registry_load(theater.rmg_tiles.clear_tile, None);
+    let mut simulation = Simulation::with_seed(0x5a17_2026);
+    let (mut fill, main) = simulation.terrain_load_draws();
+    let mut fill_ranged = |low, high| fill.next_range_u32_inclusive(low, high);
+    let mut variant_draw = move || main.next_u32();
+    let mut selector = selector_cache.begin_load(&mut variant_draw);
+    let resolved = ResolvedTerrainGrid::build_with_variant_selector(
+        &map,
+        Some(theater),
+        Some(assets),
+        Some(&rules.terrain_rules),
+        None,
+        None,
+        false,
+        rules.general.cliff_back_impassability,
+        &mut fill_ranged,
+        &mut selector,
+    );
+    anyhow::ensure!(
+        resolved.iter().count() == 15,
+        "production Size-diamond did not materialize fifteen cells"
+    );
+    let expected_center = [
+        (2, 2, 0, 0),
+        (2, 3, 0, 0),
+        (2, 4, 0, 0),
+        (3, 2, 0, 0),
+        (3, 3, 1, 1),
+        (3, 4, 0, 0),
+        (4, 2, 1, 0),
+        (4, 3, 0, 0),
+        (4, 4, 2, 0),
+    ];
+    for &(rx, ry, tile, level) in &expected_center {
+        let cell = resolved
+            .cell(rx, ry)
+            .context("central Pack5 cell missing")?;
+        anyhow::ensure!(
+            cell.source_tile_index == tile && cell.level == level,
+            "Pack5 cell ({rx},{ry}) resolved tile={} level={}, expected tile={tile} level={level}",
+            cell.source_tile_index,
+            cell.level
+        );
+    }
+    let terrain = build_terrain_grid_from_resolved(&resolved, None);
+    Ok((map, resolved, terrain))
+}
+
 /// Write one active-YR theater resource root and keep every resource in the
 /// production theater MIX. `load_theater` activates the archive before reading
 /// its INI, palettes, or TMPs, so this exercises the same lookup order as the
@@ -185,7 +331,7 @@ fn fixture_mix(entries: &[(String, Vec<u8>)]) -> Result<Vec<u8>> {
 fn write_theater_fixture() -> Result<()> {
     const ROOT: &str = "sdmc:/switch/vera20k/theater-fixture";
     std::fs::create_dir_all(ROOT)?;
-    let ini = b"[General]\n\
+    let ini = b"[General]\nClearTile=0\n\
                 [TileSet0000]\n\
                 SetName=Grass\n\
                 FileName=clear\n\
@@ -212,6 +358,8 @@ fn write_theater_fixture() -> Result<()> {
 }
 
 struct LoadedTheaterTiles {
+    assets: AssetManager,
+    data: crate::map::theater::TheaterData,
     images: HashMap<TileKey, TileImage>,
     ini_source: String,
     tile_slots: usize,
@@ -248,85 +396,27 @@ fn load_theater_fixture() -> Result<LoadedTheaterTiles> {
         images.len(),
         needed.len()
     );
+    let tile_slots = theater.lookup.len();
+    let tilesets = theater.lookup.bounds().len();
     Ok(LoadedTheaterTiles {
+        assets,
+        data: theater,
         images,
         ini_source,
-        tile_slots: theater.lookup.len(),
-        tilesets: theater.lookup.bounds().len(),
+        tile_slots,
+        tilesets,
     })
-}
-
-fn terrain_grid_fixture() -> (ResolvedTerrainGrid, TerrainGrid) {
-    let mut cells = Vec::new();
-    for ry in 0..3_u16 {
-        for rx in 0..3_u16 {
-            let tile_id = match (rx, ry) {
-                (0, 0) | (1, 0) | (0, 1) | (1, 1) => 0,
-                (2, 0) | (2, 1) => 1,
-                (2, 2) => 2,
-                _ => 0,
-            };
-            let level = u8::from(rx == 2 && ry != 2);
-            cells.push(ResolvedTerrainCell {
-                rx,
-                ry,
-                source_tile_index: i32::from(tile_id),
-                source_sub_tile: 0,
-                final_tile_index: i32::from(tile_id),
-                final_sub_tile: 0,
-                is_wood_bridge_repair_tile: false,
-                level,
-                filled_clear: false,
-                tileset_index: Some(0),
-                land_type: 0,
-                slope_type: 0,
-                template_height: 0,
-                height_in_pixels: 0,
-                render_offset_x: 0,
-                render_offset_y: 0,
-                speed_costs: Default::default(),
-                accepts_smudge: false,
-                allows_tiberium: false,
-                variant: 0,
-                has_ramp: false,
-                canonical_ramp: None,
-                ground_walk_blocked: false,
-                terrain_object_blocks: false,
-                terrain_object_occupation: None,
-                overlay_blocks: false,
-                overlay_zone_type: None,
-                outside_playfield: false,
-                zone_type: 0,
-                base_ground_walk_blocked: false,
-                base_build_blocked: false,
-                base_land_type: 0,
-                base_speed_costs: Default::default(),
-                has_bridge_deck: false,
-                bridge_walkable: false,
-                bridge_transition: false,
-                bridge_deck_level: 0,
-                bridge_layer: None,
-                bridge_facts: BridgeCellFacts::default(),
-                tube_index: None,
-                radar_left: [20, 10, 5],
-                radar_right: [10, 20, 5],
-                has_damaged_data: false,
-            });
-        }
-    }
-    let resolved = ResolvedTerrainGrid::from_cells(3, 3, cells);
-    let grid = build_terrain_grid_from_resolved(&resolved, None);
-    (resolved, grid)
 }
 
 fn terrain_sample_at_center(
     instances: &[SpriteInstance],
     camera: [f32; 2],
     position_x: f32,
+    position_y: f32,
 ) -> (u32, u32) {
     let instance = instances
         .iter()
-        .find(|instance| instance.position[0] == position_x && instance.position[1] >= 30.0)
+        .find(|instance| instance.position[0] == position_x && instance.position[1] == position_y)
         .expect("terrain instance");
     (
         (instance.position[0] + instance.size[0] / 2.0 - camera[0]).round() as u32,
@@ -748,7 +838,17 @@ fn run() -> Result<String> {
         theater.tilesets,
         terrain_images.len()
     );
-    let (resolved, terrain_grid) = terrain_grid_fixture();
+    let (map, resolved, terrain_grid) = build_map_terrain(&theater.data, &theater.assets)?;
+    let map_cell_count = map.cells.len();
+    let map_lookup_count = map.iso_map_pack_lookups.len();
+    let resolved_cell_count = resolved.iter().count();
+    let terrain_render_instance_count = terrain_grid.cells.len();
+    log::info!(
+        "production_map_loaded theater={} cells={} lookups={}",
+        map.header.theater,
+        map_cell_count,
+        map_lookup_count
+    );
     let atlas = build_atlas(&gpu.device, &gpu.queue, &batch, &terrain_images);
     anyhow::ensure!(
         atlas.tile_count() == terrain_images.len(),
@@ -768,7 +868,10 @@ fn run() -> Result<String> {
                 draw_offset: uv.draw_offset,
             })
     };
-    let camera = [terrain_grid.origin_x - 1.0, terrain_grid.origin_y - 1.0];
+    let camera = [
+        terrain_grid.origin_x - (1280.0 - terrain_grid.world_width) / 2.0,
+        terrain_grid.origin_y - (720.0 - terrain_grid.world_height) / 2.0,
+    ];
     let visible = build_visible_instances(
         &terrain_grid,
         None,
@@ -797,16 +900,18 @@ fn run() -> Result<String> {
     let elevated = visible
         .normal
         .iter()
-        .find(|instance| instance.position[0] == 30.0 && instance.position[1] >= 30.0)
+        .find(|instance| instance.position[0] == -30.0 && instance.position[1] == 90.0)
         .expect("elevated terrain instance");
     anyhow::ensure!(
         elevated.uv_origin[1] != 0.0,
         "elevated terrain did not select its own atlas tile"
     );
-    let ground_pixel = terrain_sample_at_center(&visible.normal, camera, -30.0);
-    let elevated_pixel = terrain_sample_at_center(&visible.normal, camera, 30.0);
+    let ground_pixel = terrain_sample_at_center(&visible.normal, camera, -30.0, 75.0);
+    let elevated_pixel = terrain_sample_at_center(&visible.normal, camera, -30.0, 90.0);
+    let clear_pixel = terrain_sample_at_center(&visible.normal, camera, 30.0, 75.0);
     let samples = [
-        (ground_pixel.0, ground_pixel.1, TerrainExpect::Clear),
+        (clear_pixel.0, clear_pixel.1, TerrainExpect::Clear),
+        (ground_pixel.0, ground_pixel.1, TerrainExpect::Elevated),
         (elevated_pixel.0, elevated_pixel.1, TerrainExpect::Elevated),
     ];
     validate_terrain_output(
@@ -820,12 +925,12 @@ fn run() -> Result<String> {
     let ground = visible
         .normal
         .iter()
-        .find(|instance| instance.position[0] == -30.0 && instance.position[1] >= 15.0)
+        .find(|instance| instance.position[0] == -30.0 && instance.position[1] == 75.0)
         .expect("ground terrain instance");
     let elevated = visible
         .normal
         .iter()
-        .find(|instance| instance.position[0] == 30.0 && instance.position[1] >= 30.0)
+        .find(|instance| instance.position[0] == -30.0 && instance.position[1] == 90.0)
         .expect("elevated terrain instance");
     let mut depth_instances = vec![ground.clone()];
     let mut near_occluder = ground.clone();
@@ -853,8 +958,8 @@ fn run() -> Result<String> {
         &near_image.rgba[near_center..near_center + 4],
     );
     near_occluder.position = [
-        ground_pixel.0 as f32 + camera[0] - 30.0,
-        ground_pixel.1 as f32 + camera[1] - 15.0,
+        clear_pixel.0 as f32 + camera[0] - 30.0,
+        clear_pixel.1 as f32 + camera[1] - 15.0,
     ];
     near_occluder.uv_origin = near_uv.uv_origin;
     near_occluder.uv_size = near_uv.uv_size;
@@ -867,7 +972,7 @@ fn run() -> Result<String> {
         "terrain-near",
         &depth,
         camera,
-        &[(ground_pixel.0, ground_pixel.1, TerrainExpect::Occluder)],
+        &[(clear_pixel.0, clear_pixel.1, TerrainExpect::Occluder)],
     )?;
     depth_instances.push(near_occluder);
 
@@ -893,19 +998,27 @@ fn run() -> Result<String> {
         &depth,
         camera,
         &[
-            (ground_pixel.0, ground_pixel.1, TerrainExpect::Occluder),
+            (clear_pixel.0, clear_pixel.1, TerrainExpect::Occluder),
             (elevated_pixel.0, elevated_pixel.1, TerrainExpect::Elevated),
         ],
     )?;
     log::info!("terrain_tmp_zdepth_occlusion=true near_passes=true far_rejected=true");
 
-    batch.update_camera(&gpu, 1280.0, 720.0, 0.0, 0.0, 1.0, DepthAxis::NONE);
+    batch.update_camera(
+        &gpu,
+        1280.0,
+        720.0,
+        camera[0],
+        camera[1],
+        1.0,
+        DepthAxis::NONE,
+    );
     let start = Instant::now();
     let mut frames = 0_u32;
     let mut presses = 0_u32;
     let mut exit_reason = "applet";
     while unsafe { platform_running() } {
-        if start.elapsed() >= Duration::from_secs(30) {
+        if start.elapsed() >= Duration::from_secs(60) {
             exit_reason = "timeout";
             break;
         }
@@ -915,11 +1028,7 @@ fn run() -> Result<String> {
             break;
         }
         presses += u32::from(edges.a);
-        let shift = (start.elapsed().as_secs_f32() * 2.0).sin() * 32.0;
-        for (index, instance) in instances.iter_mut().enumerate() {
-            instance.position[0] = 192.0 + (index % 4) as f32 * 256.0 + shift;
-        }
-        pool.upload(&gpu, "synthetic", &instances);
+        pool.upload(&gpu, "terrain", &visible.normal);
         let Some(frame) = gpu.acquire_frame()? else {
             continue;
         };
@@ -951,8 +1060,8 @@ fn run() -> Result<String> {
                 }),
                 ..Default::default()
             });
-            let (buffer, count) = pool.get("synthetic").context("sprite buffer missing")?;
-            batch.draw_with_buffer_passthrough(&mut pass, &texture, buffer, count);
+            let (buffer, count) = pool.get("terrain").context("terrain buffer missing")?;
+            batch.draw_with_buffer_zdepth(&mut pass, &atlas.zdepth_bind_group, buffer, count);
         }
         gpu.queue.submit([commands.finish()]);
         frame.present();
@@ -971,8 +1080,11 @@ fn run() -> Result<String> {
          production_theater_load=true\ntheater_tile_loader=true\n\
          theater_loaded=TEMPERATE\ntheater_ini_source={}\n\
          theater_tile_slots={}\ntheater_tilesets={}\n\
-         theater_tile_images_loaded={}\n\
-         terrain_tile_count={}\nterrain_instance_count=9\n\
+         theater_tile_images_loaded={}\nproduction_map_parse=true\n\
+         production_resolved_terrain=true\nmap_theater={}\n\
+         map_cell_count={}\nmap_lookup_count={}\n\
+         resolved_cell_count={}\nterrain_render_instance_count={}\n\
+         terrain_tile_count={}\nterrain_instance_count={}\n\
          frames_presented={frames}\nrender_elapsed_ms={render_elapsed_ms}\n\
          a_button_presses={presses}\nexit_reason={exit_reason}\n\
          normal_exit=true\ngpu_probe_passed=true\n",
@@ -981,7 +1093,13 @@ fn run() -> Result<String> {
         theater.tile_slots,
         theater.tilesets,
         terrain_images.len(),
+        map.header.theater,
+        map_cell_count,
+        map_lookup_count,
+        resolved_cell_count,
+        terrain_render_instance_count,
         terrain_images.len(),
+        visible.normal.len(),
     ))
 }
 
