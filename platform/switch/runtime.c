@@ -35,6 +35,8 @@ int main(int argc, char **argv) {
 #ifdef VERA_WGPU
     setenv("MESA_LOG_FILE", "sdmc:/switch/vera20k/gpu-mesa.log", 1);
     setenv("MESA_LOG_LEVEL", "debug", 1);
+    // See third_party/mesa-switch-graphics-ubo.patch for the NVK/Eden path.
+    setenv("NVK_SWITCH_GRAPHICS_UBO_CBUF", "true", 1);
 #endif
     return rust_main();
 }

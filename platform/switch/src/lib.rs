@@ -2,9 +2,13 @@
 
 mod input;
 
+pub use vera20k_core::{assets, map, rules, sim, util};
+
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 #[path = "../../../src/render/gpu.rs"]
 mod gpu;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod render;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod gpu_frontend;
 

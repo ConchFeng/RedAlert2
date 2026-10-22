@@ -1,36 +1,182 @@
 diff --git a/src/shader_recompiler/CMakeLists.txt b/src/shader_recompiler/CMakeLists.txt
-index cc9ce95..a6f0c2b 100644
+index cc9ce95..c8b0a82 100644
 --- a/src/shader_recompiler/CMakeLists.txt
 +++ b/src/shader_recompiler/CMakeLists.txt
-@@ -118,6 +118,7 @@ add_library(shader_recompiler STATIC
+@@ -118,6 +118,8 @@ add_library(shader_recompiler STATIC
      frontend/maxwell/translate/impl/integer_floating_point_conversion.cpp
      frontend/maxwell/translate/impl/integer_funnel_shift.cpp
      frontend/maxwell/translate/impl/integer_minimum_maximum.cpp
 +    frontend/maxwell/translate/impl/integer_multiply.cpp
++    frontend/maxwell/translate/impl/integer_permute.cpp
      frontend/maxwell/translate/impl/integer_popcount.cpp
      frontend/maxwell/translate/impl/integer_scaled_add.cpp
      frontend/maxwell/translate/impl/integer_set_predicate.cpp
 diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
-index 369af8e..267aac8 100644
+index 369af8e..5b7244b 100644
 --- a/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
 +++ b/src/shader_recompiler/frontend/maxwell/translate/impl/not_implemented.cpp
-@@ -139,10 +139,6 @@ void TranslatorVisitor::IMUL_cbuf(u64) {
-     ThrowNotImplemented(Opcode::IMUL_cbuf);
+@@ -131,22 +131,6 @@ void TranslatorVisitor::IMADSP_imm(u64) {
+     ThrowNotImplemented(Opcode::IMADSP_imm);
  }
- 
+
+-void TranslatorVisitor::IMUL_reg(u64) {
+-    ThrowNotImplemented(Opcode::IMUL_reg);
+-}
+-
+-void TranslatorVisitor::IMUL_cbuf(u64) {
+-    ThrowNotImplemented(Opcode::IMUL_cbuf);
+-}
+-
 -void TranslatorVisitor::IMUL_imm(u64) {
 -    ThrowNotImplemented(Opcode::IMUL_imm);
 -}
 -
- void TranslatorVisitor::IMUL32I(u64) {
-     ThrowNotImplemented(Opcode::IMUL32I);
+-void TranslatorVisitor::IMUL32I(u64) {
+-    ThrowNotImplemented(Opcode::IMUL32I);
+-}
+-
+ void TranslatorVisitor::JCAL(u64) {
+     ThrowNotImplemented(Opcode::JCAL);
+ }
+@@ -207,10 +191,6 @@ void TranslatorVisitor::PRMT_cr(u64) {
+     ThrowNotImplemented(Opcode::PRMT_cr);
+ }
+
+-void TranslatorVisitor::PRMT_imm(u64) {
+-    ThrowNotImplemented(Opcode::PRMT_imm);
+-}
+-
+ void TranslatorVisitor::R2B(u64) {
+     ThrowNotImplemented(Opcode::R2B);
+ }
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/surface_load_store.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/surface_load_store.cpp
+index c01ab36..dc5a1d4 100644
+--- a/src/shader_recompiler/frontend/maxwell/translate/impl/surface_load_store.cpp
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/surface_load_store.cpp
+@@ -269,10 +269,20 @@ void TranslatorVisitor::SUST(u64 insn) {
+         color = MakeColor(ir, sust.data_reg, SizeInRegs(sust.size));
+     } else {
+         const unsigned mask{SwizzleMask(sust.swizzle)};
+-        if (mask != 0xf) {
+-            throw NotImplementedException("Non-full mask");
++        if (mask == 0xf) {
++            color = MakeColor(ir, sust.data_reg, 4);
++        } else {
++            // NAK sm50.rs OpSuSt::encode uses the formatted channel mask.
++            // Registers are packed as in SULD; preserve unselected channels.
++            color = ir.ImageRead(handle, coords, info);
++            IR::Reg data_reg{sust.data_reg};
++            for (unsigned component = 0; component < 4; ++component) {
++                if (((mask >> component) & 1) != 0) {
++                    color = ir.CompositeInsert(color, X(data_reg), component);
++                    ++data_reg;
++                }
++            }
+         }
+-        color = MakeColor(ir, sust.data_reg, 4);
+     }
+     ir.ImageWrite(handle, coords, color, info);
  }
 diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/integer_multiply.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_multiply.cpp
 new file mode 100644
-index 0000000..8d47204
+index 0000000..50caa3a
 --- /dev/null
 +++ b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_multiply.cpp
-@@ -0,0 +1,25 @@
+@@ -0,0 +1,88 @@
++// SPDX-License-Identifier: GPL-3.0-or-later
++
++#include "common/bit_field.h"
++#include "shader_recompiler/exception.h"
++#include "shader_recompiler/frontend/maxwell/translate/impl/impl.h"
++
++namespace Shader::Maxwell {
++namespace {
++
++IR::U32 ProductHigh(TranslatorVisitor& v, const IR::U32& a, const IR::U32& b,
++                    bool signed_a, bool signed_b) {
++    auto& ir = v.ir;
++    const IR::U32 mask{ir.Imm32(0xffff)};
++    const IR::U32 shift{ir.Imm32(16)};
++    const IR::U32 al{ir.BitwiseAnd(a, mask)};
++    const IR::U32 ah{ir.ShiftRightLogical(a, shift)};
++    const IR::U32 bl{ir.BitwiseAnd(b, mask)};
++    const IR::U32 bh{ir.ShiftRightLogical(b, shift)};
++    // 16-bit partial products keep both carry sums within 32 bits.
++    const IR::U32 t0{ir.IAdd(ir.IMul(ah, bl), ir.ShiftRightLogical(ir.IMul(al, bl), shift))};
++    const IR::U32 t1{ir.IAdd(ir.IMul(al, bh), ir.BitwiseAnd(t0, mask))};
++    IR::U32 result{ir.IAdd(ir.IAdd(ir.IMul(ah, bh), ir.ShiftRightLogical(t0, shift)),
++                          ir.ShiftRightLogical(t1, shift))};
++    if (signed_a) {
++        result = ir.ISub(result, ir.BitwiseAnd(ir.ShiftRightArithmetic(a, ir.Imm32(31)), b));
++    }
++    if (signed_b) {
++        result = ir.ISub(result, ir.BitwiseAnd(ir.ShiftRightArithmetic(b, ir.Imm32(31)), a));
++    }
++    return result;
++}
++
++void IMUL(TranslatorVisitor& v, u64 insn, const IR::U32& rhs) {
++    // Encoding: Mesa NAK sm50.rs, OpIMul::encode, commit 606441c90e.
++    union {
++        u64 raw;
++        BitField<0, 8, IR::Reg> dest_reg;
++        BitField<39, 1, u64> high;
++        BitField<40, 1, u64> signed_a;
++        BitField<41, 1, u64> signed_b;
++        BitField<47, 1, u64> cc;
++    } const imul{insn};
++
++    if (imul.cc != 0) {
++        throw NotImplementedException("IMUL CC");
++    }
++    // The low 32 product bits are identical for signed and unsigned operands.
++    const IR::U32 lhs{v.GetReg8(insn)};
++    v.X(imul.dest_reg, imul.high != 0
++                          ? ProductHigh(v, lhs, rhs, imul.signed_a != 0, imul.signed_b != 0)
++                          : v.ir.IMul(lhs, rhs));
++}
++
++} // namespace
++
++void TranslatorVisitor::IMUL_imm(u64 insn) {
++    IMUL(*this, insn, GetImm20(insn));
++}
++
++void TranslatorVisitor::IMUL_cbuf(u64 insn) {
++    IMUL(*this, insn, GetCbuf(insn));
++}
++
++void TranslatorVisitor::IMUL_reg(u64 insn) {
++    IMUL(*this, insn, GetReg20(insn));
++}
++
++void TranslatorVisitor::IMUL32I(u64 insn) {
++    // The full immediate occupies bits 20..51; flags move above it.
++    union {
++        u64 raw;
++        BitField<0, 8, IR::Reg> dest_reg;
++        BitField<52, 1, u64> cc;
++        BitField<53, 1, u64> high;
++        BitField<54, 1, u64> signed_a;
++        BitField<55, 1, u64> signed_b;
++    } const imul{insn};
++    if (imul.cc != 0) {
++        throw NotImplementedException("IMUL32I CC");
++    }
++    const IR::U32 lhs{GetReg8(insn)};
++    const IR::U32 rhs{GetImm32(insn)};
++    X(imul.dest_reg, imul.high != 0
++                        ? ProductHigh(*this, lhs, rhs, imul.signed_a != 0, imul.signed_b != 0)
++                        : ir.IMul(lhs, rhs));
++}
++
++} // namespace Shader::Maxwell
+diff --git a/src/shader_recompiler/frontend/maxwell/translate/impl/integer_permute.cpp b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_permute.cpp
+new file mode 100644
+index 0000000..d54bfdd
+--- /dev/null
++++ b/src/shader_recompiler/frontend/maxwell/translate/impl/integer_permute.cpp
+@@ -0,0 +1,41 @@
 +// SPDX-License-Identifier: GPL-3.0-or-later
 +
 +#include "common/bit_field.h"
@@ -39,20 +185,36 @@ index 0000000..8d47204
 +
 +namespace Shader::Maxwell {
 +
-+void TranslatorVisitor::IMUL_imm(u64 insn) {
-+    // Encoding: Mesa NAK sm50.rs, OpIMul::encode, commit 606441c90e.
++void TranslatorVisitor::PRMT_imm(u64 insn) {
++    // Encoding: Mesa NAK sm50.rs, OpPrmt::encode, commit 606441c90e.
++    // Index-mode byte selection/sign replication: NAK ir.rs, PrmtSelByte::fold_u32.
 +    union {
 +        u64 raw;
 +        BitField<0, 8, IR::Reg> dest_reg;
-+        BitField<39, 1, u64> high;
-+        BitField<47, 1, u64> cc;
-+    } const imul{insn};
-+
-+    if (imul.high != 0 || imul.cc != 0) {
-+        throw NotImplementedException("IMUL immediate HI/CC");
++        BitField<20, 16, u64> selector;
++        BitField<48, 3, u64> mode;
++    } const prmt{insn};
++    if (prmt.mode != 0) {
++        throw NotImplementedException("PRMT immediate non-index mode");
 +    }
-+    // The low 32 product bits are identical for signed and unsigned operands.
-+    X(imul.dest_reg, ir.IMul(GetReg8(insn), GetImm20(insn)));
++    const IR::U32 src_a{GetReg8(insn)};
++    const IR::U32 src_b{GetReg39(insn)};
++    IR::U32 result{ir.Imm32(0)};
++    for (u32 byte = 0; byte < 4; ++byte) {
++        const u32 selector = static_cast<u32>(prmt.selector.Value() >> (byte * 4)) & 15;
++        const IR::U32 src = (selector & 4) != 0 ? src_b : src_a;
++        const u32 offset = (selector & 3) * 8;
++        IR::U32 value;
++        if ((selector & 8) != 0) {
++            value = ir.BitwiseAnd(
++                ir.BitFieldExtract(src, ir.Imm32(offset + 7), ir.Imm32(1), true),
++                ir.Imm32(255));
++        } else {
++            value = ir.BitFieldExtract(src, ir.Imm32(offset), ir.Imm32(8));
++        }
++        result = ir.BitFieldInsert(result, value, ir.Imm32(byte * 8), ir.Imm32(8));
++    }
++    X(prmt.dest_reg, result);
 +}
 +
 +} // namespace Shader::Maxwell

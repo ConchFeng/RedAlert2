@@ -86,8 +86,9 @@ bash run_eden.sh
 
 `dist/vera20k-gpu.nro` 通过 Switch 原生 `NWindow` 直接调用项目的
 `src/render/gpu.rs`，不复制 GPU 初始化和取帧实现。
-已在本地 Eden master 中通过 wgpu 27 / NVK 显示 WGSL 彩色三角形，
-并验证 30 秒连续呈现、A 键和 `+` 退出。首次连续运行呈现了 1,793 帧；
+已在本地 Eden master 中通过 wgpu 27 / NVK 使用生产 `BatchRenderer` 显示
+12 个合成 RGBA 精灵。像素回读覆盖透明边缘、纹理颜色、全部实例以及相机平移和
+2 倍缩放；30 秒运行呈现 1,803 帧，A 键和 `+` 退出均通过。
 这是合成场景，不能据此推断游戏帧率。
 
 ```bash
@@ -104,7 +105,11 @@ GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 此模式使用带本地 SDL3 生命周期修复、立即数乘法支持的 Eden master，
 并在配置中关闭 macro JIT/HLE；复现见 [HANDOFF.md](HANDOFF.md#nvk-当前进度与模拟器阻塞)。
 核心模式仍使用 Eden 0.2.1 发布版。GPU 模式目前只生成 NRO。
-生产精灵/地形管线、完整客户端、零售资源和声音尚未接入此入口。
+当前工作区已将生产 `BatchRenderer` 编译进该入口，实例属性和合成 RGBA
+纹理采样与完整绘制已通过。此前相机数据在片段阶段正确、在顶点阶段为零；
+Horizon NVK 现在通过 `third_party/mesa-switch-graphics-ubo.patch` 的可选路径
+把该 UBO 直接绑定为常量缓冲区，并将选项计入着色器缓存键。
+完整地形管线、完整客户端、零售资源和声音尚未接入此入口。
 退出时仍有 NVK VA teardown 警告，资源释放还需排查。
 
 ## 正式 NSP 与 FTP 真机测试
@@ -148,7 +153,7 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 | MIX、INI、模拟核心 / Rayon | 核心 NSP 已通过模拟器和真机验证；范围为合成资源与空场景 |
 | Switch SDL2 / EGL / GLES 库 | SDK 中已有，目前客户端尚未接入 |
 | Switch 原生窗口 / EGL / GLES2 图形层 | 已在 NRO 和 NSP 的 Eden 运行中画出 1280×720 画面；尚不是 Vera 生产渲染器 |
-| wgpu 27 | 使用 Horizon 补丁、Vulkan-only 配置，已链接并通过生产 `GpuContext` 显示 WGSL 三角形；完整游戏渲染未接入 |
+| wgpu 27 | 使用 Horizon 补丁、Vulkan-only 配置，已链接并通过生产 `GpuContext` 与 `BatchRenderer` 显示 12 个合成 RGBA 精灵；完整地形和游戏客户端未接入 |
 | rodio 0.22 / cpal 0.17 | 使用 Horizon 补丁后依赖编译检查通过；尚未链接和播放声音 |
 | 桌面 winit / Wayland / rustix | 无法直接用于 Horizon；包含窗口栈的实际依赖检查在 rustix 0.38 报错，winit 本身也没有 Horizon backend |
 | Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；实例、能力枚举、Vi 表面和逻辑设备已通过 |
@@ -173,7 +178,7 @@ python3 build.py --check-client-deps --without-winit
 当前堆内存后备映射会把 MIX 整包读入内存；真实资源加载后还需要测量峰值内存。
 此探针不验证大型纹理图集、所有文件操作或真实对局性能。
 
-下一阶段是接入生产精灵/地形渲染管线，并逐步接通客户端事件、菜单与音频。
+下一阶段是接入生产地形与 SHP/VXL 渲染，并逐步接通客户端事件、菜单与音频。
 需要原版资源后再执行真实地图加载、渲染和游戏操作验证。
 
 ## Git 代理

@@ -1,0 +1,43 @@
+diff --git a/src/nouveau/vulkan/nvk_nir_lower_descriptors.c b/src/nouveau/vulkan/nvk_nir_lower_descriptors.c
+index 9feed843316..513012cbf9c 100644
+--- a/src/nouveau/vulkan/nvk_nir_lower_descriptors.c
++++ b/src/nouveau/vulkan/nvk_nir_lower_descriptors.c
+@@ -461,9 +461,13 @@ build_cbuf_map(nir_shader *nir, struct lower_descriptors_ctx *ctx)
+    }
+ 
+ #ifdef HAVE_SWITCH_PLATFORM
+-   /* Horizon skips the setup for fragment helper global loads. */
++   /* Horizon skips the setup for fragment helper global loads.  The optional
++    * graphics path also avoids nested global descriptor loads on emulators.
++    */
+    const bool fragment_cbufs = ctx->dev_info->sm == 53 &&
+-                              nir->info.stage == MESA_SHADER_FRAGMENT;
++                              (nir->info.stage == MESA_SHADER_FRAGMENT ||
++                               (mesa_shader_stage_is_graphics(nir->info.stage) &&
++                                debug_get_bool_option("NVK_SWITCH_GRAPHICS_UBO_CBUF", false)));
+ #else
+    const bool fragment_cbufs = false;
+ #endif
+diff --git a/src/nouveau/vulkan/nvk_shader.c b/src/nouveau/vulkan/nvk_shader.c
+--- a/src/nouveau/vulkan/nvk_shader.c
++++ b/src/nouveau/vulkan/nvk_shader.c
+@@ -79,6 +79,11 @@
+    uint64_t nak_flags = nak_debug_flags(pdev->nak);
+    /* NAK_GPR_LIMIT changes the code, so it keys the shader cache too. */
+    uint64_t nak_gpr_limit = nak_debug_gpr_limit(pdev->nak);
++   uint64_t platform_flags = 0;
++#ifdef HAVE_SWITCH_PLATFORM
++   if (debug_get_bool_option("NVK_SWITCH_GRAPHICS_UBO_CBUF", false))
++      platform_flags |= UINT64_C(1) << 15;
++#endif
+ 
+    assert(nak_flags <= UINT32_MAX);
+    assert(nak_gpr_limit <= UINT8_MAX);
+@@ -86,6 +91,7 @@
+    return (no_cbufs ? 1 << 12 : 0)
+       | (use_edb_buffer_views ? 1 << 13 : 0)
+       | (instance->drirc.misc.ssbo_align_4b ? 1 << 14 : 0)
++      | platform_flags
+       | (UINT64_C(11) << 16) /* Compiler ABI revision. */
+       | (nak_gpr_limit << 24)
+       | (nak_flags << 32);

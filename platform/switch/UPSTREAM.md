@@ -58,3 +58,13 @@ initialization and frame-acquisition logic, using the Horizon native-window
 adapter. Desktop-only winit bindings in the shared source are cfg-gated.
 Production sprite/terrain pipelines and retail gameplay have not been tested.
 The NVK VA teardown warnings remain a known issue.
+
+`third_party/mesa-switch-graphics-ubo.patch` adds a Switch-only,
+environment-gated NVK path that binds graphics-stage UBOs directly as constant
+buffers instead of using the nested indirect descriptor load that returned zero
+for Vera's camera uniform in the emulator's vertex stage. The flag also keys
+the shader cache. With it, the production batch shader passed texture,
+instance, camera scroll/zoom and 30-second rendering checks. The patch targets
+Mesa Switch commit `606441c90e459028a50fca352daebfc20211f890` and is GPL-3.0-or-later.
+It remains local and unsubmitted; terrain, SHP/VXL and retail-map behavior have
+not yet exercised this path.

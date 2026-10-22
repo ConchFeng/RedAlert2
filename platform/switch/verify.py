@@ -74,7 +74,9 @@ def main():
     require(f"binary_format={args.format}" in report, "Report format mismatch")
     fields = ["mix_file_load", "ini_parse", "timestamp_format", "rayon", "simulation_construct",
               "core_probe_passed", "graphics_context", "normal_exit"] if args.probe == "core" else [
-                  "production_gpu_context", "wgsl_pipeline", "gpu_probe_passed", "normal_exit"]
+                  "production_gpu_context", "wgsl_pipeline", "batch_renderer", "textured_sprite",
+                  "gpu_pixel_readback", "camera_transform_readback", "gpu_probe_passed",
+                  "normal_exit"]
     for field in fields:
         require(re.search(r"(?m)^" + field + r"=true\b", report), f"Missing/failed runtime check: {field}")
     presses = re.search(r"(?m)^a_button_presses=(\d+)$", report)
@@ -82,9 +84,17 @@ def main():
     if args.probe == "gpu":
         frames = re.search(r"(?m)^frames_presented=(\d+)$", report)
         require(frames and int(frames.group(1)) > 0, "No GPU frames presented")
+        sprites = re.search(r"(?m)^sprites_per_frame=(\d+)$", report)
+        require(sprites and int(sprites.group(1)) > 1, "Sprite instancing not tested")
+        elapsed = re.search(r"(?m)^render_elapsed_ms=(\d+)$", report)
+        require(elapsed and int(elapsed.group(1)) > 0, "Missing rendering duration")
+        if "exit_reason=timeout" in report:
+            require(int(elapsed.group(1)) >= 30000, "Timed rendering stopped before 30 seconds")
         print(f"GPU NRO: {len(artifact)} bytes; ARM64 + TLS + production GpuContext + "
-              f"WGSL pipeline + {frames.group(1)} frames + input + normal exit passed")
-        print("Scope: synthetic triangle. Production sprite/terrain rendering, retail gameplay and audio remain unverified.")
+              f"BatchRenderer + {sprites.group(1)} textured instances + "
+              f"pixel readback + camera scroll/zoom + {frames.group(1)} frames + "
+              "input + normal exit passed")
+        print("Scope: synthetic RGBA sprites. Full terrain/SHP/voxel paths, retail gameplay and audio remain unverified.")
         print(f"Report source: {report_path}")
         return
     require(re.search(r"(?m)^retail_assets_present=(true|false)\b", report),
