@@ -1435,10 +1435,22 @@ fn mutable_handouts_and_setters_are_owner_operations() {
              and sets it after the squad alliances (0x0069B4E2)",
         ),
         (
+            "sim/scenario_session.rs",
+            "set_campaign_map_stage",
+            "Scenario+35A0: MapSelect writes the chosen stage (0x005AE1FA/0x005AE0B8); \
+             carry-over restores that word separately from the incoming restart record",
+        ),
+        (
             "sim/snapshot/scenario_resources.rs",
             "set_elapsed_buckets",
             "ScenarioSave stops +0x614 into the +0x61C accumulator (0x00689360..0x0068936F) \
              before its stream write (0x00689378); the save boundary stores that value",
+        ),
+        (
+            "sim/snapshot/saved_local_view.rs",
+            "set_credits_counter",
+            "MouseClass::Save (0x005BE6D0, store 0x005BE715) captures CreditsClass+4; \
+             this snapshot field records the presentation owner's displayed counter",
         ),
         (
             "sim/stage.rs",

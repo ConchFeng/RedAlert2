@@ -833,9 +833,7 @@ mod tests {
     /// stream fade, whatever the score volume, until the ended ramp stops it.
     #[test]
     fn the_quit_fade_lasts_the_theme_ramp_at_a_low_score_volume() {
-        let Some(mut music) = MusicPlayer::new() else {
-            return;
-        };
+        let (mut music, _output) = MusicPlayer::offline_for_test();
         assert!(music.submit(PreparedTrack::decoded(
             "Silence".into(),
             vec![0.0; 22_050 * 2 * 10],
@@ -891,10 +889,11 @@ mod tests {
     /// call `0x004083D0` inside their hold-flag branch).
     #[test]
     fn movie_hold_halves_both_masters_and_only_a_taken_hold_restores_streams() {
+        let (music, _output) = MusicPlayer::offline_for_test();
         let mut runtime = AppAudioRuntime {
             theme: ThemeRuntime::default(),
             service_clock: AudioServiceClock::default(),
-            music_player: MusicPlayer::new(),
+            music_player: Some(music),
             sfx_player: None,
             launcher_audio_available: false,
             theme_startup_suppressed: false,
@@ -904,22 +903,23 @@ mod tests {
             runtime
                 .music_player
                 .as_ref()
-                .map(MusicPlayer::stream_volume_target)
+                .expect("offline music output")
+                .stream_volume_target()
         };
         runtime.prepare_movie_streams(0);
         assert!(runtime.movie_streams_ready(), "no stream is playing");
         runtime.retire_movie_audio(50);
-        assert!(stream_target(&runtime).is_none_or(|target| target == 0));
+        assert_eq!(stream_target(&runtime), 0);
         runtime.set_movie_audio_held(true, 100);
         let groups = &runtime.master_groups;
         assert_eq!(groups.sound_master.target_value(), 0x2000);
         assert_eq!(groups.eva_master.target_value(), 0x2000);
-        assert!(stream_target(&runtime).is_none_or(|target| target == 0));
+        assert_eq!(stream_target(&runtime), 0);
         runtime.retire_movie_audio(300);
         let groups = &runtime.master_groups;
         assert_eq!(groups.sound_master.target_value(), 0x4000);
         assert_eq!(groups.eva_master.target_value(), 0x4000);
-        assert!(stream_target(&runtime).is_none_or(|target| target == 0x4000));
+        assert_eq!(stream_target(&runtime), 0x4000);
     }
 
     /// An in-game modal opened during a radar hold snaps the effects master to

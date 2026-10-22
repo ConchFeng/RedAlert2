@@ -51,6 +51,28 @@ const SPAN_SAMPLES: usize = 32_768;
 
 const STEREO: NonZero<u16> = NonZero::new(2).unwrap();
 
+#[cfg(not(test))]
+type MusicOutput = MixerDeviceSink;
+
+// Control-state regressions use rodio's offline mixer. Opening devices from
+// short-lived Windows test threads can outlive CPAL's cached COM apartment:
+// https://github.com/RustAudio/cpal/issues/1302.
+#[cfg(test)]
+enum MusicOutput {
+    Device(MixerDeviceSink),
+    Offline(rodio::mixer::Mixer),
+}
+
+#[cfg(test)]
+impl MusicOutput {
+    fn mixer(&self) -> &rodio::mixer::Mixer {
+        match self {
+            Self::Device(device) => device.mixer(),
+            Self::Offline(mixer) => mixer,
+        }
+    }
+}
+
 /// The device-thread end of the Theme stream: rodio pulls the song from it,
 /// decoding it as it plays (see [`PreparedTrack`]).
 struct MusicStream {
@@ -94,7 +116,7 @@ impl Source for MusicStream {
 
 pub struct MusicPlayer {
     /// rodio mixer device sink — must be kept alive or all audio stops.
-    _device: MixerDeviceSink,
+    _device: MusicOutput,
     current_player: Option<Player>,
     volume: f64,
     /// The Theme stream's own `+0x10` interp (`stream+0x14 -> +0x10`), built
@@ -117,14 +139,26 @@ impl MusicPlayer {
         let device = DeviceSinkBuilder::open_default_sink()
             .map_err(|error| log::error!("Failed to initialize music audio: {error}"))
             .ok()?;
-        Some(Self {
+        #[cfg(test)]
+        let device = MusicOutput::Device(device);
+        Some(Self::with_output(device))
+    }
+
+    fn with_output(device: MusicOutput) -> Self {
+        Self {
             _device: device,
             current_player: None,
             volume: DEFAULT_SCORE_VOLUME,
             own: VolumeInterp::new(VOLUME_SCALE, 0),
             focus_output_scale: 1.0,
             paused: false,
-        })
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn offline_for_test() -> (Self, rodio::mixer::MixerSource) {
+        let (mixer, source) = rodio::mixer::mixer(STEREO, NonZero::new(22_050).unwrap());
+        (Self::with_output(MusicOutput::Offline(mixer)), source)
     }
 
     pub(crate) fn state(&self) -> MusicOutputState {
@@ -271,9 +305,7 @@ mod tests {
     /// (`0x00407E7D`), and a Theme fade on it reports `Ramping` until silent.
     #[test]
     fn a_new_file_resets_the_interp_every_fade_shares() {
-        let Some(mut player) = MusicPlayer::new() else {
-            return;
-        };
+        let (mut player, _output) = MusicPlayer::offline_for_test();
         player.fade_stream_out(0);
         player.tick_stream_volume(1_001);
         assert_eq!(player.own.value(), 0);
