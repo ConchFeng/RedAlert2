@@ -4,6 +4,13 @@ use anyhow::{Context, Result};
 
 const DIRECTORY: &str = "sdmc:/switch/vera20k";
 
+// C diagnostics use the same persistent logger as the client.
+#[unsafe(no_mangle)]
+unsafe extern "C" fn platform_fps_log(message: *const std::ffi::c_char) {
+    let message = unsafe { std::ffi::CStr::from_ptr(message) };
+    log::info!(target: "switch::fps", "{}", message.to_string_lossy());
+}
+
 unsafe extern "C" {
     fn platform_console_init();
     fn platform_applet_type() -> i32;

@@ -1,6 +1,7 @@
 #include <switch.h>
 #include <stddef.h>
 #include <stdatomic.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -27,16 +28,37 @@ typedef struct {
 _Static_assert(sizeof(FpsPrefix) == 174, "NX-FPS prefix layout");
 _Static_assert(offsetof(FpsPrefix, frames) == 165, "NX-FPS frame counter layout");
 
-enum { PAGE_BYTES = 0x1000, BLOCK_BYTES = 310, FPS_MAGIC = 0x465053 };
+enum { PAGE_BYTES = 0x1000, METADATA_BYTES = 4, BLOCK_BYTES = 310, FPS_MAGIC = 0x465053 };
 static SharedMemory memory;
 static volatile FpsPrefix *block;
-static u64 observe_until, observed_frames, previous, window_start, filtered_ticks, own_frames;
+static u64 observe_until, observed_frames, previous, window_start, filtered_ticks, own_frames, retry_thread_at;
 static _Atomic(FpsPrefix *) published;
 static Thread connector;
 static bool connector_started, candidate_reused;
 static u32 observed_tick;
 static unsigned window_frames, tick_index;
-static bool observing, external_writer, logged_missing;
+static bool observing, external_writer, logged_report;
+
+extern void platform_fps_log(const char *message);
+
+static void fps_log(const char *format, ...) {
+    char message[256];
+    va_list args;
+    va_start(args, format);
+    vsnprintf(message, sizeof(message), format, args);
+    va_end(args);
+    platform_fps_log(message);
+}
+
+static void connection_failure(const char *stage, Result result) {
+    static const char *last_stage;
+    static Result last_result;
+    if (stage != last_stage || result != last_result) {
+        fps_log("%s failed: 0x%x; retrying in 5 seconds", stage, result);
+        last_stage = stage;
+        last_result = result;
+    }
+}
 
 static FpsPrefix *connect_page(void) {
     FpsPrefix *candidate = NULL;
@@ -44,10 +66,7 @@ static FpsPrefix *connect_page(void) {
     Handle port = INVALID_HANDLE;
     Result result = svcConnectToNamedPort(&port, "SaltySD");
     if (R_FAILED(result)) {
-        if (!logged_missing) {
-            fprintf(stderr, "[fps] SaltySD unavailable: 0x%x; reporting optional\n", result);
-            logged_missing = true;
-        }
+        connection_failure("connect SaltySD", result);
         return NULL;
     }
     Service service = { .session = port };
@@ -58,12 +77,17 @@ static FpsPrefix *connect_page(void) {
         if (R_SUCCEEDED(result)) {
             shmemLoadRemote(&memory, handle, PAGE_BYTES, Perm_Rw);
             result = shmemMap(&memory);
-            if (R_FAILED(result)) shmemClose(&memory);
+            if (R_FAILED(result)) {
+                connection_failure("map shared page", result);
+                shmemClose(&memory);
+            }
+        } else {
+            connection_failure("get shared handle (command 7)", result);
         }
     }
     u8 *base = shmemGetAddr(&memory);
     if (base) {
-        for (size_t offset = 0; offset + sizeof(FpsPrefix) <= PAGE_BYTES; offset += 4) {
+        for (size_t offset = METADATA_BYTES; offset + sizeof(FpsPrefix) <= PAGE_BYTES; offset += 4) {
             u32 magic;
             memcpy(&magic, base + offset, sizeof(magic));
             if (magic == FPS_MAGIC) {
@@ -73,21 +97,31 @@ static FpsPrefix *connect_page(void) {
             }
         }
         if (!candidate) {
-            const u64 size = BLOCK_BYTES;
+            // A non-injected app can receive offset 0. The first word holds
+            // SaltyNX operation-mode/refresh metadata, so leave a word before
+            // our block even when no injected core has reserved it for us.
+            const u64 size = METADATA_BYTES + BLOCK_BYTES;
             u64 offset = UINT64_MAX;
             result = serviceDispatchInOut(&service, 6, size, offset, .in_send_pid = true);
-            if (R_SUCCEEDED(result) && offset <= PAGE_BYTES - BLOCK_BYTES && offset % 4 == 0) {
-                memset(base + offset, 0, BLOCK_BYTES);
-                candidate = (FpsPrefix *)(base + offset);
+            if (R_SUCCEEDED(result) && offset <= PAGE_BYTES - size && offset % 4 == 0) {
+                candidate = (FpsPrefix *)(base + offset + METADATA_BYTES);
+                memset(candidate, 0, BLOCK_BYTES);
                 candidate->expected_buffers = -1;
                 candidate->magic = FPS_MAGIC;
+            } else if (R_FAILED(result)) {
+                connection_failure("reserve shared block (command 6)", result);
+            } else {
+                fps_log("invalid shared block offset: 0x%llx", (unsigned long long)offset);
             }
         }
     }
-    const u64 zero = 0;
-    serviceDispatchIn(&service, 0, zero, .in_send_pid = true);
+    // SaltyNX closes command 0's session without replying (0xf601 is expected).
+    serviceDispatch(&service, 0, .in_send_pid = true);
     svcCloseHandle(port);
-    if (candidate) fprintf(stderr, "[fps] SaltyNX shared page mapped\n");
+    if (candidate) {
+        fps_log("shared page mapped: offset=0x%zx, %s block",
+            (size_t)((u8 *)candidate - base), candidate_reused ? "existing" : "new");
+    }
     return candidate;
 }
 
@@ -110,18 +144,23 @@ void platform_report_present(u32 width, u32 height) {
     if (block && block->magic != FPS_MAGIC) {
         block = NULL;
         observing = external_writer = false;
+        logged_report = false;
         previous = window_start = 0;
         window_frames = tick_index = 0;
         atomic_store_explicit(&published, NULL, memory_order_release);
     }
-    if (!connector_started) {
-        connector_started = true;
+    if (!connector_started && now >= retry_thread_at) {
+        fps_log("starting shared FPS reporter (%ux%u)", width, height);
         Result result = threadCreate(&connector, connector_main, NULL, NULL, 0x8000, 0x2c, -2);
         if (R_SUCCEEDED(result)) {
             result = threadStart(&connector);
             if (R_FAILED(result)) threadClose(&connector);
         }
-        if (R_FAILED(result)) fprintf(stderr, "[fps] background connector failed: 0x%x\n", result);
+        connector_started = R_SUCCEEDED(result);
+        if (R_FAILED(result)) {
+            retry_thread_at = now + 5 * frequency;
+            fps_log("background connector failed: 0x%x; retrying in 5 seconds", result);
+        }
     }
     if (!block) {
         block = atomic_load_explicit(&published, memory_order_acquire);
@@ -136,10 +175,10 @@ void platform_report_present(u32 width, u32 height) {
         if (block->frames != observed_frames || block->ticks[0] != observed_tick) {
             external_writer = true;
             observing = false;
-            fprintf(stderr, "[fps] existing NX-FPS producer active; leaving reporting to it\n");
+            fps_log("existing NX-FPS producer active; leaving reporting to it");
         } else if (now >= observe_until) {
             observing = false;
-            fprintf(stderr, "[fps] reusing inactive NX-FPS block\n");
+            fps_log("reusing inactive NX-FPS block");
         } else {
             return;
         }
@@ -147,7 +186,7 @@ void platform_report_present(u32 width, u32 height) {
     if (external_writer) return;
     if (previous && block->frames != own_frames) {
         external_writer = true;
-        fprintf(stderr, "[fps] another producer started; relinquishing shared block\n");
+        fps_log("another producer started; relinquishing shared block");
         return;
     }
     if (!previous) {
@@ -171,6 +210,12 @@ void platform_report_present(u32 width, u32 height) {
     if (now - window_start >= frequency) {
         const double fps = (double)(window_frames - 1) * frequency / (now - window_start);
         block->fps = fps > 254 ? 254 : (u8)(fps + 0.5);
+        if (!logged_report) {
+            fps_log("publishing FPS=%u average=%.2f resolution=%ux%u frames=%llu",
+                block->fps, (double)block->average, width, height,
+                (unsigned long long)own_frames);
+            logged_report = true;
+        }
         window_start = now;
         window_frames = 1;
     }

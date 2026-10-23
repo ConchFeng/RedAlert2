@@ -1,7 +1,7 @@
 # VERA20k Switch 移植
 
 这是原生 Horizon / 大气层移植入口，独立 Cargo workspace，不改变桌面客户端的依赖和锁文件。
-当前分支：`feature/switch-port`，上游基线：`0516477e7`。
+当前分支：`feature/switch-port`，上游基线：`36d6d3a33`。
 
 当前状态与验证证据见 [HANDOFF.md](HANDOFF.md)，后续执行顺序和验收条件见
 [PLAN.md](PLAN.md)。用户已确认上一版真机有声音；后续交付资源内置 NSP，
@@ -10,9 +10,9 @@
 也已从空 SD 资源目录启动并进入遭遇战。完整战术操作与新版真机验收尚未完成；
 下方早期检查点中的限制以 HANDOFF 顶部当前结论为准。
 
-上游 `main` 已同步到 `0516477e7`。安装版 NSP 的 `appletInitialize 0x3f59`
+上游 `main` 已同步到 `36d6d3a33`。安装版 NSP 的 `appletInitialize 0x3f59`
 已定位为 NPDM 服务白名单缺项，现改为安装客户端 wildcard 服务权限并重新打包；
-新包尚未在真机复测，不能提前标记为已修复。
+用户已确认新包真机可以正常进入；外部插件 FPS 读数仍待定位。
 
 ## 完整客户端入口（接入中）
 
@@ -34,7 +34,7 @@ python3 build.py --client
 窗口后端来源与当前手柄映射见 [winit-horizon/UPSTREAM.md](winit-horizon/UPSTREAM.md)。
 
 完整客户端的 NSP 主机菜单图标和 NRO 图标统一使用 `icon.jpg`，来自用户提供的
-VERA20K Rust 标志，已转为 256×256 RGB JPEG。下次构建会自动使用该图标。
+VERA20K Rust 标志，已转为 256×256 RGB JPEG，2026-10-24 构建已实际使用。
 
 ## 把游戏资源一起打入 NSP
 
@@ -53,9 +53,9 @@ python3 build.py --client --nsp \
 
 资源版产物为 `dist/vera20k-client-assets.nsp`，独立于不含资源的
 `dist/vera20k-client.nsp`；两者标题 ID 相同，不是两个可同时安装的游戏。
-当前本机约 748 MiB 的资源生成 803,004,120 字节（约 766 MiB）的 NSP，
+2026-10-24 构建中，本机约 748 MiB 的资源生成 803,046,104 字节（约 766 MiB）的 NSP，
 SHA256 为
-`4ef00f71c4da3764ad89c0e6803fc24ee7c2fe2c76f509f5e6dcb03ed0404f8b`。
+`fd29c9984949ca3c9b0369f0f830b7eeaf35891fc42ae8958eb942ce4141aef0`。
 本次命令也更新 NRO，但 NRO 本身不内置这些资源。
 
 客户端挂载 `romfs:/`；没有配置覆盖时优先从包内读取资源，找不到包内资源时
@@ -75,6 +75,20 @@ SHA256 为
 Horizon 对局呈现设置 30 FPS 上限；不改变屏幕刷新率。所有呈现路径都接入
 SaltyNX 共享页上报，无服务时跳过；已有 NX-FPS 上报者活跃时交由它负责。
 外部插件读数、实际帧率及用户存档隔离仍需用最终 NSP 在真机确认。
+
+FPS 上报诊断记录在 `logs/client.log`，日志目标为 `switch::fps`，包括共享页连接、
+IPC/映射错误和首次有效读数。缺少 SaltyNX 不阻止启动，后台每 5 秒重试。
+主机上的针对性 C 检查可从仓库根运行：
+
+```bash
+cc -std=gnu11 -Wall -Wextra -Werror -Iplatform/switch/tests/include \
+  platform/switch/tests/fps_report_test.c -o /tmp/vera-fps-test
+/tmp/vera-fps-test retry
+/tmp/vera-fps-test publish
+/tmp/vera-fps-test publish-offset
+```
+
+这些检查验证上报器的状态和字段写入，不能代替真机插件读数验收。
 
 资源打包不会补齐源目录缺少的音乐或影片。本机目录缺少主题音乐资源；
 随机地图生成仍有向资源目录写 `RandMap.Sed` / 预览文件的路径，在只读 RomFS
