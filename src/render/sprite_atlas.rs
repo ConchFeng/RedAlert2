@@ -35,9 +35,17 @@ use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps};
 use crate::rules::projectile_type::ProjectileType;
 use crate::rules::ruleset::RuleSet;
 
-/// Edge of a growth page: 16 MiB of palette indices, room for the sprites of
-/// about ten new (type, house colour) pairs.
-const GROWTH_PAGE_SIZE: u32 = 4096;
+/// Growth pages are sized to the refresh that opens them, between these
+/// edges. One byte per palette index makes the floor 4 MB, several times the
+/// sprites of a new (type, house colour) pair, so small refreshes keep
+/// sharing the page they append to rather than each opening one. The cap is
+/// the fixed 4096 edge every growth page used to have, so no refresh
+/// allocates a larger texture than before. A quarter of that area per page
+/// means up to four times as many pages for the same sprites; entry page
+/// indices are `u8`, and the retail timing witness and a long campaign stay
+/// far below that, with `atlas_entry` reporting a sprite it cannot index.
+const GROWTH_PAGE_FLOOR: u32 = 2048;
+const GROWTH_PAGE_CAP: u32 = 4096;
 const INFANTRY_FACING_STEP: u8 = crate::util::direction::FACING_UNITS_PER_DIRECTION;
 const INFANTRY_FACING_BUCKETS: u8 = 8;
 /// The shadow InfantryClass::DrawIt draws under an airborne infantry: the
@@ -786,9 +794,9 @@ impl SpriteAtlas {
     }
 
     /// Place sprites rendered after the map-load pack on growth pages and
-    /// upload the rows they fill, one write per page and texture. A sprite
-    /// no page can hold is remembered as unrenderable. `palettes` is this
-    /// atlas's palette registry with the rows the sprites registered.
+    /// upload the rows they fill in bounded bands, one texture write per band.
+    /// A sprite no page can hold is remembered as unrenderable. `palettes` is
+    /// this atlas's palette registry with the rows the sprites registered.
     fn append_sprites(
         &mut self,
         device: &wgpu::Device,
@@ -823,9 +831,10 @@ impl SpriteAtlas {
             &mut self.growth,
             sprites,
             |sprite| [sprite.width, sprite.height],
+            GROWTH_PAGE_FLOOR,
+            GROWTH_PAGE_CAP,
             max_dim,
-            |[width, height]| {
-                let size = [width, height].map(|side| GROWTH_PAGE_SIZE.max(side).min(max_dim));
+            |size| {
                 let (texture, source_indices) =
                     batch.create_indexed_page(device, size[0], size[1], &palette_rows);
                 pages.push(SpriteAtlasPage { texture });
@@ -837,13 +846,30 @@ impl SpriteAtlas {
         );
         for group in placed {
             let texture = &self.pages[group.page].texture;
-            write_sprite_band(
-                queue,
-                &self.growth_indices[&group.page],
-                group
-                    .sprites
-                    .iter()
-                    .map(|(origin, sprite)| (*origin, sprite)),
+            let indices = &self.growth_indices[&group.page];
+            let sprites = &group.sprites;
+            atlas_growth::write_group_bands(
+                sprites,
+                |sprite| [sprite.width, sprite.height],
+                u64::from(texture.width),
+                PACK_BAND_BYTES,
+                |band| {
+                    write_sprite_band(
+                        queue,
+                        indices,
+                        band.iter().map(|(origin, sprite)| (*origin, *sprite)),
+                    );
+                    // The pack path waits per band so one staging copy is
+                    // retired before the next is gathered; growth bands are
+                    // the same upload in the same driver.
+                    let submission = queue.submit(std::iter::empty());
+                    if let Err(error) = device.poll(wgpu::PollType::Wait {
+                        submission_index: Some(submission),
+                        timeout: Some(PACK_BAND_TIMEOUT),
+                    }) {
+                        log::warn!("Sprite atlas upload could not wait for the GPU: {error:?}");
+                    }
+                },
             );
             let page_size = [texture.width, texture.height];
             for (origin, sprite) in group.sprites {

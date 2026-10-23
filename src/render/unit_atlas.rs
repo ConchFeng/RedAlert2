@@ -33,9 +33,13 @@ use crate::render::batch::{BatchRenderer, BatchTexture};
 use crate::render::vxl_raster::{self, VxlRenderParams, VxlSprite};
 use crate::rules::ruleset::RuleSet;
 
-/// Edge of a growth page. One byte per texel makes it 64 MB, room for the
-/// every-slope sprite set of a few new vehicle types.
-const GROWTH_PAGE_SIZE: u32 = 8192;
+/// Growth pages are sized to the refresh that opens them, between these
+/// edges. One byte per texel makes the floor 4 MB — several times the sprites
+/// of one new vehicle type — so small refreshes keep sharing a page, and the
+/// cap is the fixed 8192 edge every growth page used to have, so no refresh
+/// ever allocates a larger texture than before.
+const GROWTH_PAGE_FLOOR: u32 = 2048;
+const GROWTH_PAGE_CAP: u32 = 8192;
 /// Keep texture upload staging allocations bounded on NVK/Horizon. Large
 /// one-shot R8 writes have produced blank or partially resident unit atlases.
 const PACK_BAND_BYTES: u64 = 4 << 20;
@@ -622,7 +626,9 @@ impl UnitAtlas {
     }
 
     /// Place sprites rendered after the map-load pack on growth pages and
-    /// upload the rows they fill, one write per page.
+    /// upload the rows they fill in bounded bands, so a refresh neither
+    /// allocates a page it does not need nor stages a whole page's rows at
+    /// once.
     fn append_sprites(
         &mut self,
         device: &wgpu::Device,
@@ -648,9 +654,10 @@ impl UnitAtlas {
             &mut self.growth,
             sprites,
             |sprite| [sprite.width, sprite.height],
+            GROWTH_PAGE_FLOOR,
+            GROWTH_PAGE_CAP,
             max_dim,
-            |[width, height]| {
-                let size = [width, height].map(|side| GROWTH_PAGE_SIZE.max(side).min(max_dim));
+            |size| {
                 let texture = batch.create_blank_unit_atlas_texture(device, size[0], size[1]);
                 pages.push(UnitAtlasPage { texture });
                 let page = pages.len() - 1;
@@ -660,14 +667,28 @@ impl UnitAtlas {
         );
         for group in placed {
             let texture = &self.pages[group.page].texture;
-            let rects: Vec<_> = group
-                .sprites
-                .iter()
-                .map(|(origin, sprite)| (*origin, [sprite.width, sprite.height]))
-                .collect();
-            atlas_growth::write_band(queue, texture.view.texture(), 1, &rects, |i| {
-                group.sprites[i].1.pixels.as_slice()
-            });
+            // One band at a time, each submitted before the next is gathered,
+            // so the upload holds at most `PACK_BAND_BYTES` of staging. The
+            // whole refresh used to be one write of every row the sprites
+            // span, across the page's full width.
+            let sprites = &group.sprites;
+            let view = texture.view.texture();
+            atlas_growth::write_group_bands(
+                sprites,
+                |sprite| [sprite.width, sprite.height],
+                u64::from(texture.width),
+                PACK_BAND_BYTES,
+                |band| {
+                    let rects: Vec<_> = band
+                        .iter()
+                        .map(|(origin, sprite)| (*origin, [sprite.width, sprite.height]))
+                        .collect();
+                    atlas_growth::write_band(queue, view, 1, &rects, |i| {
+                        band[i].1.pixels.as_slice()
+                    });
+                    settle_band_upload(device, queue);
+                },
+            );
             let page_size = [texture.width, texture.height];
             for (origin, sprite) in group.sprites {
                 let entry = unit_entry(&sprite, origin, group.page, page_size);
@@ -683,6 +704,18 @@ impl UnitAtlas {
                 sprite.height,
             );
         }
+    }
+}
+
+/// Block until the band just written has executed, retiring its staging copy
+/// before the next is gathered. The map-load pack path waits the same way.
+fn settle_band_upload(device: &wgpu::Device, queue: &wgpu::Queue) {
+    let submission = queue.submit(std::iter::empty());
+    if let Err(error) = device.poll(wgpu::PollType::Wait {
+        submission_index: Some(submission),
+        timeout: Some(PACK_BAND_TIMEOUT),
+    }) {
+        log::error!("Unit atlas upload could not wait for the GPU: {error:?}");
     }
 }
 
@@ -2160,13 +2193,7 @@ fn upload_unit_atlas_shelves(
         atlas_growth::write_band(queue, texture, 1, &rects, |index| {
             &sprites[band[index].sprite_index].pixels
         });
-        let submission = queue.submit(std::iter::empty());
-        if let Err(error) = device.poll(wgpu::PollType::Wait {
-            submission_index: Some(submission),
-            timeout: Some(PACK_BAND_TIMEOUT),
-        }) {
-            log::error!("Unit atlas upload could not wait for the GPU: {error:?}");
-        }
+        settle_band_upload(device, queue);
         rest = tail;
     }
 }
