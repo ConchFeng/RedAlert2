@@ -31,6 +31,7 @@ use std::num::NonZero;
 use std::sync::Arc;
 
 use rodio::buffer::SamplesBuffer;
+use rodio::mixer::Mixer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 
 use crate::assets::asset_manager::AssetManager;
@@ -1222,8 +1223,11 @@ impl PlaybackService for PendingSampleService<'_> {
 /// Shared ordinary Voc pool for effects and per-Techno acknowledgements,
 /// plus the separate EVA streaming output.
 pub struct SfxPlayer {
-    /// rodio mixer device sink — must be kept alive or all audio stops.
-    _device: MixerDeviceSink,
+    /// rodio mixer device sink — `None` when the app owns one shared output
+    /// for music and SFX (Horizon's audren allows one stream per process).
+    _device: Option<MixerDeviceSink>,
+    /// Mixer this player's sources connect to.
+    mixer: Mixer,
     /// The decision half: channel pool, `Priority=`, `Limit=`, pre-delay,
     /// looping leash, ramps and the many-sounds limiter.
     arbiter: SoundArbiter,
@@ -1314,9 +1318,12 @@ fn sfx_buffer_frames(sample_rate: u32, supported: &rodio::cpal::SupportedBufferS
     }
 }
 
-/// Open the default output with [`sfx_buffer_frames`], falling back to
-/// rodio's own default sink when the device refuses that period.
-fn open_sfx_sink() -> Result<MixerDeviceSink, rodio::DeviceSinkError> {
+/// Open the app's single output with [`sfx_buffer_frames`], falling back to
+/// rodio's own default buffer when the device refuses that period.
+///
+/// Horizon's audren renderer takes one stream per process, so the app opens
+/// this sink once and shares its mixer between music and SFX.
+pub(crate) fn open_output_sink() -> Result<MixerDeviceSink, rodio::DeviceSinkError> {
     use rodio::cpal::traits::{DeviceTrait, HostTrait};
 
     let low_latency = rodio::cpal::default_host()
@@ -1346,12 +1353,23 @@ fn open_sfx_sink() -> Result<MixerDeviceSink, rodio::DeviceSinkError> {
 impl SfxPlayer {
     /// Create a new SfxPlayer. Returns None if audio output cannot be opened.
     pub fn new() -> Option<Self> {
-        let device = open_sfx_sink()
+        let device = open_output_sink()
             .map_err(|e| log::error!("Failed to initialize SFX audio: {}", e))
             .ok()?;
+        let mixer = device.mixer().clone();
+        Some(Self::with_output(Some(device), mixer))
+    }
 
-        Some(Self {
-            _device: device,
+    /// Build an SFX player on an output sink owned elsewhere. Used when the
+    /// app shares one device stream between music and SFX.
+    pub(crate) fn from_mixer(mixer: Mixer) -> Self {
+        Self::with_output(None, mixer)
+    }
+
+    fn with_output(_device: Option<MixerDeviceSink>, mixer: Mixer) -> Self {
+        Self {
+            _device,
+            mixer,
             arbiter: SoundArbiter::new(0),
             coordinate_requests: Vec::with_capacity(MAX_COORDINATE_REQUESTS),
             next_coordinate_request: 1,
@@ -1371,7 +1389,7 @@ impl SfxPlayer {
             movie_held: false,
             voc_enabled: true,
             chrono_screen_active: false,
-        })
+        }
     }
 
     fn output_scales(&self) -> SfxOutputScales {
@@ -2047,7 +2065,7 @@ impl SfxPlayer {
         self.vox.current().map(|node| node.event.as_str())
     }
     pub(crate) fn mixer(&self) -> &rodio::mixer::Mixer {
-        self._device.mixer()
+        &self.mixer
     }
 
     /// Whether the announcement stream has audio left to play
@@ -2142,7 +2160,7 @@ impl SfxPlayer {
         let channels = NonZero::new(decoded.channels)?;
         let sample_rate = NonZero::new(decoded.sample_rate)?;
         let source = SamplesBuffer::new(channels, sample_rate, decoded.samples);
-        let player: Player = Player::connect_new(self._device.mixer());
+        let player: Player = Player::connect_new(self.mixer());
         let output = LiveSfxOutput::new(player, gain, initial_volume);
         output.player.append(source);
         Some(output)
@@ -2287,16 +2305,17 @@ impl SfxPlayer {
             buffer_linear: shifts.volume_linear(),
             channel: pending.channel,
         };
+        let mixer = self.mixer.clone();
         let player = if let Some(observer) = self
             .pcm_observer
             .as_mut()
             .filter(|observer| observer.contains(token))
         {
             observer
-                .connect_player(token, self._device.mixer(), now_ms)
+                .connect_player(token, &mixer, now_ms)
                 .expect("observed event")
         } else {
-            Player::connect_new(self._device.mixer())
+            Player::connect_new(&mixer)
         };
         let mut output = LiveSfxOutput::new(player, gain, gain.effective(self.output_scales()));
         output.token = Some(token);

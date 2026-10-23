@@ -376,6 +376,37 @@ pub fn screen_to_cell_tactical_inverse(
     }
 }
 
+/// Shared owner for world-space point -> map-cell resolution in the app layer.
+///
+/// Any app code that already has world coordinates should use this instead of
+/// re-calling the tactical inverse inline.
+pub fn world_point_to_cell(
+    world_x: f32,
+    world_y: f32,
+    cells: Option<&dyn TacticalCellLookup>,
+) -> (u16, u16) {
+    let inverse = screen_to_cell_tactical_inverse(
+        world_x,
+        world_y,
+        TacticalInverseContext {
+            cells,
+            viewport_offset_x: 0.0,
+            viewport_offset_y: 0.0,
+        },
+    );
+    let (iso_rx, iso_ry) = match inverse {
+        TacticalInverseResult::Cell { rx, ry } | TacticalInverseResult::Fallback { rx, ry } => {
+            (rx, ry)
+        }
+    };
+    (
+        // Current Rust app callers expect a concrete in-map cell. Keep this
+        // clamp isolated here until off-map sentinel behavior is modeled.
+        iso_rx.round().max(0.0) as u16,
+        iso_ry.round().max(0.0) as u16,
+    )
+}
+
 fn rounded_lookup_cell(rx: f32, ry: f32) -> Option<(u16, u16)> {
     if !rx.is_finite() || !ry.is_finite() || rx < 0.0 || ry < 0.0 {
         return None;

@@ -4,8 +4,8 @@
 pub(crate) mod eva_producers;
 mod frame_effects;
 pub(crate) mod frame_pacer;
-pub(crate) mod network_match;
 pub(crate) mod network_failure;
+pub(crate) mod network_match;
 pub(crate) mod scenario_exit;
 pub(crate) mod scenario_pause;
 pub(crate) mod session;

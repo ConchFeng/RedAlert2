@@ -23,6 +23,7 @@ pub use layout_spec::{SidebarChromeLayoutSpec, SidebarTheme};
 pub use power_bar_anim::PowerBarAnimState;
 pub(crate) use sidebar_view::ArmedSidebarEntry;
 pub(crate) use sidebar_view::build_sidebar_view_with_spec;
+pub(crate) use sidebar_view::build_sidebar_view_for_frontend;
 pub(crate) use sidebar_view::{CameoFactoryStatus, ObjectCameoDrawInputs, draw_object_cameo};
 
 /// Cameo hit zones are fixed 60×48 (`6A8220`), independent of artwork size.

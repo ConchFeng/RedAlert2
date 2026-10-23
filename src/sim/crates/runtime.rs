@@ -447,7 +447,8 @@ mod tests {
             let grid = sim.overlay_grid.as_mut().expect("grid");
             grid.place_overlay(15, 15, wood, 0xFF);
             grid.place_overlay(16, 15, tiberium, 3);
-            grid.cell_mut_for_test(15, 15).wall_owner = Some(crate::sim::intern::InternedId::from_index(5));
+            grid.cell_mut_for_test(15, 15).wall_owner =
+                Some(crate::sim::intern::InternedId::from_index(5));
             let _ = grid.take_dirty_cells();
         }
 
@@ -775,5 +776,4 @@ mod tests {
             "a paused-crates session never regenerates"
         );
     }
-
 }

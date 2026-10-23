@@ -4,6 +4,7 @@
 //! before choosing an SHP or voxel rasterizer. Keep that decision in
 //! one CPU descriptor so the two atlas paths cannot disagree.
 
+use crate::rules::house_colors::{self, HouseColorIndex};
 use crate::sim::game_entity::GameEntity;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -416,6 +417,18 @@ fn opacity_for_selector_bits(bits: u8) -> f32 {
         TRANSLUCENCY_50 => 0.5,
         TRANSLUCENCY_75 => 0.25,
         _ => 1.0,
+    }
+}
+
+/// Map a HouseColorIndex to the per-house ramp row index in PaletteSet's
+/// house_ramp_tex. Row 0 is the no-remap fallback (mirrors the theater
+/// palette's [16, 32) range); civilian/neutral units (`NO_REMAP`) map to
+/// row 0. Real players occupy rows 1..N (the +1 reserves row 0).
+pub fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
+    if hc == house_colors::NO_REMAP {
+        0
+    } else {
+        (hc.0 as u32) + 1
     }
 }
 

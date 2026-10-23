@@ -24,9 +24,12 @@ use crate::render::native_z::{
 use crate::render::sprite_atlas::ShpSpriteKey;
 use crate::render::tactical_draw_plan::RenderZPolicy;
 use crate::render::unit_atlas::{
-    UnitSpriteEntry, UnitSpriteKey, VxlLayer, canonical_turret_facing, canonical_unit_facing,
+    UnitSpriteEntry, UnitSpriteKey, VxlLayer, atlas_get_with_frame_fallback,
+    canonical_turret_facing, canonical_unit_facing,
 };
-use crate::rules::house_colors::{self, HouseColorIndex};
+pub(super) use crate::render::unit_parts::native_turret_barrel_order;
+use crate::render::unit_parts::{CompositeDrawBounds, composite_draw_bounds};
+use crate::rules::house_colors::HouseColorIndex;
 use crate::rules::voxel_frame_catalog::{
     NO_SPAWN_ALT_SUFFIX, draws_turret_parts, voxel_turret_index,
 };
@@ -41,9 +44,6 @@ mod naval_draw_tests;
 #[cfg(test)]
 #[path = "unit_body_draw_tests.rs"]
 mod unit_body_draw_tests;
-
-const NATIVE_TURRET_FIRST_START: u8 = 32;
-const NATIVE_TURRET_FIRST_END_EXCLUSIVE: u8 = 160;
 
 /// `extra_light` is the class's
 /// [`crate::app::presentation::lighting::body_extra_light`].
@@ -727,42 +727,7 @@ enum BodyDraw {
     Composite,
 }
 
-/// Unit DrawVoxelBody73B4DA..73B50E and `AircraftClass::Draw_It`
-/// (`0x004145B0..0x004145DB`) divide the persistent Foot+538 counter by the
-/// selected model's main HVA frame count. The object's original model may
-/// have a different count (SCHP has two frames, deployed SCHD has one). When
-/// that signed remainder is zero, a Unit's turret takes Techno+148 modulo its
-/// own HVA count; an aircraft draws its main voxel alone. Negative remainders
-/// retain their bits in the atlas key; invalid frame indices have no sprite.
-/// Native vectors: tools/spatial_oracle/unit_simple_deploy.json draw_frames
-/// and aircraft_draw_frames. Aircraft also includes this remainder in its
-/// shadow cache key (414728); its shadow uses HVA frame0 and ShadowIndex
-/// separately.
-fn unit_animation_frames(
-    entity: &crate::sim::game_entity::GameEntity,
-    model: &str,
-    turret_index: i32,
-    frame_counts: &std::collections::BTreeMap<(String, VxlLayer, i32), u32>,
-) -> (u32, u32) {
-    let frames = frame_counts
-        .get(&(model.to_string(), VxlLayer::Body, 0))
-        .or_else(|| frame_counts.get(&(model.to_string(), VxlLayer::Composite, 0)))
-        .copied()
-        .unwrap_or(1)
-        .max(1);
-    let body = ((entity.body_frame_counter.get() as i32) % frames as i32) as u32;
-    let turret = if body != 0 || entity.turret_anim_frame.frame() == 0 {
-        body
-    } else {
-        frame_counts
-            .get(&(model.to_string(), VxlLayer::Turret, turret_index))
-            .filter(|&&frames| frames > 1)
-            .map_or(0, |&frames| {
-                (entity.turret_anim_frame.frame() % frames as i32) as u32
-            })
-    };
-    (body, turret)
-}
+use crate::render::unit_atlas::unit_animation_frames;
 
 /// The voxel model one Unit or Aircraft body is drawn from this frame.
 ///
@@ -1060,81 +1025,6 @@ fn turret_images_cached(
         && !entity.rocking.as_ref().is_some_and(|rocking| {
             crate::map::voxel_pose::voxel_tilt_applies(rocking.angles_native())
         })
-}
-
-/// Return the native local draw order for a Unit's independently rendered
-/// turret and barrel pieces.
-///
-/// gamemd-derived: active YR `UnitClass__DrawVoxelBody @ 0x0073B470`, selector
-/// instructions `0x0073BC5B..0x0073BDAB`. Building draw43DA80 uses the same
-/// rounded-quadrant order (tools/voxel_oracle/building_barrel.json).
-pub(super) fn native_turret_barrel_order<T: Copy>(
-    turret_facing: u16,
-    turret: T,
-    barrel: T,
-) -> [T; 2] {
-    let facing_high = (turret_facing >> 8) as u8;
-    if (NATIVE_TURRET_FIRST_START..NATIVE_TURRET_FIRST_END_EXCLUSIVE).contains(&facing_high) {
-        [turret, barrel]
-    } else {
-        [barrel, turret]
-    }
-}
-
-/// Look up a unit sprite from the atlas with cascading fallbacks:
-/// 1. Try the exact key (slope + frame).
-/// 2. Fall back to frame 0 if the requested frame doesn't exist (mismatched HVA counts).
-/// 3. Fall back to slope_type=0 if the tilted sprite isn't in the atlas yet
-///    (unit just moved onto a ramp and the atlas hasn't rebuilt).
-/// 4. Fall back to a level barrel if the pitched one isn't in the atlas.
-///
-/// This prevents units from disappearing during atlas rebuilds.
-fn atlas_get_with_frame_fallback<'a>(
-    atlas: &'a crate::render::unit_atlas::UnitAtlas,
-    key: &UnitSpriteKey,
-) -> Option<&'a crate::render::unit_atlas::UnitSpriteEntry> {
-    atlas.get(key).or_else(|| {
-        // Fallback 1: try frame 0 with same slope.
-        if key.frame > 0 {
-            let fallback = UnitSpriteKey {
-                frame: 0,
-                ..key.clone()
-            };
-            if let Some(entry) = atlas.get(&fallback) {
-                return Some(entry);
-            }
-        }
-        // Fallback 2: try slope_type=0 (flat) with original frame.
-        if key.slope_type != 0 {
-            let flat_key = UnitSpriteKey {
-                slope_type: 0,
-                ..key.clone()
-            };
-            if let Some(entry) = atlas.get(&flat_key) {
-                return Some(entry);
-            }
-            // Fallback 3: slope_type=0 + frame 0.
-            if key.frame > 0 {
-                let flat_frame0 = UnitSpriteKey {
-                    slope_type: 0,
-                    frame: 0,
-                    ..key.clone()
-                };
-                if let Some(entry) = atlas.get(&flat_frame0) {
-                    return Some(entry);
-                }
-            }
-        }
-        // Fallback 4: the level barrel, through the same chain.
-        if key.barrel_pitch != 0 {
-            let level = UnitSpriteKey {
-                barrel_pitch: 0,
-                ..key.clone()
-            };
-            return atlas_get_with_frame_fallback(atlas, &level);
-        }
-        None
-    })
 }
 
 fn stable_slope_for_key(slope_state: UnitRenderSlopeState) -> u8 {
@@ -1633,16 +1523,6 @@ fn unit_draw_anchor(
     admitted.then_some([x, y - f32::from(entity.ion_blast_lift_pixels())])
 }
 
-/// One parent raster has separate atlas storage and native drawing bounds.
-/// Unit73BEA4's waterline and 73B140's split both consume the native union;
-/// atlas padding must not move either boundary. Unsplit depth retains its
-/// existing storage rectangle until that wider depth path is audited.
-#[derive(Clone, Copy)]
-struct CompositeDrawBounds {
-    padded: [f32; 2],
-    native: Option<[i32; 4]>,
-}
-
 impl CompositeDrawBounds {
     fn unit_waterline(
         self,
@@ -1657,42 +1537,6 @@ impl CompositeDrawBounds {
             // rectangle; an already retained +3CA still clips its body.
             cache.retained_clip(id)
         }
-    }
-
-    fn depth_rect(self, wants_split: bool) -> ([f32; 2], bool) {
-        if wants_split && let Some([_, y, _, height]) = self.native {
-            return ([y as f32, height as f32], true);
-        }
-        (self.padded, false)
-    }
-}
-
-fn composite_draw_bounds(
-    parts: impl IntoIterator<Item = (UnitSpriteEntry, [f32; 2])>,
-) -> CompositeDrawBounds {
-    let mut top = f32::INFINITY;
-    let mut bottom = f32::NEG_INFINITY;
-    let mut native = None;
-    let mut all_native = true;
-    for (entry, anchor) in parts {
-        top = top.min(anchor[1] + entry.offset_y);
-        bottom = bottom.max(anchor[1] + entry.offset_y + entry.pixel_size[1]);
-        if let Some(mut bounds) = entry.native_draw_bounds {
-            // Draw anchors are integer pixels in the native cached blit.
-            bounds[0] += anchor[0] as i32;
-            bounds[1] += anchor[1] as i32;
-            crate::render::vxl_raster::union_native_voxel_draw_bounds(&mut native, bounds);
-        } else {
-            all_native = false;
-        }
-    }
-    CompositeDrawBounds {
-        padded: if bottom > top {
-            [top, bottom - top]
-        } else {
-            [0.0, 0.0]
-        },
-        native: all_native.then_some(native).flatten(),
     }
 }
 
@@ -2108,17 +1952,7 @@ fn emit_harvest_overlay(
 /// shared production adapter. Hull, turret and barrel retain one composite seed.
 const VOXEL_Z_GRADIENT: u32 = pack_z_gradient(ZGradient::Vertical, false);
 
-/// Map a HouseColorIndex to the per-house ramp row index in PaletteSet's
-/// house_ramp_tex. Row 0 is the no-remap fallback (mirrors the theater
-/// palette's [16, 32) range); civilian/neutral units (`NO_REMAP`) map to
-/// row 0. Real players occupy rows 1..N (the +1 reserves row 0).
-pub(super) fn house_color_to_remap_row(hc: HouseColorIndex) -> u32 {
-    if hc == house_colors::NO_REMAP {
-        0
-    } else {
-        (hc.0 as u32) + 1
-    }
-}
+pub(super) use crate::render::draw_state::house_color_to_remap_row;
 
 #[cfg(test)]
 mod tests {
@@ -2550,23 +2384,6 @@ mod tests {
                     BodyDraw::Pose(PoseTilt::Rocket(pitch))
                 );
             }
-        }
-    }
-
-    #[test]
-    fn unit_vxl_piece_order_matches_native_selector_for_every_facing() {
-        for facing in 0..=u16::MAX {
-            let native_quadrant = ((((u32::from(facing) >> 13) + 1) >> 1) & 3) as u8;
-            let expected = if matches!(native_quadrant, 1 | 2) {
-                ["turret", "barrel"]
-            } else {
-                ["barrel", "turret"]
-            };
-            assert_eq!(
-                native_turret_barrel_order(facing, "turret", "barrel"),
-                expected,
-                "facing {facing:#06x}, native quadrant {native_quadrant}"
-            );
         }
     }
 

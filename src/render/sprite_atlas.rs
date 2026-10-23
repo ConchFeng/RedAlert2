@@ -2597,7 +2597,7 @@ pub(crate) use tests::{native_palette_probe_page, native_probe_rgb, palette_prob
 
 /// Index bytes of rows at which a map-load upload band closes. A band holds
 /// whole shelves, so it exceeds this by less than its last shelf.
-const PACK_BAND_BYTES: u64 = 64 << 20;
+const PACK_BAND_BYTES: u64 = 4 << 20;
 
 /// How long a map-load upload band waits for the GPU to retire its staging copy.
 const PACK_BAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
@@ -2788,7 +2788,7 @@ fn upload_shelves(
             submission_index: Some(submission_index),
             timeout: Some(PACK_BAND_TIMEOUT),
         }) {
-            log::warn!("Sprite atlas upload could not wait for the GPU: {error}");
+            log::warn!("Sprite atlas upload could not wait for the GPU: {error:?}");
         }
         rest = tail;
     }

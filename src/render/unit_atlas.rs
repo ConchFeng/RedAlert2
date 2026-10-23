@@ -36,6 +36,10 @@ use crate::rules::ruleset::RuleSet;
 /// Edge of a growth page. One byte per texel makes it 64 MB, room for the
 /// every-slope sprite set of a few new vehicle types.
 const GROWTH_PAGE_SIZE: u32 = 8192;
+/// Keep texture upload staging allocations bounded on NVK/Horizon. Large
+/// one-shot R8 writes have produced blank or partially resident unit atlases.
+const PACK_BAND_BYTES: u64 = 4 << 20;
+const PACK_BAND_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(10);
 /// Body/composite facing quantization step: 8 = 32 buckets (11.25° per bucket).
 ///
 /// This is not an atlas-size compromise — it is the renderer's real resolution. The
@@ -378,6 +382,99 @@ impl UnitAtlasDemand {
         self.air.extend(other.air);
         self.turrets.extend(other.turrets);
     }
+}
+
+/// Unit DrawVoxelBody73B4DA..73B50E and `AircraftClass::Draw_It`
+/// (`0x004145B0..0x004145DB`) divide the persistent Foot+538 counter by the
+/// selected model's main HVA frame count. The object's original model may
+/// have a different count (SCHP has two frames, deployed SCHD has one). When
+/// that signed remainder is zero, a Unit's turret takes Techno+148 modulo its
+/// own HVA count; an aircraft draws its main voxel alone. Negative remainders
+/// retain their bits in the atlas key; invalid frame indices have no sprite.
+/// Native vectors: tools/spatial_oracle/unit_simple_deploy.json draw_frames
+/// and aircraft_draw_frames. Aircraft also includes this remainder in its
+/// shadow cache key (414728); its shadow uses HVA frame0 and ShadowIndex
+/// separately.
+pub(crate) fn unit_animation_frames(
+    entity: &crate::sim::game_entity::GameEntity,
+    model: &str,
+    turret_index: i32,
+    frame_counts: &std::collections::BTreeMap<(String, VxlLayer, i32), u32>,
+) -> (u32, u32) {
+    let frames = frame_counts
+        .get(&(model.to_string(), VxlLayer::Body, 0))
+        .or_else(|| frame_counts.get(&(model.to_string(), VxlLayer::Composite, 0)))
+        .copied()
+        .unwrap_or(1)
+        .max(1);
+    let body = ((entity.body_frame_counter.get() as i32) % frames as i32) as u32;
+    let turret = if body != 0 || entity.turret_anim_frame.frame() == 0 {
+        body
+    } else {
+        frame_counts
+            .get(&(model.to_string(), VxlLayer::Turret, turret_index))
+            .filter(|&&frames| frames > 1)
+            .map_or(0, |&frames| {
+                (entity.turret_anim_frame.frame() % frames as i32) as u32
+            })
+    };
+    (body, turret)
+}
+
+/// Look up a unit sprite from the atlas with cascading fallbacks:
+/// 1. Try the exact key (slope + frame).
+/// 2. Fall back to frame 0 if the requested frame doesn't exist (mismatched HVA counts).
+/// 3. Fall back to slope_type=0 if the tilted sprite isn't in the atlas yet
+///    (unit just moved onto a ramp and the atlas hasn't rebuilt).
+/// 4. Fall back to a level barrel if the pitched one isn't in the atlas.
+///
+/// This prevents units from disappearing during atlas rebuilds.
+pub(crate) fn atlas_get_with_frame_fallback<'a>(
+    atlas: &'a crate::render::unit_atlas::UnitAtlas,
+    key: &UnitSpriteKey,
+) -> Option<&'a crate::render::unit_atlas::UnitSpriteEntry> {
+    atlas.get(key).or_else(|| {
+        // Fallback 1: try frame 0 with same slope.
+        if key.frame > 0 {
+            let fallback = UnitSpriteKey {
+                frame: 0,
+                ..key.clone()
+            };
+            if let Some(entry) = atlas.get(&fallback) {
+                return Some(entry);
+            }
+        }
+        // Fallback 2: try slope_type=0 (flat) with original frame.
+        if key.slope_type != 0 {
+            let flat_key = UnitSpriteKey {
+                slope_type: 0,
+                ..key.clone()
+            };
+            if let Some(entry) = atlas.get(&flat_key) {
+                return Some(entry);
+            }
+            // Fallback 3: slope_type=0 + frame 0.
+            if key.frame > 0 {
+                let flat_frame0 = UnitSpriteKey {
+                    slope_type: 0,
+                    frame: 0,
+                    ..key.clone()
+                };
+                if let Some(entry) = atlas.get(&flat_frame0) {
+                    return Some(entry);
+                }
+            }
+        }
+        // Fallback 4: the level barrel, through the same chain.
+        if key.barrel_pitch != 0 {
+            let level = UnitSpriteKey {
+                barrel_pitch: 0,
+                ..key.clone()
+            };
+            return atlas_get_with_frame_fallback(atlas, &level);
+        }
+        None
+    })
 }
 
 impl UnitAtlas {
@@ -1889,12 +1986,12 @@ fn pack_sprites_on_device(
     let mut pages = Vec::with_capacity(plan.page_heights.len());
     let mut entries = HashMap::with_capacity(plan.placements.len());
     for (page_index, &page_height) in plan.page_heights.iter().enumerate() {
-        let mut pixels = vec![0u8; (plan.page_width * page_height) as usize];
-        for placement in plan
+        let placed: Vec<_> = plan
             .placements
             .iter()
             .filter(|placement| placement.page == page_index)
-        {
+            .collect();
+        for placement in &placed {
             let rs = &sprites[placement.sprite_index];
             let expected_pixels = (rs.width * rs.height) as usize;
             if rs.pixels.len() != expected_pixels {
@@ -1903,13 +2000,6 @@ fn pack_sprites_on_device(
                     expected: expected_pixels,
                     actual: rs.pixels.len(),
                 });
-            }
-            for y in 0..rs.height {
-                let src_start = (y * rs.width) as usize;
-                let src_end = src_start + rs.width as usize;
-                let dst_start = ((placement.y + y) * plan.page_width + placement.x) as usize;
-                let dst_end = dst_start + rs.width as usize;
-                pixels[dst_start..dst_end].copy_from_slice(&rs.pixels[src_start..src_end]);
             }
             entries.insert(
                 rs.key.clone(),
@@ -1921,17 +2011,65 @@ fn pack_sprites_on_device(
                 ),
             );
         }
-        let texture = batch.create_unit_atlas_texture_on_device(
-            device,
-            queue,
-            plan.page_width,
-            page_height,
-            &pixels,
-        );
+        let texture = batch.create_blank_unit_atlas_texture(device, plan.page_width, page_height);
+        upload_unit_atlas_shelves(device, queue, texture.view.texture(), sprites, &placed);
         pages.push(UnitAtlasPage { texture });
     }
 
     Ok(UnitAtlas::new(pages, entries))
+}
+
+/// Upload the R8 atlas in whole-shelf bands. Each staging copy is retired
+/// before the next one is gathered, matching SHP atlas uploads.
+fn upload_unit_atlas_shelves(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    texture: &wgpu::Texture,
+    sprites: &[CachedUnitSprite],
+    placed: &[&UnitAtlasPlacement],
+) {
+    debug_assert!(
+        placed.windows(2).all(|pair| pair[0].y <= pair[1].y),
+        "unit atlas placements must run shelf by shelf from the top"
+    );
+    let row_bytes = u64::from(texture.width());
+    let mut rest = placed;
+    while let Some(first) = rest.first() {
+        let top = first.y;
+        let mut len = 0;
+        let mut bottom = top;
+        loop {
+            let shelf_y = rest[len].y;
+            while len < rest.len() && rest[len].y == shelf_y {
+                let placement = rest[len];
+                let sprite = &sprites[placement.sprite_index];
+                bottom = bottom.max(placement.y + sprite.height);
+                len += 1;
+            }
+            if len == rest.len() || u64::from(bottom - top) * row_bytes >= PACK_BAND_BYTES {
+                break;
+            }
+        }
+        let (band, tail) = rest.split_at(len);
+        let rects: Vec<_> = band
+            .iter()
+            .map(|placement| {
+                let sprite = &sprites[placement.sprite_index];
+                ([placement.x, placement.y], [sprite.width, sprite.height])
+            })
+            .collect();
+        atlas_growth::write_band(queue, texture, 1, &rects, |index| {
+            &sprites[band[index].sprite_index].pixels
+        });
+        let submission = queue.submit(std::iter::empty());
+        if let Err(error) = device.poll(wgpu::PollType::Wait {
+            submission_index: Some(submission),
+            timeout: Some(PACK_BAND_TIMEOUT),
+        }) {
+            log::error!("Unit atlas upload could not wait for the GPU: {error:?}");
+        }
+        rest = tail;
+    }
 }
 
 fn plan_cached_sprite_pages(

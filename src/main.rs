@@ -97,13 +97,12 @@ fn run(app_bundle: bool) -> Result<()> {
         _ => None,
     };
 
-    // Create the OS event loop. This drives the entire application:
-    // window events, input, redraws, lifecycle events.
+    // Create the OS event loop before constructing launch-specific app state.
     let event_loop: EventLoop<()> = EventLoop::builder().build()?;
 
     // Create the app and hand control to the event loop.
     // This blocks until the window is closed.
-    let mut app: vera20k::app::App = match launch_mode {
+    let app: vera20k::app::App = match launch_mode {
         vera20k::app::frontend::launch::AppLaunchMode::Usage => {
             unreachable!("usage returned above")
         }
@@ -129,8 +128,7 @@ fn run(app_bundle: bool) -> Result<()> {
             vera20k::app::App::new_tactical_capture(request)
         }
     };
-    event_loop.run_app(&mut app)?;
-    app.finish_capture()?;
+    app.run_on_event_loop(event_loop)?;
 
     log::info!("VERA20k shut down cleanly");
     Ok(())

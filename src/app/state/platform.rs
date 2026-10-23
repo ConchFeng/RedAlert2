@@ -86,6 +86,8 @@ pub(crate) struct PlatformState {
     pub(crate) window_hidden: bool,
     /// Local wall-clock admission state. Never serialized or read by the sim.
     pub(crate) frame_pacer: LocalFramePacer,
+    #[cfg(target_os = "horizon")]
+    pub(crate) last_render_start: Option<std::time::Instant>,
     /// Loaded GameConfig — missing config.toml falls back to the executable
     /// root; `None` only when config loading or executable-root discovery
     /// fails. Set once at process start from `GameConfig::load()`; not
@@ -123,6 +125,8 @@ impl PlatformState {
             pause_on_focus_loss,
             window_hidden: false,
             frame_pacer: LocalFramePacer::new(),
+            #[cfg(target_os = "horizon")]
+            last_render_start: None,
             game_config,
             capture_client_size,
             recenter_windowed: false,

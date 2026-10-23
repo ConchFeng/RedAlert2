@@ -41,6 +41,8 @@ required-features = ["telemetry-dashboard"]
 # Development builds carry the Ctrl+Shift dev chord. The release workflow builds
 # with `--no-default-features`, so shipped binaries do not.
 default = ["dev-overlays"]
+# The standalone Switch workspace supplies the Horizon winit and audio backends.
+horizon-client = []
 # Optional gameplay extensions. Neither default nor shipping builds enable this.
 ares = ["vera20k-core/ares"]
 # The Ctrl+Shift dev chord: renderer-native diagnostic overlays (grid, heightmap,
@@ -62,10 +64,8 @@ getrandom = { version = "=0.3.4", optional = true }
 sha1 = { version = "=0.10.6", optional = true }
 
 # --- GPU rendering ---
-wgpu = "27"
 # winit 0.30 is the latest stable. 0.31 is still in beta.
 # Uses the ApplicationHandler trait pattern (deferred window creation).
-winit = "0.30"
 # raw-window-handle + windows-sys let us clip the OS cursor to the game window
 # with the Win32 ClipCursor API . That is reliable on frameless
 # windows. winit's CursorGrabMode::Confined instead clips a *hidden* cursor to a
@@ -100,6 +100,14 @@ image = { version = "0.25", default-features = false, features = ["png", "ico"] 
 # Playback only: the engine decodes its own audio and hands rodio PCM buffers, so
 # rodio's decoders (symphonia), dither and microphone recording stay off.
 rodio = { version = "0.22", default-features = false, features = ["playback"] }
+
+[target.'cfg(not(target_os = "horizon"))'.dependencies]
+wgpu = "27"
+winit = "0.30"
+
+[target.'cfg(target_os = "horizon")'.dependencies]
+wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl"] }
+winit = "=0.30.12"
 
 [target.'cfg(unix)'.dependencies]
 # Continuing presentation uptime across saved-game process restarts. The

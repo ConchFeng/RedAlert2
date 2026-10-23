@@ -1,8 +1,34 @@
 //! First port milestone: run the production core on Horizon before the desktop UI.
 
 mod input;
+#[cfg(all(any(target_os = "horizon", test), not(feature = "client")))]
+mod match_runtime;
 
 pub use vera20k_core::{assets, map, rules, sim, util};
+
+#[cfg(all(feature = "gpu", feature = "client"))]
+compile_error!("select either the GPU probe or the full client");
+
+// The shared sidebar modules carry desktop-side `#[cfg(test)]` suites that
+// depend on the desktop crate's dev-dependencies and test fixtures. The
+// desktop crate owns those tests; host tests of the standalone Switch crate
+// only need the gameplay/runtime modules above.
+#[cfg(all(not(test), not(feature = "client")))]
+#[path = "../../../src/ui/sidebar/mod.rs"]
+pub mod ui_sidebar;
+#[cfg(all(not(test), not(feature = "client")))]
+pub mod ui {
+    pub use crate::ui_sidebar as sidebar;
+    pub mod power_bar_anim {
+        pub use crate::ui_sidebar::power_bar_anim::PowerBarAnimState;
+    }
+}
+#[cfg(all(not(test), not(feature = "client")))]
+#[path = "../../../src/app/input/sidebar_eva.rs"]
+pub mod sidebar_eva;
+
+#[cfg(all(target_os = "horizon", feature = "client"))]
+mod client_frontend;
 
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 #[path = "../../../src/render/gpu.rs"]
@@ -11,6 +37,12 @@ mod gpu;
 mod gpu_frontend;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod render;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod retail_objects;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod sidebar_frontend;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod live_frontend;
 
 use std::path::Path;
 use vera20k_core::{assets::mix_archive::MixArchive, assets::mix_hash::mix_hash};
@@ -104,7 +136,7 @@ fn core_probe(directory: &Path) -> Result<Vec<String>, Box<dyn std::error::Error
     Ok(results)
 }
 
-#[cfg(all(target_os = "horizon", not(feature = "gpu")))]
+#[cfg(all(target_os = "horizon", not(any(feature = "gpu", feature = "client"))))]
 mod horizon {
     use std::{io::Write, time::Instant};
 

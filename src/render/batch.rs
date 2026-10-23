@@ -1279,25 +1279,67 @@ impl BatchRenderer {
         let source_indices = source_indices
             .as_ref()
             .unwrap_or(&self.default_source_indices);
+        let descriptor = wgpu::TextureDescriptor {
+            label: Some("Batch Texture"),
+            size: wgpu::Extent3d {
+                width,
+                height,
+                depth_or_array_layers: 1,
+            },
+            mip_level_count: 1,
+            sample_count: 1,
+            dimension: wgpu::TextureDimension::D2,
+            format: wgpu::TextureFormat::Rgba8UnormSrgb,
+            usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST,
+            view_formats: &[],
+        };
+        #[cfg(not(target_os = "horizon"))]
         let texture: wgpu::Texture = device.create_texture_with_data(
             queue,
-            &wgpu::TextureDescriptor {
-                label: Some("Batch Texture"),
-                size: wgpu::Extent3d {
-                    width,
-                    height,
-                    depth_or_array_layers: 1,
-                },
-                mip_level_count: 1,
-                sample_count: 1,
-                dimension: wgpu::TextureDimension::D2,
-                format: wgpu::TextureFormat::Rgba8UnormSrgb,
-                usage: wgpu::TextureUsages::TEXTURE_BINDING,
-                view_formats: &[],
-            },
+            &descriptor,
             wgpu::util::TextureDataOrder::LayerMajor,
             rgba_data,
         );
+        #[cfg(target_os = "horizon")]
+        let texture = if rgba_data.len() <= 1024 * 1024 {
+            device.create_texture_with_data(
+                queue,
+                &descriptor,
+                wgpu::util::TextureDataOrder::LayerMajor,
+                rgba_data,
+            )
+        } else {
+            let texture = device.create_texture(&descriptor);
+            let bytes_per_row = width * 4;
+            // Eden/NVK left later rows blank after one large upload of the
+            // tall chrome atlas; keep Horizon staging writes bounded.
+            let rows_per_write = (1024 * 1024 / bytes_per_row).max(1);
+            for y in (0..height).step_by(rows_per_write as usize) {
+                let rows = rows_per_write.min(height - y);
+                let start = (y * bytes_per_row) as usize;
+                let end = ((y + rows) * bytes_per_row) as usize;
+                queue.write_texture(
+                    wgpu::TexelCopyTextureInfo {
+                        texture: &texture,
+                        mip_level: 0,
+                        origin: wgpu::Origin3d { x: 0, y, z: 0 },
+                        aspect: wgpu::TextureAspect::All,
+                    },
+                    &rgba_data[start..end],
+                    wgpu::TexelCopyBufferLayout {
+                        offset: 0,
+                        bytes_per_row: Some(bytes_per_row),
+                        rows_per_image: None,
+                    },
+                    wgpu::Extent3d {
+                        width,
+                        height: rows,
+                        depth_or_array_layers: 1,
+                    },
+                );
+            }
+            texture
+        };
         self.batch_texture(device, &texture, source_indices, width, height)
     }
 

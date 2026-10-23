@@ -1921,7 +1921,11 @@ pub(crate) mod tests {
             8
         );
         assert!(sim.dirty_cells.radar().contains(&cell));
-        assert!(sim.dirty_cells.tactical_for_test().contains(&(cell.0 - 1, cell.1)));
+        assert!(
+            sim.dirty_cells
+                .tactical_for_test()
+                .contains(&(cell.0 - 1, cell.1))
+        );
     }
 
     #[test]
@@ -2118,7 +2122,8 @@ pub(crate) mod tests {
                 "the expired slot must construct its replacement CellAnim"
             );
             assert_eq!(
-                anims[0].z_adjust(), 775,
+                anims[0].z_adjust(),
+                775,
                 "cold/in-game restore must use incoming ordinary Cell10A, not defaults, outgoing, or selected Ion lighting"
             );
         }
@@ -2167,7 +2172,8 @@ pub(crate) mod tests {
             "the constructed CellAnim uses the live tiberium Color scheme"
         );
         assert_eq!(
-            visible_anim.z_adjust(), 775,
+            visible_anim.z_adjust(),
+            775,
             "CellClass +0x10A is ambient*10 + level*height - ground"
         );
         let encoded =
@@ -2196,7 +2202,8 @@ pub(crate) mod tests {
         let ghost_anim = ghost.substrate.anims.iter().next().unwrap().1;
         assert_eq!(ghost_anim.remap(), None);
         assert_eq!(
-            ghost_anim.z_adjust(), 0,
+            ghost_anim.z_adjust(),
+            0,
             "failed Mark leaves the Cell without tiberium, so native skips both post-writes"
         );
         assert_eq!(
@@ -2559,60 +2566,60 @@ pub(crate) mod tests {
         }
     }
 
-#[test]
-fn crate_random_rectangle_draws_signed_reversed_ranges_then_narrows_to_i16() {
-    let mut sum_one = crate::sim::rng::SimRng::new(0x1401);
-    let mut sum_one_expected = sum_one.clone();
-    let sum_one_frame = CrateRandomFrame {
-        left: 1,
-        top: 1,
-        width: 0,
-        height: 0,
-    };
-    let sum_one_cell = draw_crate_candidate(&mut sum_one, sum_one_frame);
-    let expected_sum_one = (
-        sum_one_expected.next_range_u32_inclusive(0, 1) as i32,
-        sum_one_expected.next_range_u32_inclusive(0, 1) as i32,
-    );
-    assert_eq!(sum_one_cell, expected_sum_one);
-    assert_eq!(sum_one.state(), sum_one_expected.state());
+    #[test]
+    fn crate_random_rectangle_draws_signed_reversed_ranges_then_narrows_to_i16() {
+        let mut sum_one = crate::sim::rng::SimRng::new(0x1401);
+        let mut sum_one_expected = sum_one.clone();
+        let sum_one_frame = CrateRandomFrame {
+            left: 1,
+            top: 1,
+            width: 0,
+            height: 0,
+        };
+        let sum_one_cell = draw_crate_candidate(&mut sum_one, sum_one_frame);
+        let expected_sum_one = (
+            sum_one_expected.next_range_u32_inclusive(0, 1) as i32,
+            sum_one_expected.next_range_u32_inclusive(0, 1) as i32,
+        );
+        assert_eq!(sum_one_cell, expected_sum_one);
+        assert_eq!(sum_one.state(), sum_one_expected.state());
 
-    let mut negative = crate::sim::rng::SimRng::new(0x1402);
-    let mut negative_expected = negative.clone();
-    let negative_frame = CrateRandomFrame {
-        left: i32::MAX,
-        top: i32::MIN,
-        width: -2,
-        height: -2,
-    };
-    let negative_cell = draw_crate_candidate(&mut negative, negative_frame);
-    let expected_negative = (
-        i32::MAX.wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32) as i16
-            as i32,
-        i32::MIN.wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32) as i16
-            as i32,
-    );
-    assert_eq!(negative_cell, expected_negative);
-    assert_eq!(negative.state(), negative_expected.state());
+        let mut negative = crate::sim::rng::SimRng::new(0x1402);
+        let mut negative_expected = negative.clone();
+        let negative_frame = CrateRandomFrame {
+            left: i32::MAX,
+            top: i32::MIN,
+            width: -2,
+            height: -2,
+        };
+        let negative_cell = draw_crate_candidate(&mut negative, negative_frame);
+        let expected_negative = (
+            i32::MAX.wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
+                as i16 as i32,
+            i32::MIN.wrapping_add(-3 + negative_expected.next_range_u32_inclusive(0, 3) as i32)
+                as i16 as i32,
+        );
+        assert_eq!(negative_cell, expected_negative);
+        assert_eq!(negative.state(), negative_expected.state());
 
-    let mut wide = crate::sim::rng::SimRng::new(0x1403);
-    let mut wide_expected = wide.clone();
-    let wide_frame = CrateRandomFrame {
-        left: 30_000,
-        top: -30_000,
-        width: 70_000,
-        height: 70_000,
-    };
-    let wide_cell = draw_crate_candidate(&mut wide, wide_frame);
-    let expected_wide = (
-        30_000i32.wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32) as i16
-            as i32,
-        (-30_000i32).wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32) as i16
-            as i32,
-    );
-    assert_eq!(wide_cell, expected_wide);
-    assert_eq!(wide.state(), wide_expected.state());
-}
+        let mut wide = crate::sim::rng::SimRng::new(0x1403);
+        let mut wide_expected = wide.clone();
+        let wide_frame = CrateRandomFrame {
+            left: 30_000,
+            top: -30_000,
+            width: 70_000,
+            height: 70_000,
+        };
+        let wide_cell = draw_crate_candidate(&mut wide, wide_frame);
+        let expected_wide = (
+            30_000i32.wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32) as i16
+                as i32,
+            (-30_000i32).wrapping_add(wide_expected.next_range_u32_inclusive(0, 69_999) as i32)
+                as i16 as i32,
+        );
+        assert_eq!(wide_cell, expected_wide);
+        assert_eq!(wide.state(), wide_expected.state());
+    }
 
     #[test]
     fn crate_random_frame_retains_nonpositive_signed_size_for_rng_before_empty_snap() {
@@ -2665,7 +2672,9 @@ fn crate_random_rectangle_draws_signed_reversed_ranges_then_narrows_to_i16() {
                 cell.speed_costs.float = Some(0);
                 cell.speed_costs.track = Some(0);
             }
-            let drawn_cell = terrain.cell_mut_for_test(drawn.0, drawn.1).expect("drawn cell");
+            let drawn_cell = terrain
+                .cell_mut_for_test(drawn.0, drawn.1)
+                .expect("drawn cell");
             drawn_cell.land_type = if drawn_is_water {
                 LandType::Water.as_index()
             } else {

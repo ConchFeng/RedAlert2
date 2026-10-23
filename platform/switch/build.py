@@ -1,18 +1,32 @@
 #!/usr/bin/env python3
-"""Cross-build the production VERA20k core or GPU context with Horizon std/newlib."""
+"""Cross-build the VERA20k client or diagnostic probes with Horizon std/newlib."""
 import argparse
 import json
 import os
 from pathlib import Path
 import re
+import struct
 import subprocess
 import sys
-from nsp import TITLE_ID, package
+from nsp import CLIENT_TITLE_ID, GPU_TITLE_ID, TITLE_ID, package
 
 ROOT = Path(__file__).resolve().parent
 WORKSPACE = ROOT.parents[3]
 TOOLCHAIN = "nightly-2026-10-04"
 UPSTREAM_COMMIT = "3eac779b232ee47cd0eb957676c64386ac7b0f1d"
+DEFAULT_CLIENT_ASSETS = ROOT / "target/emulator/master-xdg-data/eden/sdmc/game"
+
+
+def configure_client_savedata(nacp: Path, title_id: str):
+    """Set NacpStruct fields from the SDK's switch/nacp.h layout."""
+    data = bytearray(nacp.read_bytes())
+    if len(data) != 0x4000:
+        raise SystemExit(f"Unexpected NACP size: {len(data):#x}")
+    data[0x3025] = 1  # StartupUserAccount: Required.
+    # SaveDataOwnerId, UserAccountSaveDataSize, UserAccountSaveDataJournalSize.
+    struct.pack_into("<QQQ", data, 0x3078, int(title_id, 16),
+                     256 * 1024 * 1024, 64 * 1024 * 1024)
+    nacp.write_bytes(data)
 
 
 def run(*arguments, **kwargs):
@@ -20,12 +34,44 @@ def run(*arguments, **kwargs):
     return subprocess.run(list(map(str, arguments)), cwd=ROOT, check=True, **kwargs)
 
 
+def normalize_std_lock(lock: Path, patch_names: set[str]) -> bool:
+    """Keep std's own workspace lock from retaining stale `patch.unused` rows.
+
+    Cargo treats `--locked` as authoritative even for build-std. A prior
+    non-applied patch can therefore pin an old libc/memmap2 indefinitely. Drop
+    only unresolved patch rows whose patched package is now expected to apply;
+    normal packages and all unrelated std dependencies stay byte-for-byte.
+    """
+    source = lock.read_text()
+    paragraphs = source.split("[[")
+    kept = [paragraphs[0]]
+    for body in paragraphs[1:]:
+        match = re.match(r'patch\.unused\]\]\nname = "([^"]+)"', body)
+        if match and match.group(1) in patch_names:
+            continue
+        kept.append(body)
+    updated = "[[".join(kept)
+    if updated != source:
+        try:
+            lock.write_text(updated)
+        except OSError as error:
+            print(f"warning: cannot normalize read-only std lock {lock}: {error}", file=sys.stderr)
+            return False
+    return True
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check", action="store_true", help="Compile-check without linking")
-    parser.add_argument("--nsp", action="store_true", help="Also package a standalone NSP with local device keys")
-    parser.add_argument("--gpu", action="store_true",
-                        help="Build the native-window probe using Vera's production GpuContext and wgpu")
+    parser.add_argument("--nsp", action="store_true",
+                        help="Also package a standalone NSP with local device keys (default for linked --client)")
+    parser.add_argument("--nsp-assets", metavar="DIR",
+                        help=f"Bundle retail assets into client NSP ROMFS (default: {DEFAULT_CLIENT_ASSETS})")
+    frontend = parser.add_mutually_exclusive_group()
+    frontend.add_argument("--gpu", action="store_true",
+                          help="Build the native-window production GPU probe")
+    frontend.add_argument("--client", action="store_true",
+                          help="Build the shared full client with the Horizon event backend")
     parser.add_argument("--host-test", action="store_true", help="Run the same core probe on the host")
     parser.add_argument("--check-libc-abi", action="store_true", help="Compare patched libc against SDK headers")
     parser.add_argument("--check-client-deps", action="store_true",
@@ -33,8 +79,24 @@ def main():
     parser.add_argument("--without-winit", action="store_true",
                         help="Audit Vulkan/audio for a native Switch frontend instead of the desktop window stack")
     args = parser.parse_args()
-    if args.gpu and args.nsp:
-        parser.error("--gpu currently produces a separate NRO; omit --nsp")
+    linked_client = args.client and not (
+        args.check or args.host_test or args.check_libc_abi or args.check_client_deps
+    )
+    if linked_client:
+        args.nsp = True
+        args.nsp_assets = args.nsp_assets or str(DEFAULT_CLIENT_ASSETS)
+    if args.nsp_assets and not args.nsp:
+        parser.error("--nsp-assets requires --nsp")
+    if args.nsp_assets and not args.client:
+        parser.error("--nsp-assets currently requires --client")
+    if args.nsp_assets and (args.check or args.host_test or args.check_libc_abi or args.check_client_deps):
+        parser.error("--nsp-assets requires a linked client build")
+    if args.nsp_assets:
+        assets = Path(args.nsp_assets).expanduser().resolve()
+        for required in ("ra2.mix", "ra2md.mix"):
+            if not (assets / required).is_file() or not (assets / required).stat().st_size:
+                parser.error(f"NSP asset directory is missing {required}: {assets}")
+        args.nsp_assets = str(assets)
     os.chdir(ROOT)
     rust_bin = Path.home() / ".cargo/bin"
     os.environ["PATH"] = str(rust_bin) + os.pathsep + os.environ["PATH"]
@@ -52,10 +114,13 @@ def main():
     work = ROOT / "target/switch-build"
     work.mkdir(parents=True, exist_ok=True)
     config = work / "cargo.toml"
-    patches = {name: upstream / "patches" / name for name in ["libc", "memmap2"]}
-    if args.check_client_deps:
+    patches = {name: upstream / "patches" / name for name in ["libc", "memmap2", "rustix"]}
+    if args.check_client_deps or args.client:
         patches["cpal"] = upstream / "patches/cpal"
-    if args.check_client_deps or args.gpu:
+    if args.client:
+        patches["winit"] = ROOT / "winit-horizon"
+        patches["rustix"] = upstream / "patches/rustix"
+    if args.check_client_deps or args.gpu or args.client:
         patches["raw-window-handle"] = upstream / "patches/raw-window-handle"
         for name in ["wgpu", "wgpu-core", "wgpu-hal", "wgpu-core-deps-windows-linux-android"]:
             patches[name] = upstream / "patches/bevy-0.18" / name
@@ -77,10 +142,17 @@ def main():
         return
     sysroot = Path(subprocess.check_output(["rustc", f"+{TOOLCHAIN}", "--print", "sysroot"], text=True).strip())
     std_manifest = sysroot / "lib/rustlib/src/rust/library/Cargo.toml"
+    std_lock_ready = normalize_std_lock(std_manifest.with_name("Cargo.lock"), {
+        "libc", "memmap2", "rustix", "raw-window-handle", "wgpu", "wgpu-core", "wgpu-hal",
+        "wgpu-core-deps-windows-linux-android",
+    })
     # build-std uses a separate workspace; patching only the app would silently
     # compile std against libc's 3DS ABI. Its lock must use the ARM64 patch too.
-    run("cargo", f"+{TOOLCHAIN}", "update", "--manifest-path", std_manifest,
-        "--config", config, "-p", "libc")
+    if std_lock_ready:
+        run("cargo", f"+{TOOLCHAIN}", "update", "--manifest-path", std_manifest,
+            "--config", config, "-p", "libc", "--precise", "0.2.190")
+    else:
+        print("warning: skipping std lock update because its source tree is read-only", file=sys.stderr)
     target = ROOT / "aarch64-nintendo-horizon.json"
     manifest = []
     if args.check_client_deps:
@@ -91,8 +163,12 @@ def main():
         versions = {name: re.search(r'\nname = "' + name + r'"\nversion = "([^"]+)"',
                                     desktop_lock).group(1)
                     for name in ["wgpu", "winit", "rodio"]}
-        dependencies = [line for line in desktop.splitlines()
-                        if re.match(r"^(wgpu|winit|rodio)\s*=", line)]
+        # The first wgpu table is the desktop declaration; Horizon follows it.
+        desktop_dependencies = {}
+        for line in desktop.splitlines():
+            if re.match(r"^(wgpu|winit|rodio)\s*=", line):
+                desktop_dependencies.setdefault(line.split("=", 1)[0].strip(), line)
+        dependencies = list(desktop_dependencies.values())
         dependencies = [re.sub(r'(?<=")\d[^\"]*(?=")',
                                "=" + versions[line.split("=", 1)[0].strip()], line, count=1)
                         for line in dependencies]
@@ -107,7 +183,8 @@ def main():
         (probe / "src/lib.rs").write_text("// Compile the actual client dependency versions, without desktop app code.\n")
         manifest = ["--manifest-path", probe / "Cargo.toml"]
         os.environ["CARGO_TARGET_DIR"] = str(ROOT / "target")
-    features = ["--features", "gpu"] if args.gpu else []
+    selected_feature = "client" if args.client else "gpu" if args.gpu else None
+    features = ["--features", selected_feature] if selected_feature else []
     run("cargo", f"+{TOOLCHAIN}", "check" if args.check or args.check_client_deps else "build", *manifest, *features,
         "--release", "--config", config, "--target", target,
         "-Zbuild-std=std,panic_abort", "-Zjson-target-spec", "--lib")
@@ -131,15 +208,21 @@ def main():
     original = original.replace("--nx-module-name", "--nx-module-name --wrap=threadCreate")
     specs.write_text(original)
     cc = sdk / "devkitA64/bin/aarch64-none-elf-gcc"
-    artifact = "vera20k-gpu" if args.gpu else "vera20k-core"
-    graphics = ["-DVERA_WGPU"] if args.gpu else []
+    artifact = "vera20k-client" if args.client else "vera20k-gpu" if args.gpu else "vera20k-core"
+    graphics = ["-DVERA_WGPU"] if args.gpu or args.client else []
+    if args.client:
+        graphics.append("-DVERA_CLIENT")
     architecture = ["-march=armv8-a+crc+crypto", "-mtune=cortex-a57", "-mtp=soft", "-fPIE"]
-    run(cc, *architecture, *graphics, "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-D__SWITCH__",
+    cflags = [*architecture, *graphics, "-O2", "-g", "-Wall", "-Wextra", "-Werror", "-D__SWITCH__",
         "-ffunction-sections", "-fdata-sections", "-I", sdk / "libnx/include",
-        "-I", sdk / "portlibs/switch/include",
-        "-c", "runtime.c", "-o", work / "runtime.o")
+        "-I", sdk / "portlibs/switch/include"]
+    runtime_objects = [work / "runtime.o"]
+    run(cc, *cflags, "-c", "runtime.c", "-o", runtime_objects[0])
+    if args.client:
+        runtime_objects.append(work / "fps_report.o")
+        run(cc, *cflags, "-c", "fps_report.c", "-o", runtime_objects[-1])
     elf = work / f"{artifact}.elf"
-    if args.gpu:
+    if args.gpu or args.client:
         nvk = Path(os.environ.get(
             "VERA_SWITCH_NVK_LIB", WORKSPACE / "toolchains/switch/bevy-horizon-reference/nvk/lib"))
         if not (nvk / "libvulkan_bh.a").is_file():
@@ -149,7 +232,7 @@ def main():
     else:
         libraries = ["-Wl,--start-group", "-lEGL", "-lGLESv2", "-lglapi", "-ldrm_nouveau", "-lnx",
                      "-Wl,--end-group"]
-    run(cc, *architecture, f"-specs={specs}", "-g", work / "runtime.o",
+    run(cc, *architecture, f"-specs={specs}", "-g", *runtime_objects,
         "target/aarch64-nintendo-horizon/release/libvera20k_switch.a",
         "-L", sdk / "libnx/lib", "-L", sdk / "portlibs/switch/lib",
         *libraries, "-lstdc++", "-lm", "-o", elf)
@@ -164,13 +247,25 @@ def main():
     dist = ROOT / "dist"
     dist.mkdir(exist_ok=True)
     nacp = work / f"{artifact}.nacp"
-    title = "VERA20k GPU Probe" if args.gpu else "VERA20k Core Probe"
+    title = "VERA20k" if args.client else "VERA20k GPU Probe" if args.gpu else "VERA20k Core Probe"
+    title_id = CLIENT_TITLE_ID if args.client else GPU_TITLE_ID if args.gpu else TITLE_ID
     run(sdk / "tools/bin/nacptool", "--create", title, "Homebrew", "0.1.0", nacp,
-        f"--titleid={TITLE_ID}")
+        f"--titleid={title_id}")
+    if args.client:
+        configure_client_savedata(nacp, title_id)
     run(sdk / "tools/bin/elf2nro", elf, dist / f"{artifact}.nro", f"--nacp={nacp}",
         f"--icon={sdk}/libnx/default_icon.jpg")
     if args.nsp:
-        package(ROOT, sdk, elf, nacp)
+        package(
+            ROOT,
+            sdk,
+            elf,
+            nacp,
+            artifact=artifact,
+            title_id=title_id,
+            romfs=Path(args.nsp_assets) if args.nsp_assets else None,
+            output_artifact=f"{artifact}-assets" if args.nsp_assets else None,
+        )
 
 
 if __name__ == "__main__":

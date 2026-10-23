@@ -13,6 +13,7 @@
 extern int rust_main(void);
 extern void *__aarch64_read_tp(void);
 static PadState pad;
+static bool user_save_mounted;
 #ifndef VERA_WGPU
 static EGLDisplay display;
 static EGLContext context;
@@ -33,8 +34,16 @@ int main(int argc, char **argv) {
     (void)argc;
     (void)argv;
 #ifdef VERA_WGPU
+#ifdef VERA_CLIENT
+    setenv("MESA_LOG_FILE", "sdmc:/switch/vera20k/client-mesa.log", 1);
+#else
     setenv("MESA_LOG_FILE", "sdmc:/switch/vera20k/gpu-mesa.log", 1);
-    setenv("MESA_LOG_LEVEL", "debug", 1);
+#endif
+    if (getenv("VERA_MESA_DEBUG")) {
+        setenv("MESA_LOG_LEVEL", "debug", 1);
+    } else {
+        unsetenv("MESA_LOG_LEVEL");
+    }
     // See third_party/mesa-switch-graphics-ubo.patch for the NVK/Eden path.
     setenv("NVK_SWITCH_GRAPHICS_UBO_CBUF", "true", 1);
 #endif
@@ -89,9 +98,68 @@ void platform_console_init(void) {
     consoleInit(NULL);
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
+    hidInitializeTouchScreen();
 }
 bool platform_running(void) { return appletMainLoop(); }
+int32_t platform_applet_type(void) { return appletGetAppletType(); }
+uint64_t platform_memory_size(int32_t info_type) {
+    uint64_t value = 0;
+    return R_SUCCEEDED(svcGetInfo(&value, (InfoType)info_type, CUR_PROCESS_HANDLE, 0)) ? value : 0;
+}
 uint64_t platform_buttons(void) { padUpdate(&pad); return padGetButtonsDown(&pad); }
+uint64_t platform_buttons_held(void) { return padGetButtons(&pad); }
+void platform_sticks(int32_t *lx, int32_t *ly, int32_t *rx, int32_t *ry) {
+    HidAnalogStickState left = padGetStickPos(&pad, 0);
+    HidAnalogStickState right = padGetStickPos(&pad, 1);
+    *lx = left.x;
+    *ly = left.y;
+    *rx = right.x;
+    *ry = right.y;
+}
+bool platform_focused(void) { return appletGetFocusState() == AppletFocusState_InFocus; }
+bool platform_touch(uint32_t *x, uint32_t *y) {
+    HidTouchScreenState state = {0};
+    if (!hidGetTouchScreenStates(&state, 1) || state.count <= 0) return false;
+    *x = state.touches[0].x;
+    *y = state.touches[0].y;
+    return true;
+}
+Result platform_commit_sdmc(void) { return fsdevCommitDevice("sdmc"); }
+Result platform_commit_user_save(void) {
+    return user_save_mounted ? fsdevCommitDevice("vera20k-user")
+        : MAKERESULT(Module_Libnx, LibnxError_NotFound);
+}
+void platform_unmount_user_save(void) {
+    if (user_save_mounted) {
+        fsdevUnmountDevice("vera20k-user");
+        user_save_mounted = false;
+        appletUnlockExit();
+    }
+}
+Result platform_mount_user_save(void) {
+    if (user_save_mounted) return 0;
+    Result result = accountInitialize(AccountServiceType_Application);
+    if (R_FAILED(result)) return result;
+    AccountUid uid = {0};
+    result = accountGetPreselectedUser(&uid);
+    accountExit();
+    // Never fall back to a different account's saves when selection is absent.
+    if (R_FAILED(result) || !accountUidIsValid(&uid)) {
+        return R_FAILED(result) ? result : MAKERESULT(Module_Libnx, LibnxError_NotFound);
+    }
+    result = fsdevMountSaveData("vera20k-user", FS_SAVEDATA_CURRENT_APPLICATIONID, uid);
+    if (R_SUCCEEDED(result)) {
+        result = appletLockExit();
+        if (R_FAILED(result)) {
+            fsdevUnmountDevice("vera20k-user");
+        } else {
+            user_save_mounted = true;
+        }
+    }
+    return result;
+}
+bool platform_romfs_init(void) { return R_SUCCEEDED(romfsInit()); }
+void platform_romfs_exit(void) { romfsExit(); }
 void platform_present(void) { consoleUpdate(NULL); }
 void platform_console_exit(void) { consoleExit(NULL); }
 extern const uint8_t _start[] __attribute__((visibility("hidden")));

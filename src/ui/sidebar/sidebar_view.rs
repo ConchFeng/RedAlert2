@@ -473,6 +473,60 @@ pub(crate) fn build_sidebar_view_with_spec(
     }
 }
 
+/// Build the retained sidebar for a frontend that owns the same simulation,
+/// rules and camera as the desktop client. This is the public adapter; the
+/// private builder above remains the narrow desktop seam.
+#[allow(clippy::too_many_arguments)]
+pub fn build_sidebar_view_for_frontend(
+    layout_spec: SidebarChromeLayoutSpec,
+    screen_w: f32,
+    screen_h: f32,
+    active_tab: SidebarTab,
+    credits: i32,
+    power_produced: i32,
+    power_drained: i32,
+    tab_button_size: Option<[f32; 2]>,
+    queue_items: &[QueueItemView],
+    build_options: &[BuildOption],
+    ready_buildings: &[ReadyBuildingView],
+    armed: Option<&ArmedSidebarEntry>,
+    producer_focus: &[ProducerFocusView],
+    interner: Option<&crate::sim::intern::StringInterner>,
+    sw_views: &[SuperWeaponView],
+    gadget_state: &SidebarGadgetState,
+    repair_button_size: Option<[f32; 2]>,
+    sell_button_size: Option<[f32; 2]>,
+    scroll_down_button_size: Option<[f32; 2]>,
+    scroll_up_button_size: Option<[f32; 2]>,
+    top_button_sizes: [Option<[f32; 2]>; 2],
+    cameo_order: &CameoStrips,
+) -> SidebarView {
+    build_sidebar_view_with_spec(
+        layout_spec,
+        screen_w,
+        screen_h,
+        active_tab,
+        credits,
+        power_produced,
+        power_drained,
+        tab_button_size,
+        queue_items,
+        build_options,
+        ready_buildings,
+        armed,
+        producer_focus,
+        interner,
+        sw_views,
+        gadget_state,
+        repair_button_size,
+        sell_button_size,
+        scroll_down_button_size,
+        scroll_up_button_size,
+        top_button_sizes,
+        cameo_order,
+    )
+}
+
 fn category_is_on_tab(
     selected_category: ProductionCategory,
     actual_category: ProductionCategory,

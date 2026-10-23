@@ -24,6 +24,9 @@ use crate::sim::snapshot::{
 };
 use crate::sim::world::Simulation;
 
+#[cfg(target_os = "horizon")]
+const DEFAULT_SAVES_DIRECTORY: &str = "vera20k-user:/saves";
+#[cfg(not(target_os = "horizon"))]
 const DEFAULT_SAVES_DIRECTORY: &str = "saves";
 
 /// Process-lifetime save-game state owned by the app persistence domain.
@@ -471,7 +474,7 @@ impl SaveRepository {
             let _ = std::fs::remove_file(path);
             return Err(SaveWriteError::write_file(source));
         }
-        Ok(())
+        commit_save_storage(path).map_err(SaveWriteError::write_file)
     }
 
     /// Only an explicit existing repository row can be replaced. Stage the
@@ -482,9 +485,7 @@ impl SaveRepository {
         path: &Path,
         bytes: &[u8],
     ) -> Result<(), SaveWriteError> {
-        if path.parent() != Some(self.directory.as_path())
-            || !Self::is_save_file(path)
-        {
+        if path.parent() != Some(self.directory.as_path()) || !Self::is_save_file(path) {
             return Err(SaveWriteError::write_file(std::io::Error::new(
                 std::io::ErrorKind::InvalidInput,
                 "overwrite target is not a save in this repository",
@@ -504,7 +505,9 @@ impl SaveRepository {
 
     fn replace_file(&self, path: &Path, bytes: &[u8]) -> Result<(), SaveWriteError> {
         static NEXT_STAGE: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-        let directory = path.parent().filter(|parent| !parent.as_os_str().is_empty())
+        let directory = path
+            .parent()
+            .filter(|parent| !parent.as_os_str().is_empty())
             .unwrap_or_else(|| Path::new("."));
         let stage = loop {
             let id = NEXT_STAGE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -515,11 +518,13 @@ impl SaveRepository {
                 Err(error) => return Err(error),
             }
         };
-        let result = std::fs::rename(&stage, path);
+        let result = replace_published_file(&stage, path);
         if result.is_err() {
             let _ = std::fs::remove_file(&stage);
         }
-        result.map_err(SaveWriteError::write_file)
+        result
+            .and_then(|()| commit_save_storage(path))
+            .map_err(SaveWriteError::write_file)
     }
 
     /// The game's one retained initial save per mission. Native67CF13..67CF42
@@ -562,11 +567,15 @@ impl SaveRepository {
     }
 
     fn is_save_file(path: &Path) -> bool {
-        matches!(path.extension().and_then(|ext| ext.to_str()), Some("bin" | "sav"))
+        matches!(
+            path.extension().and_then(|ext| ext.to_str()),
+            Some("bin" | "sav")
+        )
     }
 
     pub(crate) fn delete(&self, path: &Path) -> std::io::Result<()> {
-        std::fs::remove_file(path)
+        std::fs::remove_file(path)?;
+        commit_save_storage(path)
     }
 
     pub(crate) fn exists(&self, path: &Path) -> bool {
@@ -625,6 +634,75 @@ impl SaveRepository {
             Some((path, item.metadata().ok()?.modified().ok()?))
         }))
     }
+}
+
+/// Desktop rename replaces an existing file atomically.
+#[cfg(not(target_os = "horizon"))]
+fn replace_published_file(stage: &Path, path: &Path) -> std::io::Result<()> {
+    std::fs::rename(stage, path)
+}
+
+#[cfg(target_os = "horizon")]
+fn replace_published_file(stage: &Path, path: &Path) -> std::io::Result<()> {
+    // Horizon rename cannot replace a file. Keep the old snapshot until the
+    // staged one is published, and commit only after both renames complete.
+    let mut backup_name = path.as_os_str().to_os_string();
+    backup_name.push(".backup");
+    let backup = PathBuf::from(backup_name);
+    match std::fs::symlink_metadata(&backup) {
+        Ok(_) => {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "save replacement backup already exists; preserve it for recovery",
+            ));
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error),
+    }
+    std::fs::rename(path, &backup)?;
+    if let Err(error) = std::fs::rename(stage, path) {
+        std::fs::rename(&backup, path).map_err(|restore| {
+            std::io::Error::other(format!(
+                "save publication failed: {error}; restore failed: {restore}; old save retained at {}",
+                backup.display()
+            ))
+        })?;
+        return Err(error);
+    }
+    std::fs::remove_file(backup)
+}
+
+/// libnx requires fsFsCommit after write/delete/rename operations, which
+/// newlib's std::fs does not expose. Match persistence to the user save device.
+#[cfg(target_os = "horizon")]
+fn commit_save_storage(path: &Path) -> std::io::Result<()> {
+    unsafe extern "C" {
+        fn platform_commit_user_save() -> u32;
+        fn platform_commit_sdmc() -> u32;
+    }
+    let device = path.to_string_lossy();
+    let result = if device.starts_with("vera20k-user:/") {
+        unsafe { platform_commit_user_save() }
+    } else if device.starts_with("sdmc:/") || !device.contains(':') {
+        unsafe { platform_commit_sdmc() }
+    } else {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::Unsupported,
+            "unsupported save storage device",
+        ));
+    };
+    if result == 0 {
+        Ok(())
+    } else {
+        Err(std::io::Error::other(format!(
+            "save storage commit failed: {result:#010x}"
+        )))
+    }
+}
+
+#[cfg(not(target_os = "horizon"))]
+fn commit_save_storage(_path: &Path) -> std::io::Result<()> {
+    Ok(())
 }
 
 #[cfg(any(feature = "dev-overlays", test))]

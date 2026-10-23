@@ -49,9 +49,9 @@ mod frame;
 pub mod frontend;
 mod handler;
 mod in_game;
-pub(crate) mod lan_service;
 mod initialize;
 pub(crate) mod input;
+pub(crate) mod lan_service;
 pub(crate) mod loading;
 pub(crate) mod match_audio;
 pub mod match_bootstrap;
@@ -155,6 +155,21 @@ impl Default for App {
 }
 
 impl App {
+    /// Drive this client through the platform's window and input lifecycle.
+    pub fn run(self) -> Result<()> {
+        let event_loop = winit::event_loop::EventLoop::builder().build()?;
+        self.run_on_event_loop(event_loop)
+    }
+
+    /// Run after the caller has created its event loop, preserving startup order.
+    pub fn run_on_event_loop(
+        mut self,
+        event_loop: winit::event_loop::EventLoop<()>,
+    ) -> Result<()> {
+        event_loop.run_app(&mut self)?;
+        self.finish_capture()
+    }
+
     pub fn new(
         startup_options: crate::app::frontend::startup_options::RetailStartupOptions,
     ) -> Self {
@@ -212,7 +227,9 @@ impl App {
 
     pub fn finish_capture(&mut self) -> Result<()> {
         if let Some(error) = self.startup_failure.as_ref().or_else(|| {
-            self.state.as_ref().and_then(|state| state.frontend.external_launch_error.as_ref())
+            self.state
+                .as_ref()
+                .and_then(|state| state.frontend.external_launch_error.as_ref())
         }) {
             anyhow::bail!("{error}");
         }

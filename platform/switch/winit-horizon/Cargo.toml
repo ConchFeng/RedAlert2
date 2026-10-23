@@ -1,0 +1,23 @@
+[package]
+name = "winit"
+version = "0.30.12"
+edition = "2021"
+license = "Apache-2.0"
+publish = false
+
+[features]
+default = ["rwh_06"]
+rwh_06 = ["dep:rwh_06"]
+rwh_04 = []
+rwh_05 = []
+serde = ["dep:serde", "cursor-icon/serde", "smol_str/serde", "dpi/serde"]
+mint = ["dpi/mint"]
+
+[dependencies]
+bitflags = "2"
+cursor-icon = "1.1"
+dpi = "0.1.2"
+smol_str = "0.2"
+tracing = { version = "0.1.40", default-features = false }
+serde = { version = "1", optional = true, features = ["derive"] }
+rwh_06 = { package = "raw-window-handle", version = "0.6", optional = true, features = ["std"] }

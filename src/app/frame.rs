@@ -293,7 +293,6 @@ impl App {
         if let Some(session) = tactical_capture.as_deref_mut() {
             session.drive_before_render(state)?;
         }
-        state.diag.frame_timer.sample(Instant::now());
         crate::app::presentation::interpolation::prepare(state, tactical_capture.is_some());
         let tooltip_ms = crate::app::input::tooltips::update(state);
         if state
@@ -354,6 +353,21 @@ impl App {
             )
         };
 
+        #[cfg(target_os = "horizon")]
+        {
+            let now = Instant::now();
+            let interval = std::time::Duration::from_nanos(1_000_000_000 / 30);
+            if let Some(last) = state.platform.last_render_start {
+                let remaining = interval.saturating_sub(now.duration_since(last));
+                if !remaining.is_zero() {
+                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(4)));
+                    return Ok(());
+                }
+            }
+            state.platform.last_render_start = Some(now);
+        }
+        state.diag.frame_timer.sample(Instant::now());
+
         // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
         // owner. An arm stays silent until the matching surface is acquired.
         for step in MAIN_MENU_SHELL_PRELUDE {
@@ -395,7 +409,11 @@ impl App {
             Self::follow_window_size(state);
             return Ok(());
         };
-        let view: wgpu::TextureView = output.texture.create_view(&Default::default());
+        let view: wgpu::TextureView = output.texture.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("Configured surface render view"),
+            format: Some(state.renderer.gpu.surface_format),
+            ..Default::default()
+        });
         let mut encoder: wgpu::CommandEncoder =
             state
                 .renderer
@@ -868,7 +886,7 @@ impl App {
             .gpu
             .queue
             .submit(std::iter::once(encoder.finish()));
-        output.present();
+        crate::render::present::present(output);
         // wgpu 27 requires released surface references before reconfiguration;
         // the diagnostic action below may resize the window.
         // https://docs.rs/wgpu/27.0.1/wgpu/struct.Surface.html#method.configure

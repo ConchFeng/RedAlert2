@@ -234,7 +234,10 @@ impl ShellSurfacePresenter {
     ) {
         debug_assert!(destination.width() <= self.width);
         debug_assert!(destination.height() <= self.height);
-        debug_assert_eq!(destination.format(), self.surface_format);
+        debug_assert_eq!(
+            destination.format().remove_srgb_suffix(),
+            self.encoded_format
+        );
         debug_assert!(
             destination.usage().contains(wgpu::TextureUsages::COPY_DST),
             "shell presentation destination lacks COPY_DST"

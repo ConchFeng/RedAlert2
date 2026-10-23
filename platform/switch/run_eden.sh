@@ -5,17 +5,26 @@ cd "$switch_port_root"
 gpu=false
 profile=""
 artifact=vera20k-core
-if [[ $# == 1 && $1 == --gpu ]]; then
+if [[ $# == 1 && ( $1 == --gpu || $1 == --client ) ]]; then
     gpu=true
     profile=master-
-    artifact=vera20k-gpu
+    if [[ $1 == --client ]]; then
+        artifact=vera20k-client
+    else
+        artifact=vera20k-gpu
+    fi
 elif [[ $# != 0 ]]; then
-    echo "Usage: run_eden.sh [--gpu]" >&2
+    echo "Usage: run_eden.sh [--gpu|--client]" >&2
     exit 2
 fi
 export XDG_DATA_HOME="$switch_port_root/target/emulator/${profile}xdg-data"
 export XDG_CONFIG_HOME="$switch_port_root/target/emulator/${profile}xdg-config"
 mkdir -p "$XDG_CONFIG_HOME" "$XDG_DATA_HOME/eden/"{sdmc,nand,log,keys,load,dump,shader,screenshots,play_time}
+config_file="$XDG_CONFIG_HOME/eden/sdl2-config.ini"
+if [[ ! -f "$config_file" ]]; then
+    mkdir -p -- "$(dirname -- "$config_file")"
+    printf '[Controls]\ntouch_device="min_x:0,min_y:0,max_x:1279,max_y:719"\n' >"$config_file"
+fi
 eden_keys="$XDG_DATA_HOME/eden/keys/prod.keys"
 if [[ ! -s "$eden_keys" ]]; then
     for local_keys in "${SWITCH_KEYS:-}" "$HOME/.switch/prod.keys" "$HOME/.local/share/eden/keys/prod.keys"; do
@@ -68,6 +77,12 @@ if $gpu; then
             exit 1
         fi
     done
+    if [[ $artifact == vera20k-client ]]; then
+        client_config="$XDG_DATA_HOME/eden/sdmc/switch/vera20k/config.toml"
+        if [[ ! -e "$client_config" ]]; then
+            printf '[paths]\nra2_dir = "../../game"\nsettings_dir = "."\n' >"$client_config"
+        fi
+    fi
     eden_app="${EDEN_APP:-$switch_port_root/../../../../toolchains/switch/eden-src/build-master-cli/bin/eden-cli}"
     exec "$eden_app" -g "$switch_port_root/dist/$artifact.nro"
 fi

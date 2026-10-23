@@ -564,13 +564,129 @@ fn nearest_visible_terrain_center(
 
 unsafe extern "C" {
     fn platform_console_init();
+    fn platform_present();
     fn platform_window_init() -> *mut c_void;
     fn platform_running() -> bool;
     fn platform_buttons() -> u64;
+    fn platform_is_nro() -> bool;
+    fn platform_applet_type() -> i32;
+    fn platform_memory_size(info_type: i32) -> u64;
 }
 
 const DIRECTORY: &str = "sdmc:/switch/vera20k";
 static LOGGER: FileLogger = FileLogger(Mutex::new(None));
+
+fn binary_format() -> &'static str {
+    if unsafe { platform_is_nro() } {
+        "nro"
+    } else {
+        "nsp"
+    }
+}
+
+/// libnx `AppletType`: 0/4 are applications, 1..3 are applets.
+fn launch_memory_profile() -> (&'static str, i32, u64, u64) {
+    // svcGetInfo ids 6/7 are total/used process memory.
+    let applet_type = unsafe { platform_applet_type() };
+    let total = unsafe { platform_memory_size(6) };
+    let used = unsafe { platform_memory_size(7) };
+    let profile = match applet_type {
+        0 => "application",
+        1 => "system_applet",
+        2 => "library_applet",
+        3 => "overlay_applet",
+        4 => "system_application",
+        _ => "unknown",
+    };
+    (profile, applet_type, total, used)
+}
+
+/// Reject launches that cannot provide an application's GPU and heap domain.
+/// Album/homebrew-menu starts are LibraryApplets; title override or an installed
+/// NSP enters as an Application. The full retail atlas build is not admitted in
+/// the applet domain, where the GPU service and the 4 GiB address space differ.
+fn ensure_application_launch(profile: &str) -> Result<()> {
+    anyhow::ensure!(
+        matches!(profile, "application" | "system_application"),
+        "VERA20k requires an Application launch (title override, forwarder or installed NSP), \
+         not {profile}: Album/homebrew-menu direct NRO launches have the applet memory limit"
+    );
+    Ok(())
+}
+
+/// A tiny presented "loading" card so the GPU initialization and retail atlas
+/// build do not leave the user on a black screen. The card only uses a 1×1
+/// white texture and the already-created batch renderer; the color bar grows
+/// with each completed stage.
+fn present_loading_progress(
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    pool: &mut InstanceBufferPool,
+    depth: &wgpu::TextureView,
+    white: &BatchTexture,
+    completed: u32,
+    total: u32,
+) -> Result<()> {
+    let fraction = (completed as f32 / total.max(1) as f32).clamp(0.0, 1.0);
+    let instances = [
+        SpriteInstance {
+            position: [240.0, 330.0],
+            size: [800.0, 24.0],
+            uv_size: [1.0; 2],
+            tint: [0.12, 0.16, 0.20],
+            alpha: 1.0,
+            ..Default::default()
+        },
+        SpriteInstance {
+            position: [240.0, 330.0],
+            size: [800.0 * fraction, 24.0],
+            uv_size: [1.0; 2],
+            tint: [0.92, 0.62, 0.18],
+            alpha: 1.0,
+            ..Default::default()
+        },
+    ];
+    pool.upload(gpu, "loading", &instances);
+    batch.update_camera(gpu, 1280.0, 720.0, 0.0, 0.0, 1.0, DepthAxis::NONE);
+    let Some(frame) = gpu.acquire_frame()? else {
+        return Ok(());
+    };
+    let view = frame.texture.create_view(&Default::default());
+    let mut commands = gpu.device.create_command_encoder(&Default::default());
+    {
+        let mut pass = commands.begin_render_pass(&wgpu::RenderPassDescriptor {
+            color_attachments: &[Some(wgpu::RenderPassColorAttachment {
+                view: &view,
+                resolve_target: None,
+                depth_slice: None,
+                ops: wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(wgpu::Color {
+                        r: 0.012,
+                        g: 0.055,
+                        b: 0.085,
+                        a: 1.0,
+                    }),
+                    store: wgpu::StoreOp::Store,
+                },
+            })],
+            depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
+                view: depth,
+                depth_ops: Some(wgpu::Operations {
+                    load: wgpu::LoadOp::Clear(1.0),
+                    store: wgpu::StoreOp::Discard,
+                }),
+                stencil_ops: None,
+            }),
+            ..Default::default()
+        });
+        if let Some((buffer, count)) = pool.get("loading") {
+            batch.draw_with_buffer_passthrough(&mut pass, white, buffer, count);
+        }
+    }
+    gpu.queue.submit([commands.finish()]);
+    frame.present();
+    Ok(())
+}
 
 struct FileLogger(Mutex<Option<File>>);
 
@@ -1004,7 +1120,33 @@ fn validate_retail_terrain_output(
 }
 
 fn run() -> Result<String> {
-    unsafe { platform_console_init() };
+    let (launch_profile, applet_type, total_memory, used_memory) = launch_memory_profile();
+    unsafe {
+        platform_console_init();
+        platform_present();
+    }
+    println!(
+        "VERA20k launch={launch_profile} ({applet_type}), memory={} MiB used / {} MiB total",
+        used_memory >> 20,
+        total_memory >> 20
+    );
+    if ensure_application_launch(launch_profile).is_err() {
+        println!(
+            "Application memory is required. Launch the installed NSP, or hold R over a game\n\
+             to open the title override, instead of starting this NRO from the Album.\n\n\
+             +: exit"
+        );
+        while unsafe { platform_running() } {
+            if crate::input::PadEdges::from_mask(unsafe { platform_buttons() }).plus {
+                break;
+            }
+            unsafe { platform_present() };
+        }
+        anyhow::bail!(
+            "launch_profile={launch_profile} applet_type={applet_type} \
+             total_memory={total_memory} used_memory={used_memory}"
+        );
+    }
     let address = NonZeroUsize::new(unsafe { platform_window_init() } as usize)
         .context("libnx default window initialization failed")?;
     log::info!("native_window_ready");
@@ -1013,6 +1155,8 @@ fn run() -> Result<String> {
     let batch = BatchRenderer::new(&gpu);
     let depth = gpu.create_depth_texture();
     let mut pool = InstanceBufferPool::new();
+    let loading_white = batch.create_texture(&gpu, &[255, 255, 255, 255], 1, 1);
+    present_loading_progress(&gpu, &batch, &mut pool, &depth, &loading_white, 0, 6)?;
     // Synthetic RGBA with transparent corners and four colour quadrants.
     // All texture upload, sampling and instancing use the desktop renderer.
     let mut rgba = Vec::with_capacity(64 * 64 * 4);
@@ -1093,6 +1237,7 @@ fn run() -> Result<String> {
     log::info!("camera_transform_readback=true");
 
     write_theater_fixture()?;
+    present_loading_progress(&gpu, &batch, &mut pool, &depth, &loading_white, 1, 6)?;
     let theater = load_theater_fixture()?;
     let terrain_images = theater.images;
     log::info!(
@@ -1114,6 +1259,7 @@ fn run() -> Result<String> {
         map_lookup_count
     );
     let mut retail_assets = load_retail_theater()?;
+    present_loading_progress(&gpu, &batch, &mut pool, &depth, &loading_white, 2, 6)?;
     let retail_theater = load_theater(&mut retail_assets, "TEMPERATE")
         .context("production retail TEMPERATE theater load failed")?;
     anyhow::ensure!(
@@ -1135,6 +1281,7 @@ fn run() -> Result<String> {
         retail_theater.lookup.filename(322).unwrap_or("<missing>")
     );
     let file_map = load_file_map_terrain(&retail_theater, &retail_assets)?;
+    present_loading_progress(&gpu, &batch, &mut pool, &depth, &loading_white, 3, 6)?;
     let file_map_cell_count = file_map.terrain.map.cells.len();
     let file_map_lookup_count = file_map.terrain.map.iso_map_pack_lookups.len();
     let file_resolved_cell_count = file_map.terrain.resolved.iter().count();
@@ -1156,7 +1303,15 @@ fn run() -> Result<String> {
         file_map.terrain.map.entities.len(),
         file_map.terrain.map.overlays.len(),
     );
-    let retail_needed = collect_used_tiles(&[(0, 0), (322, 0)]);
+    let retail_needed = collect_used_tiles(
+        &file_map
+            .terrain
+            .grid
+            .cells
+            .iter()
+            .map(|cell| (i32::from(cell.tile_id), cell.sub_tile))
+            .collect::<Vec<_>>(),
+    );
     let retail_images = load_tile_images(
         &retail_assets,
         &retail_theater.lookup,
@@ -1347,10 +1502,18 @@ fn run() -> Result<String> {
     )?;
     log::info!("terrain_tmp_zdepth_occlusion=true near_passes=true far_rejected=true");
 
-    let file_camera = [
-        file_map.terrain.grid.origin_x - (1280.0 - file_map.terrain.grid.world_width) / 2.0,
-        file_map.terrain.grid.origin_y - (720.0 - file_map.terrain.grid.world_height) / 2.0,
-    ];
+    let objects = crate::retail_objects::RetailObjects::load(
+        &gpu,
+        &batch,
+        &retail_assets,
+        &retail_theater,
+        &file_map.terrain.map,
+        &file_map.terrain.resolved,
+        &file_map.terrain.grid,
+    )?;
+    present_loading_progress(&gpu, &batch, &mut pool, &depth, &loading_white, 4, 6)?;
+    objects.upload(&gpu, &mut pool);
+    let file_camera = objects.camera();
     let file_visible = build_visible_instances(
         &file_map.terrain.grid,
         None,
@@ -1421,6 +1584,7 @@ fn run() -> Result<String> {
         water_screen,
         terrain_screen,
     )?;
+    objects.validate(&gpu, &batch, &retail_atlas, &pool, &depth, file_camera)?;
     batch.update_camera(
         &gpu,
         1280.0,
@@ -1430,10 +1594,23 @@ fn run() -> Result<String> {
         1.0,
         DepthAxis::NONE,
     );
+    let mut live =
+        crate::live_frontend::LiveMatch::load(&gpu, &batch, &mut retail_assets, &retail_theater)?;
+    present_loading_progress(&gpu, &batch, &mut pool, &depth, &loading_white, 5, 6)?;
+    live.update(
+        &gpu,
+        &batch,
+        &mut pool,
+        &retail_atlas,
+        Duration::ZERO,
+        crate::input::PadEdges::from_mask(0),
+    )?;
+    live.validate(&gpu, &batch, &retail_atlas, &pool, &depth)?;
     let start = Instant::now();
+    let mut previous = start;
     let mut frames = 0_u32;
     let mut presses = 0_u32;
-    let mut exit_reason = "applet";
+    let mut exit_reason = "system";
     while unsafe { platform_running() } {
         if start.elapsed() >= Duration::from_secs(60) {
             exit_reason = "timeout";
@@ -1445,6 +1622,16 @@ fn run() -> Result<String> {
             break;
         }
         presses += u32::from(edges.a);
+        let now = Instant::now();
+        live.update(
+            &gpu,
+            &batch,
+            &mut pool,
+            &retail_atlas,
+            now.duration_since(previous),
+            edges,
+        )?;
+        previous = now;
         let Some(frame) = gpu.acquire_frame()? else {
             continue;
         };
@@ -1483,18 +1670,81 @@ fn run() -> Result<String> {
                 buffer,
                 count,
             );
+            live.draw(&batch, &pool, &mut pass);
         }
         gpu.queue.submit([commands.finish()]);
         frame.present();
         frames += 1;
         if frames == 1 || frames % 300 == 0 {
-            log::info!("frames_presented={frames}");
+            log::info!(
+                "frames_presented={frames} simulation_frames={} moved_entities={}",
+                live.game.frames_advanced,
+                live.moved_entities()
+            );
         }
     }
+    let system_exit = exit_reason == "system";
+    log::info!("exit boundary reason={exit_reason} system_requested={system_exit} frames={frames}");
     anyhow::ensure!(frames > 0, "no frames presented");
     let render_elapsed_ms = start.elapsed().as_millis();
+    let live_report = format!(
+        "live_scenario_load=true\nlive_navigation=true\nlive_simulation_tick_ms={}\n\
+         live_bootstrap_frames={}\nlive_construction_yard_online={}\n\
+         live_simulation_frames={}\nlive_selection_commands={}\nlive_move_commands={}\n\
+         live_attack_commands={}\nlive_moved_entities={}\n\
+         live_vxl_instances={}\nlive_turret_instances={}\nlive_barrel_instances={}\n\
+         live_voxel_parts_readback=true\n",
+        crate::match_runtime::TICK_MS,
+        live.game.bootstrap_frames,
+        live.game.local_construction_yard_online(),
+        live.game.frames_advanced,
+        live.selection_commands,
+        live.move_commands,
+        live.attack_commands,
+        live.moved_entities(),
+        live.voxel_part_counts()[0],
+        live.voxel_part_counts()[1],
+        live.voxel_part_counts()[2],
+    );
+    let (sidebar_items, sidebar_chrome, sidebar_cameos, sidebar_text, sidebar_gclock) =
+        live.sidebar_counts(&pool);
+    let sidebar_report = format!(
+        "sidebar_loaded=true\nsidebar_items={sidebar_items}\n\
+         sidebar_chrome_instances={sidebar_chrome}\n\
+         sidebar_cameo_instances={sidebar_cameos}\n\
+         sidebar_text_instances={sidebar_text}\n\
+         sidebar_gclock_instances={sidebar_gclock}\n\
+         sidebar_gclock_seen={}\n\
+         sidebar_generated_font={}\n\
+         live_sidebar_tab_presses={}\n\
+         live_sidebar_cameo_presses={}\n\
+         live_sidebar_build_commands={}\n\
+         live_sidebar_queue_items={}\n\
+         live_sidebar_production_started={}\n\
+         live_repair_toggles={}\n\
+         live_sell_toggles={}\n\
+         live_placement_commands={}\n\
+         live_touch_samples={}\n\
+         live_touch_presses={}\n\
+         live_touch_last_x={}\n\
+         live_touch_last_y={}\n",
+        live.sidebar_gclock_seen,
+        live.sidebar_generated_font(),
+        live.sidebar_tab_presses,
+        live.sidebar_cameo_presses,
+        live.sidebar_build_commands,
+        live.sidebar_queue_items,
+        live.sidebar_production_started,
+        live.repair_toggles,
+        live.sell_toggles,
+        live.placement_commands,
+        live.touch_samples,
+        live.touch_presses,
+        live.last_touch[0],
+        live.last_touch[1],
+    );
     Ok(format!(
-        "binary_format=nro\nproduction_gpu_context=true\nwgsl_pipeline=true\n\
+        "{live_report}{sidebar_report}binary_format={}\nproduction_gpu_context=true\nwgsl_pipeline=true\n\
          batch_renderer=true\ntextured_sprite=true\nsprites_per_frame={}\n\
          gpu_pixel_readback=true\ncamera_transform_readback=true\n\
          terrain_tmp_atlas_readback=true\nterrain_tmp_zdepth_occlusion=true\n\
@@ -1516,9 +1766,16 @@ fn run() -> Result<String> {
          file_resolved_cell_count={}\nfile_fallback_tile_cells={}\n\
          file_terrain_render_instance_count={}\n\
          file_terrain_visible_instance_count={}\n\
+         retail_rules_art_load=true\nretail_object_preview=true\nretail_objects_constructed={}\n\
+         retail_voxel_entities={}\nretail_shp_atlas=true\n\
+         retail_shp_atlas_entries={}\nretail_shp_atlas_pages={}\n\
+         retail_shp_building_instances={}\nretail_shp_instances={}\nretail_shp_readback=true\n\
+         retail_vxl_instances={}\nretail_vxl_atlas_entries={}\nretail_vxl_readback=true\n\
          frames_presented={frames}\nrender_elapsed_ms={render_elapsed_ms}\n\
          a_button_presses={presses}\nexit_reason={exit_reason}\n\
+         system_requested_exit={system_exit}\n\
          normal_exit=true\ngpu_probe_passed=true\n",
+        binary_format(),
         instances.len(),
         theater.ini_source,
         theater.tile_slots,
@@ -1542,6 +1799,14 @@ fn run() -> Result<String> {
         file_fallback_tile_cells,
         file_terrain_render_instance_count,
         file_visible.normal.len(),
+        objects.constructed,
+        objects.voxel_entities,
+        objects.atlas.sprite_count(),
+        objects.atlas.page_count(),
+        objects.building_instances,
+        objects.instance_count(),
+        objects.unit_instance_count(),
+        objects.unit_atlas.sprite_count(),
     ))
 }
 
@@ -1559,7 +1824,7 @@ pub extern "C" fn rust_main() -> i32 {
     std::panic::set_hook(Box::new(|info| {
         log::error!("{info}");
         let _ = std::fs::write(
-            format!("{DIRECTORY}/gpu-probe-nro.txt"),
+            format!("{DIRECTORY}/gpu-probe-{}.last-error.txt", binary_format()),
             format!("gpu_probe_passed=false\npanic={info}\n"),
         );
     }));
@@ -1570,7 +1835,11 @@ pub extern "C" fn rust_main() -> i32 {
             (1, format!("gpu_probe_passed=false\nerror={error:#}\n"))
         }
     };
-    if std::fs::write(format!("{DIRECTORY}/gpu-probe-nro.txt"), report).is_err() {
+    let report_path = match status {
+        0 => format!("{DIRECTORY}/gpu-probe-{}.txt", binary_format()),
+        _ => format!("{DIRECTORY}/gpu-probe-{}.last-error.txt", binary_format()),
+    };
+    if std::fs::write(report_path, report).is_err() {
         return 1;
     }
     status

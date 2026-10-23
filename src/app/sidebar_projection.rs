@@ -831,11 +831,9 @@ impl SidebarProjectionState {
     }
 
     pub(crate) fn set_scroll_row(&mut self, tab: crate::ui::sidebar::SidebarTab, row: usize) {
-        self.cameos
-            .as_mut()
-            .expect("reconcile cameos before scrolling")
-            .1
-            .set_scroll_row(tab, row);
+        if let Some((_, strips)) = self.cameos.as_mut() {
+            strips.set_scroll_row(tab, row);
+        }
     }
 
     /// Return the owner's retained display value, seeding a newly observed

@@ -103,7 +103,7 @@ pub(super) fn present_blank(
     encode_blank(presenter, &mut encoder, &output.texture);
     fps_overlay.encode(gpu, batch, &mut encoder, &output.texture);
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    crate::render::present::present(output);
     Ok(())
 }
 
@@ -892,7 +892,7 @@ pub(super) fn present_native_loading(
     )?;
     fps_overlay.encode(gpu, batch, &mut encoder, &output.texture);
     gpu.queue.submit(std::iter::once(encoder.finish()));
-    output.present();
+    crate::render::present::present(output);
     Ok(())
 }
 

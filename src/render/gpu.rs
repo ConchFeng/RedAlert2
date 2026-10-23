@@ -19,7 +19,7 @@ use std::sync::{Arc, Condvar, Mutex, PoisonError};
 use std::task::{Context as TaskContext, Poll, Wake, Waker};
 
 use anyhow::{Context, Result, bail};
-#[cfg(not(target_os = "horizon"))]
+#[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
 use winit::window::Window;
 
 /// A platform window and logical drawable size for wgpu surface creation.
@@ -94,7 +94,7 @@ impl GpuContext {
     ///
     /// This blocks on async wgpu calls using [`block_on`]. Safe to call from
     /// winit's sync ApplicationHandler::resumed().
-    #[cfg(not(target_os = "horizon"))]
+    #[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
     pub fn new(window: Arc<Window>) -> Result<Self> {
         block_on(Self::new_async(window))
     }
@@ -218,32 +218,59 @@ impl GpuContext {
                 downlevel.flags
             );
         }
-        let surface_format: wgpu::TextureFormat = surface_caps
+        let swapchain_format: wgpu::TextureFormat = surface_caps
             .formats
             .iter()
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
+        let (surface_format, view_formats) = if cfg!(feature = "horizon-client")
+            && !swapchain_format.is_srgb()
+        {
+            let srgb_view = match swapchain_format {
+                wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
+                wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
+                format => bail!(
+                    "Horizon client rendering requires an sRGB view of an 8-bit \
+                     color surface, adapter selected {format:?} from {:?}",
+                    surface_caps.formats
+                ),
+            };
+            if !downlevel
+                .flags
+                .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
+            {
+                bail!(
+                    "Horizon client rendering requires sRGB surface views, adapter \
+                     {swapchain_format:?} has downlevel flags {:?}",
+                    downlevel.flags
+                );
+            }
+            (srgb_view, vec![srgb_view])
+        } else {
+            (swapchain_format, Vec::new())
+        };
 
         // Configure the surface with our chosen format and the window's current size.
         let (window_width, window_height) = window.inner_size();
         let config: wgpu::SurfaceConfiguration = wgpu::SurfaceConfiguration {
             usage: required_surface_usages,
-            format: surface_format,
+            format: swapchain_format,
             width: window_width.max(1), // wgpu panics on 0-sized surfaces
             height: window_height.max(1),
             present_mode: wgpu::PresentMode::Fifo,
             alpha_mode: surface_caps.alpha_modes[0],
-            view_formats: vec![],
+            view_formats,
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
 
         log::info!(
-            "GPU initialized: {}x{}, format={:?}",
+            "GPU initialized: {}x{}, swapchain_format={:?}, render_format={:?}",
             config.width,
             config.height,
-            surface_format
+            swapchain_format,
+            surface_format,
         );
 
         Ok(Self {
@@ -322,7 +349,7 @@ impl GpuContext {
     }
 }
 
-#[cfg(not(target_os = "horizon"))]
+#[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
 impl NativeWindow for Arc<Window> {
     type Handle = Arc<Window>;
 

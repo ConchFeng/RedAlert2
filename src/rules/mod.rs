@@ -105,15 +105,13 @@
 pub mod airstrike;
 /// Whether this binary includes the supported Ares extensions. INIs cannot change it.
 pub const ARES_ENABLED: bool = cfg!(feature = "ares");
-pub(crate) mod ares_prerequisites;
+pub mod animation_sequence;
 pub(crate) mod ares_armor;
 pub(crate) mod ares_emp;
-pub mod armor;
-pub mod country_loading;
 #[cfg(test)]
 mod ares_manual_control_tests;
-pub mod compatibility;
-pub mod animation_sequence;
+pub(crate) mod ares_prerequisites;
+pub mod armor;
 pub mod art_data;
 pub mod bridge_warheads;
 pub mod building_extra_power;
@@ -128,11 +126,13 @@ pub mod campaigns;
 pub mod color_add;
 pub mod color_scheme;
 pub mod combat_damage;
-pub mod crate_rules;
+pub mod compatibility;
+pub mod country_loading;
 #[cfg(test)]
 mod country_parent_tests;
 #[cfg(test)]
 mod country_veterancy_tests;
+pub mod crate_rules;
 pub mod effect_asset_catalog;
 pub mod error;
 pub mod flh;
@@ -165,10 +165,10 @@ pub mod radar_event_config;
 #[cfg(test)]
 mod radial_indicator_tests;
 pub mod recoil;
-pub mod secret_lab;
 pub mod retail_sources;
 pub(crate) mod rules_type_references;
 pub mod ruleset;
+pub mod secret_lab;
 pub mod shp_vehicle_sequence;
 pub mod smudge_type;
 pub mod sound_ini;

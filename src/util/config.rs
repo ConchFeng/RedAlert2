@@ -132,6 +132,16 @@ pub const fn default_input_delay_ticks() -> u32 {
     15
 }
 
+#[cfg(target_os = "horizon")]
+fn horizon_retail_asset_root() -> PathBuf {
+    for candidate in [Path::new("romfs:/game"), Path::new("romfs:/")] {
+        if candidate.join("ra2md.mix").is_file() && candidate.join("ra2.mix").is_file() {
+            return candidate.to_path_buf();
+        }
+    }
+    PathBuf::from("sdmc:/game")
+}
+
 impl GameConfig {
     /// Load the optional host override, otherwise use the retail module directory.
     ///
@@ -144,15 +154,28 @@ impl GameConfig {
     pub fn load() -> Result<Self> {
         let working_dir =
             std::env::current_dir().context("Failed to locate the working directory")?;
-        let executable = std::env::current_exe()
-            .context("Failed to locate the running executable for retail asset discovery")?;
-        Self::load_from(&working_dir, &executable)
+        // Horizon std has no current_exe implementation; the client keeps its
+        // writable config in cwd and prefers a packaged ROMFS over the SD game mount.
+        #[cfg(target_os = "horizon")]
+        {
+            Self::load_from_asset_root(&working_dir, &horizon_retail_asset_root())
+        }
+        #[cfg(not(target_os = "horizon"))]
+        {
+            let executable = std::env::current_exe()
+                .context("Failed to locate the running executable for retail asset discovery")?;
+            Self::load_from(&working_dir, &executable)
+        }
     }
 
     /// [`GameConfig::load`] for a process with this working directory and executable.
     pub fn load_from(working_dir: &Path, executable: &Path) -> Result<Self> {
         let root = retail_asset_root_from_executable(executable)?;
-        for directory in [working_dir, root.as_path()] {
+        Self::load_from_asset_root(working_dir, &root)
+    }
+
+    fn load_from_asset_root(working_dir: &Path, root: &Path) -> Result<Self> {
+        for directory in [working_dir, root] {
             let path = directory.join(CONFIG_FILE_NAME);
             match std::fs::read_to_string(&path) {
                 Ok(contents) => return Self::parse_from(&contents, &path),
@@ -169,7 +192,13 @@ impl GameConfig {
             CONFIG_FILE_NAME,
             root.display()
         );
-        Ok(Self::from_retail_asset_root(root))
+        let mut config = Self::from_retail_asset_root(root.to_path_buf());
+        // A packaged ROMFS is read-only. Keep settings and saves on the SD card
+        // while the client runs from an NSP with bundled game assets.
+        if root.to_string_lossy().starts_with("romfs:") {
+            config.paths.settings_dir = Some(working_dir.to_path_buf());
+        }
+        Ok(config)
     }
 
     fn parse_from(contents: &str, path: &Path) -> Result<Self> {

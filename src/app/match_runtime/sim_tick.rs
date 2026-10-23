@@ -2003,35 +2003,7 @@ pub(crate) fn tactical_cells(
         .map(|terrain| terrain as &dyn terrain::TacticalCellLookup)
 }
 
-/// Shared owner for world-space point -> map-cell resolution in the app layer.
-///
-/// Any app code that already has world coordinates should use this instead of
-/// re-calling the tactical inverse inline.
-pub(crate) fn world_point_to_cell(
-    world_x: f32,
-    world_y: f32,
-    cells: Option<&dyn terrain::TacticalCellLookup>,
-) -> (u16, u16) {
-    let inverse = terrain::screen_to_cell_tactical_inverse(
-        world_x,
-        world_y,
-        terrain::TacticalInverseContext {
-            cells,
-            viewport_offset_x: 0.0,
-            viewport_offset_y: 0.0,
-        },
-    );
-    let (iso_rx, iso_ry) = match inverse {
-        terrain::TacticalInverseResult::Cell { rx, ry }
-        | terrain::TacticalInverseResult::Fallback { rx, ry } => (rx, ry),
-    };
-    (
-        // Current Rust app callers expect a concrete in-map cell. Keep this
-        // clamp isolated here until off-map sentinel behavior is modeled.
-        iso_rx.round().max(0.0) as u16,
-        iso_ry.round().max(0.0) as u16,
-    )
-}
+pub(crate) use crate::map::terrain::world_point_to_cell;
 
 /// Shared owner for screen-space cursor -> map-cell resolution in the app layer.
 ///

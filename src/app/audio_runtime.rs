@@ -80,6 +80,11 @@ pub(crate) struct AppAudioRuntime {
     /// Native has a startup-suppression gate. Current Rust has no non-default
     /// route, so production initializes this false and keeps one explicit seam.
     pub(crate) theme_startup_suppressed: bool,
+    /// The single rodio device stream shared by music and SFX. Declared last so
+    /// it outlives both players during drop; Horizon's audren allows one
+    /// stream per process.
+    #[allow(dead_code)]
+    pub(crate) output: Option<rodio::MixerDeviceSink>,
 }
 
 ///5BF580/5BF530's independent boolean and existing407170 interps. The
@@ -598,6 +603,7 @@ mod tests {
                 launcher_audio_available: true,
                 theme_startup_suppressed: false,
                 movie_audio: Default::default(),
+                output: None,
             };
             runtime.initialize_theme(&assets);
             let stored = f32::from_bits(options["stored_f32_bits"].as_u64().unwrap() as u32);
@@ -637,6 +643,7 @@ mod tests {
             launcher_audio_available: true,
             theme_startup_suppressed: false,
             movie_audio: Default::default(),
+            output: None,
         };
         let mut frontend = crate::sim::rng::MainRng::new(1);
         let mut main = crate::app::state::process_main_draws(None, &mut frontend);
@@ -677,6 +684,7 @@ mod tests {
             launcher_audio_available: true,
             theme_startup_suppressed: false,
             movie_audio: Default::default(),
+            output: None,
         };
         runtime.initialize_theme(&assets);
         // Restore through the production Theme owner with an admitted stream;
@@ -738,6 +746,7 @@ mod tests {
             launcher_audio_available: false,
             theme_startup_suppressed: false,
             movie_audio: Default::default(),
+            output: None,
         };
         runtime.prepare_movie_streams(0);
         runtime.set_master_output_scale(0.25);

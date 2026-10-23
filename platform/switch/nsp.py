@@ -1,4 +1,5 @@
-"""Package the core probe as a standalone installable NSP, using local device keys."""
+"""Package a Switch client or probe as an installable NSP, using local device keys."""
+import json
 import os
 from pathlib import Path
 import hashlib
@@ -8,23 +9,38 @@ import subprocess
 import tempfile
 
 TITLE_ID = "0100f52556455241"
+# Application base ID: keep the lower 13 bits clear so control and program
+# content resolve to the same base (Eden file_sys/common_funcs.h).
+GPU_TITLE_ID = "0100f52556456000"
+CLIENT_TITLE_ID = "0100f52556458000"
 
 
-def verify_package(path: Path, keys: Path, sdk: Path, title_id: str, log_directory: Path):
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as source:
+        for chunk in iter(lambda: source.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def verify_package(path: Path, keys: Path, sdk: Path, title_id: str, log_directory: Path,
+                   *, expect_romfs: bool = False):
     """Verify the actual NSP's three NCAs, allowing only homebrew signature failures."""
     log_directory.mkdir(parents=True, exist_ok=True)
     hactool = sdk / "tools/bin/hactool"
     with tempfile.TemporaryDirectory(prefix="nsp-verify-", dir=log_directory) as temporary:
         extracted = Path(temporary)
-        listing = subprocess.run([str(hactool), "-t", "pfs0", "-x", f"--outdir={extracted}", str(path)],
+        listing = subprocess.run([str(hactool), "-k", str(keys), "--suppresskeys", "--disablekeywarns",
+                                  "-t", "pfs0", "-x", f"--outdir={extracted}", str(path)],
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, check=True)
         (log_directory / "pfs0.log").write_text(listing.stdout)
         files = list(extracted.iterdir())
         if len(files) != 3 or any(not file.name.endswith(".nca") for file in files):
             raise SystemExit("NSP does not contain exactly three NCAs")
         types = set()
+        program_partitions = set()
         for file in files:
-            if file.name.split(".")[0] != hashlib.sha256(file.read_bytes()).hexdigest()[:32]:
+            if file.name.split(".")[0] != file_sha256(file)[:32]:
                 raise SystemExit("NCA content ID/hash mismatch")
             result = subprocess.run([str(hactool), "-k", str(keys), "--suppresskeys", "--disablekeywarns",
                                      "-t", "nca", "-y", str(file)], stdout=subprocess.PIPE,
@@ -41,10 +57,21 @@ def verify_package(path: Path, keys: Path, sdk: Path, title_id: str, log_directo
                 raise SystemExit("NCA data hashes were not verified")
             if content.group(1) == "Program" and "NPDM Signature (GOOD)" not in result.stdout:
                 raise SystemExit("Program NPDM signature did not verify")
+            if content.group(1) == "Program":
+                program_partitions.update(
+                    re.findall(r"Partition Type:\s+(\w+)", result.stdout)
+                )
             types.add(content.group(1))
         if types != {"Program", "Control", "Meta"}:
             raise SystemExit("Missing Program/Control/Meta NCA")
-    print(f"NSP verified: Program/Control/Meta, encrypted headers, content hashes, NPDM, title ID {title_id}")
+        if "ExeFS" not in program_partitions:
+            raise SystemExit("Program NCA is missing ExeFS")
+        if expect_romfs and "RomFS" not in program_partitions:
+            raise SystemExit("Program NCA is missing the requested RomFS")
+        if not expect_romfs and "RomFS" in program_partitions:
+            raise SystemExit("Program NCA unexpectedly contains RomFS")
+    suffix = " with RomFS" if expect_romfs else ""
+    print(f"NSP verified: Program/Control/Meta{suffix}, encrypted headers, content hashes, NPDM, title ID {title_id}")
 
 
 def verify_runtime_file(runtime: Path):
@@ -52,37 +79,63 @@ def verify_runtime_file(runtime: Path):
     size = runtime.stat().st_size
     if size > 32 * 1024 * 1024:
         raise SystemExit(f"Refusing oversized Switch NSO runtime: {size} bytes")
-    header = runtime.read_bytes()[:4]
+    with runtime.open("rb") as source:
+        header = source.read(4)
     if header != b"NSO0":
         raise SystemExit("Expected an NSO runtime for NSP packaging")
 
 
-def package(root: Path, sdk: Path, elf: Path, nacp: Path):
+def package(root: Path, sdk: Path, elf: Path, nacp: Path, *,
+            artifact: str = "vera20k-core", title_id: str = TITLE_ID,
+            romfs: Path | None = None, output_artifact: str | None = None):
     keys = Path(os.environ.get("SWITCH_KEYS", Path.home() / ".switch/prod.keys"))
     if not keys.is_file():
         raise SystemExit("NRO built. Set SWITCH_KEYS to a local device key file for NSP packaging.")
-    work = root / "target/switch-build/nsp"
+    if romfs is not None:
+        romfs = romfs.resolve()
+        if not romfs.is_dir():
+            raise SystemExit(f"NSP asset directory does not exist: {romfs}")
+        for required in ("ra2md.mix", "ra2.mix"):
+            path = romfs / required
+            if not path.is_file() or path.stat().st_size == 0:
+                raise SystemExit(f"NSP asset directory is missing {required}: {romfs}")
+    work = root / f"target/switch-build/{artifact}-nsp"
     exefs, control, output = work / "exefs", work / "control", work / "output"
     for directory in [exefs, control, output]:
         directory.mkdir(parents=True, exist_ok=True)
     subprocess.run([str(sdk / "tools/bin/elf2nso"), str(elf), str(exefs / "main")], check=True)
     verify_runtime_file(exefs / "main")
-    subprocess.run([str(sdk / "tools/bin/npdmtool"), str(root / "npdm.json"),
+    metadata = json.loads((root / "npdm.json").read_text())
+    for field in ("program_id", "program_id_range_min", "program_id_range_max"):
+        metadata[field] = "0x" + title_id
+    if artifact == "vera20k-gpu":
+        metadata["name"] = "VeraGpuProbe"
+    elif artifact == "vera20k-client":
+        metadata["name"] = "Vera20k"
+    npdm_source = work / "npdm.json"
+    npdm_source.write_text(json.dumps(metadata, indent=2) + "\n")
+    subprocess.run([str(sdk / "tools/bin/npdmtool"), str(npdm_source),
                     str(exefs / "main.npdm")], check=True)
     shutil.copyfile(nacp, control / "control.nacp")
     shutil.copyfile(sdk / "libnx/default_icon.jpg", control / "icon_AmericanEnglish.dat")
     packer = Path(os.environ.get("HACBREWPACK", root.parents[3] / "toolchains/switch/hacbrewpack/hacbrewpack"))
-    arguments = [str(packer), "-k", str(keys.resolve()), "--titleid", TITLE_ID,
-                 "--exefsdir", str(exefs), "--controldir", str(control), "--noromfs", "--nologo",
+    arguments = [str(packer), "-k", str(keys.resolve()), "--titleid", title_id,
+                 "--exefsdir", str(exefs), "--controldir", str(control), "--nologo",
                  "--nspdir", str(output), "--ncadir", str(work / "nca"),
                  "--tempdir", str(work / "temp"), "--backupdir", str(work / "backup"),
                  "--keygeneration", "1", "--keepncadir"]
+    if romfs is None:
+        arguments.append("--noromfs")
+    else:
+        arguments.extend(["--romfsdir", str(romfs)])
     process = subprocess.run(arguments, cwd=root, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
     for line in process.stdout.splitlines():
         print("Key area key: [redacted]" if line.startswith("Key area key") else line)
     process.check_returncode()
-    target = root / "dist/vera20k-core.nsp"
-    produced = output / f"{TITLE_ID}.nsp"
-    verify_package(produced, keys, sdk, TITLE_ID, work / "verification")
+    target = root / f"dist/{output_artifact or artifact}.nsp"
+    produced = output / f"{title_id}.nsp"
+    verify_package(produced, keys, sdk, title_id, work / "verification",
+                   expect_romfs=romfs is not None)
     produced.replace(target)
-    print(f"Built standalone NSP: {target} (title ID {TITLE_ID})")
+    romfs_note = f", ROMFS {romfs}" if romfs is not None else ""
+    print(f"Built standalone NSP: {target} (title ID {title_id}{romfs_note})")

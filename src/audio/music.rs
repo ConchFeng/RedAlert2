@@ -6,6 +6,7 @@
 use std::num::NonZero;
 
 use rodio::buffer::SamplesBuffer;
+use rodio::mixer::Mixer;
 use rodio::{DeviceSinkBuilder, MixerDeviceSink, Player};
 
 use crate::audio::theme::{MusicOutputState, PreparedTrack};
@@ -23,8 +24,11 @@ fn effective_music_volume(
 }
 
 pub struct MusicPlayer {
-    /// rodio mixer device sink — must be kept alive or all audio stops.
-    _device: MixerDeviceSink,
+    /// rodio mixer device sink — `None` when the app owns one shared output
+    /// for music and SFX (Horizon's audren allows one stream per process).
+    _device: Option<MixerDeviceSink>,
+    /// Mixer this player's sources connect to.
+    mixer: Mixer,
     current_player: Option<Player>,
     volume: f64,
     output_scale: f64,
@@ -40,8 +44,10 @@ impl MusicPlayer {
         let device = DeviceSinkBuilder::open_default_sink()
             .map_err(|error| log::error!("Failed to initialize music audio: {error}"))
             .ok()?;
+        let mixer = device.mixer().clone();
         Some(Self {
-            _device: device,
+            _device: Some(device),
+            mixer,
             current_player: None,
             volume: DEFAULT_SCORE_VOLUME,
             output_scale: 1.0,
@@ -49,6 +55,21 @@ impl MusicPlayer {
             focus_output_scale: 1.0,
             paused: false,
         })
+    }
+
+    /// Build a music player on an output sink owned elsewhere. Used when the
+    /// app shares one device stream between music and SFX.
+    pub(crate) fn from_mixer(mixer: Mixer) -> Self {
+        Self {
+            _device: None,
+            mixer,
+            current_player: None,
+            volume: DEFAULT_SCORE_VOLUME,
+            output_scale: 1.0,
+            theme_scale: 1.0,
+            focus_output_scale: 1.0,
+            paused: false,
+        }
     }
 
     pub(crate) fn state(&self) -> MusicOutputState {
@@ -70,7 +91,7 @@ impl MusicPlayer {
             player.stop();
         }
         let source = SamplesBuffer::new(channels, rate, prepared.samples);
-        let player = Player::connect_new(self._device.mixer());
+        let player = Player::connect_new(&self.mixer);
         player.set_volume(self.effective_volume());
         player.append(source);
         if self.paused {
@@ -107,7 +128,7 @@ impl MusicPlayer {
     /// The music device mixer, shared by streams that must play alongside
     /// the theme output (the shell movie soundtrack).
     pub fn mixer(&self) -> &rodio::mixer::Mixer {
-        self._device.mixer()
+        &self.mixer
     }
 
     pub(crate) fn discard_finished(&mut self) {

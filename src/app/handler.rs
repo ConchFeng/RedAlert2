@@ -368,9 +368,11 @@ impl ApplicationHandler for App {
             }
             Err(err) => {
                 log::error!("Failed to initialize: {:#}", err);
-                if self.spawn_request.is_some() {
-                    self.startup_failure = Some(format!("CnCNet initialization failed: {err:#}"));
-                }
+                self.startup_failure = Some(if self.spawn_request.is_some() {
+                    format!("CnCNet initialization failed: {err:#}")
+                } else {
+                    format!("Client initialization failed: {err:#}")
+                });
                 if let Some(session) = self.shell_capture.as_mut() {
                     session.fail(format!("shell capture initialization failed: {err:#}"));
                 }

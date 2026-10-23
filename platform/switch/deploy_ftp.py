@@ -40,6 +40,8 @@ def main():
     parser.add_argument("--host", required=True)
     parser.add_argument("--port", type=int, default=5000)
     parser.add_argument("--fetch-reports", action="store_true")
+    parser.add_argument("--gpu", action="store_true", help="Deploy the live GPU NRO/NSP and retail resources")
+    parser.add_argument("--retail-dir", type=Path, help="Local retail install to stage for --gpu")
     args = parser.parse_args()
     evidence = ROOT / "target/hardware"
     evidence.mkdir(parents=True, exist_ok=True)
@@ -54,7 +56,8 @@ def main():
             reports = evidence / "reports"
             reports.mkdir(exist_ok=True)
             for folder, names in [
-                ("vera20k", ["core-probe-nro.txt", "core-probe-nsp.txt"]),
+                ("vera20k", ["core-probe-nro.txt", "core-probe-nsp.txt",
+                             "gpu-probe-nro.txt", "gpu-probe-nsp.txt", "gpu-wgpu.log"]),
                 ("switch-rust-smoke", ["runtime-nro.txt", "runtime-nsp.txt"]),
             ]:
                 for name in names:
@@ -73,6 +76,22 @@ def main():
             (smoke / "dist/switch-rust-smoke.nro", "/switch/switch-rust-smoke/switch-rust-smoke.nro"),
             (smoke / "dist/switch-rust-smoke.nsp", "/nsp/switch-rust-smoke.nsp"),
         ]
+        if args.gpu:
+            retail = args.retail_dir
+            if retail is None or not all((retail / name).is_file() for name in ["ra2.mix", "ra2md.mix"]):
+                raise SystemExit("--gpu requires --retail-dir containing ra2.mix and ra2md.mix")
+            artifacts = [
+                (ROOT / "dist/vera20k-gpu.nro", "/switch/vera20k/vera20k-gpu.nro"),
+                (ROOT / "dist/vera20k-gpu.nsp", "/nsp/vera20k-gpu.nsp"),
+                (ROOT.parents[1] / "tools/map_observation/examples/ai_dred_bombard.map",
+                 "/switch/vera20k/maps/ai_dred_bombard.map"),
+            ]
+            extensions = {".mix", ".ini", ".exe", ".csf", ".fnt", ".dat", ".pal"}
+            artifacts.extend(
+                (local, "/game/" + local.name)
+                for local in sorted(retail.iterdir())
+                if local.is_file() and local.suffix.lower() in extensions and local.stat().st_size > 0
+            )
         for local, _ in artifacts:
             if not local.is_file():
                 raise SystemExit(f"Missing artifact: {local}")
@@ -99,7 +118,8 @@ def main():
             manifest["verified_files"].append({"local": str(local), "remote": remote,
                                                "size": len(data), "sha256": hashlib.sha256(data).hexdigest(),
                                                "uploaded": uploaded})
-            (evidence / "deployment.json").write_text(json.dumps(manifest, indent=2) + "\n")
+            manifest_name = "gpu-deployment.json" if args.gpu else "deployment.json"
+            (evidence / manifest_name).write_text(json.dumps(manifest, indent=2) + "\n")
             print(f"Verified {'upload' if uploaded else 'existing file'}: {remote} ({len(data)} bytes)", flush=True)
     finally:
         ftp.quit()

@@ -585,14 +585,23 @@ impl App {
             &startup_in_game_options,
         );
 
-        let music_player = startup_audio
-            .initialize_music_output
-            .then(MusicPlayer::new)
+        // Horizon's audren renderer takes one stream per process. Open the
+        // device once and give music and SFX players on the same mixer.
+        let shared_output = (startup_audio.initialize_music_output
+            || startup_audio.initialize_sfx_output)
+            .then(crate::audio::sfx::open_output_sink)
+            .transpose()
+            .map_err(|error| log::warn!("Audio output unavailable: {error}"))
+            .ok()
             .flatten();
-        let sfx_player = startup_audio
-            .initialize_sfx_output
-            .then(SfxPlayer::new)
-            .flatten();
+        let music_player = shared_output
+            .as_ref()
+            .filter(|_| startup_audio.initialize_music_output)
+            .map(|sink| MusicPlayer::from_mixer(sink.mixer().clone()));
+        let sfx_player = shared_output
+            .as_ref()
+            .filter(|_| startup_audio.initialize_sfx_output)
+            .map(|sink| SfxPlayer::from_mixer(sink.mixer().clone()));
         let launcher_audio_available = crate::app::audio_runtime::derive_launcher_audio_available(
             startup_options.audio_enabled,
             music_player.is_some(),
@@ -606,6 +615,7 @@ impl App {
             launcher_audio_available,
             theme_startup_suppressed: false,
             movie_audio: Default::default(),
+            output: shared_output,
         };
         if let Some(assets) = startup_asset_manager.as_ref() {
             startup_audio_runtime.initialize_theme(assets);

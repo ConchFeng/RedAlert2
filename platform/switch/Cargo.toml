@@ -11,10 +11,12 @@ publish = false
 crate-type = ["staticlib", "rlib"]
 
 [features]
-gpu = ["dep:wgpu", "dep:bytemuck", "dep:image", "dep:anyhow", "dep:log"]
+gpu = ["dep:wgpu", "dep:bytemuck", "dep:image", "dep:anyhow", "dep:log", "dep:glam", "dep:serde"]
+client = ["dep:vera20k", "dep:anyhow", "dep:log"]
 
 [dependencies]
 vera20k-core = { path = "../../src" }
+vera20k = { path = "../..", optional = true, default-features = false, features = ["horizon-client"] }
 rayon = "1.11"
 wgpu = { version = "=27.0.1", optional = true, default-features = false, features = ["vulkan", "wgsl"] }
 bytemuck = { version = "1", optional = true, features = ["derive"] }
@@ -22,6 +24,8 @@ bytemuck = { version = "1", optional = true, features = ["derive"] }
 image = { version = "=0.25.9", optional = true, default-features = false, features = ["png"] }
 anyhow = { version = "1", optional = true }
 log = { version = "0.4", optional = true }
+glam = { version = "0.29", optional = true }
+serde = { version = "1", optional = true, features = ["derive"] }
 
 [profile.release]
 panic = "abort"
