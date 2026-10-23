@@ -1179,23 +1179,47 @@ impl App {
         if state.frontend.screen != GameScreen::InGame {
             return;
         }
+        let mut ran = 0usize;
         for _ in 0..MAX_CATCH_UP_FRAMES {
             let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
             let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
             // An untimed scenario is unpaced by design; it needs no backlog.
             if game_speed == 0 || state.frontend.screen != GameScreen::InGame {
-                return;
+                break;
             }
             if !state.platform.frame_pacer.should_admit(
                 now_ms,
                 game_speed,
                 state.match_state.paused(),
             ) {
-                return;
+                break;
             }
             if Self::service_match_runtime(state, event_loop, true).quit_requested {
                 return;
             }
+            ran += 1;
+        }
+        if ran != 0 {
+            Self::report_catch_up(ran);
+        }
+    }
+
+    /// Report how much slow motion the pacer recovered, at most every ten
+    /// seconds, so a device log shows whether catch-up is actually running.
+    fn report_catch_up(ran: usize) {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static TOTALS: AtomicU64 = AtomicU64::new(0);
+        static NEXT_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+        TOTALS.fetch_add(ran as u64, Ordering::Relaxed);
+        let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
+        let next = NEXT_REPORT_MS.load(Ordering::Relaxed);
+        if now_ms >= next
+            && NEXT_REPORT_MS
+                .compare_exchange(next, now_ms + 10_000, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        {
+            let total = TOTALS.swap(0, Ordering::Relaxed);
+            log::info!("Frame pacer ran {total} extra Logic frames in the last 10 s");
         }
     }
 }
