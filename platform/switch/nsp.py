@@ -24,7 +24,7 @@ def file_sha256(path: Path) -> str:
 
 
 def verify_package(path: Path, keys: Path, sdk: Path, title_id: str, log_directory: Path,
-                   *, expect_romfs: bool = False):
+                   *, expect_romfs: bool = False, expect_wildcard_services: bool = False):
     """Verify the actual NSP's three NCAs, allowing only homebrew signature failures."""
     log_directory.mkdir(parents=True, exist_ok=True)
     hactool = sdk / "tools/bin/hactool"
@@ -57,6 +57,14 @@ def verify_package(path: Path, keys: Path, sdk: Path, title_id: str, log_directo
                 raise SystemExit("NCA data hashes were not verified")
             if content.group(1) == "Program" and "NPDM Signature (GOOD)" not in result.stdout:
                 raise SystemExit("Program NPDM signature did not verify")
+            if content.group(1) == "Program" and expect_wildcard_services:
+                wildcard = re.search(
+                    r"Service Access Control:\s*\n\s*Hosts:\s+\*\s*\n\s*Accesses:\s+\*\s*$",
+                    result.stdout,
+                    re.MULTILINE,
+                )
+                if wildcard is None:
+                    raise SystemExit("Program NPDM does not grant wildcard service access")
             if content.group(1) == "Program":
                 program_partitions.update(
                     re.findall(r"Partition Type:\s+(\w+)", result.stdout)
@@ -140,7 +148,8 @@ def package(root: Path, sdk: Path, elf: Path, nacp: Path, *,
     target = root / f"dist/{output_artifact or artifact}.nsp"
     produced = output / f"{title_id}.nsp"
     verify_package(produced, keys, sdk, title_id, work / "verification",
-                   expect_romfs=romfs is not None)
+                   expect_romfs=romfs is not None,
+                   expect_wildcard_services=artifact == "vera20k-client")
     produced.replace(target)
     romfs_note = f", ROMFS {romfs}" if romfs is not None else ""
     print(f"Built standalone NSP: {target} (title ID {title_id}{romfs_note})")
