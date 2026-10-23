@@ -271,21 +271,20 @@ pub(crate) struct DisplayChoice {
 }
 
 impl DisplayChoice {
-    /// The row's text, `DISPLAY1: 1920x1080: 60Hz`. A screen that reports no
-    /// refresh rate says so instead of guessing one.
-    pub(crate) fn label(&self) -> String {
-        let name = self
-            .id
-            .rsplit_once('\\')
-            .map_or(self.id.as_str(), |(_, tail)| tail);
-        let rate = match self.refresh_millihertz {
+    /// The row's text for the `number`th screen of the list (1-based),
+    /// `Screen 1: 1920x1080 60Hz`. The window system's own name is not shown:
+    /// macOS answers `Monitor #<model number>`, which means nothing to a
+    /// player and is the same for two identical monitors. A screen that
+    /// reports no refresh rate leaves it out instead of guessing one.
+    pub(crate) fn label(&self, number: usize) -> String {
+        let size = format!("Screen {number}: {}x{}", self.width, self.height);
+        match self.refresh_millihertz {
             // A rate the backend does not know, and the zero some virtual
-            // adapters report for a mode they do not drive, both read as
-            // "unknown" rather than as a refresh rate of zero.
-            Some(millihertz) if millihertz > 0 => format!("{}Hz", millihertz / 1000),
-            _ => "unknown Hz".to_owned(),
-        };
-        format!("{name}: {}x{}: {rate}", self.width, self.height)
+            // adapters report for a mode they do not drive, are both left out
+            // rather than shown as a refresh rate of zero.
+            Some(millihertz) if millihertz > 0 => format!("{size} {}Hz", millihertz / 1000),
+            _ => size,
+        }
     }
 }
 
@@ -1486,15 +1485,15 @@ mod tests {
     }
 
     #[test]
-    fn display_rows_name_the_device_size_and_rate() {
+    fn display_rows_name_the_list_position_size_and_rate() {
         let choices = display_settings();
-        // Only the device name's last segment shows; the full name persists.
-        assert_eq!(choices[0].label(), "DISPLAY1: 1920x1080: 60Hz");
+        // The list position names the screen; the device name only persists.
+        assert_eq!(choices[0].label(1), "Screen 1: 1920x1080 60Hz");
         // A rate that is not a whole number of hertz still reads as its
         // truncated figure, so a 143.999 Hz panel says 143Hz, not 144Hz.
-        assert_eq!(choices[1].label(), "DISPLAY2: 2560x1440: 143Hz");
-        // A screen that reports no rate says so instead of inventing one.
-        assert_eq!(choices[2].label(), "DISPLAY3: 800x600: unknown Hz");
+        assert_eq!(choices[1].label(2), "Screen 2: 2560x1440 143Hz");
+        // A screen that reports no rate leaves it out instead of inventing one.
+        assert_eq!(choices[2].label(3), "Screen 3: 800x600");
     }
 
     #[test]

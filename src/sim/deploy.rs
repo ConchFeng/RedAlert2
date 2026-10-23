@@ -402,10 +402,13 @@ impl Simulation {
 impl Simulation {
     /// Shared DeploySound/UndeploySound receiver. Infantry Do_Action51D939
     /// requests it for an admitted changed action; Unit739AC0/739CD0 request
-    /// it on each admitted updater visit.
+    /// it on each admitted updater visit. Every site plays at the actor's own
+    /// Location: Infantry `0x0051D94F..0x0051D9CA`, Unit deploy
+    /// `0x00739C86..0x00739CB9`, Unit undeploy `0x00739E81..0x00739EB3`.
     pub(crate) fn emit_deploy_action_sound(
         interner: &mut StringInterner,
         substrate: &ObjectSubstrate,
+        terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
         sound_events: &mut FrameChannel<SimSoundEvent>,
         id: u64,
         requested: i32,
@@ -429,19 +432,17 @@ impl Simulation {
         let Some(sound) = sound else {
             return Ok(());
         };
-        let (rx, ry) = (actor.position.rx(), actor.position.ry());
+        let world = crate::sim::movement::ground_pose::object_location(actor, terrain).into();
         let sound_id = interner.intern(sound);
         sound_events.emit(if requested == 27 {
             SimSoundEvent::EntityDeployed {
                 deploy_sound_id: sound_id,
-                rx,
-                ry,
+                world,
             }
         } else {
             SimSoundEvent::EntityUndeployed {
                 undeploy_sound_id: sound_id,
-                rx,
-                ry,
+                world,
             }
         });
         Ok(())
@@ -554,11 +555,11 @@ impl Simulation {
             }
         } else {
             self.infantry_do_action(id, 27, true, rules, effects)?;
-            //70E120 uses the SprayAttack slot70DD70, not GetCurrentWeapon
-            //70E1A0. The existing GetWeapon owner resolves the live tier.
+            //70E120 uses the SprayAttack selector70DD70, not GetCurrentWeapon
+            //70E1A0. The shared owner forwards it through GetWeapon70E140.
             let actor = self.substrate.entities.get(id).expect("same Unload actor");
-            let slot = if object.spray_attack { 0 } else { 1 };
-            let area_fire = combat_weapon::weapon_for_index(object, actor.veterancy.rank(), slot)
+            let (_, deployed_weapon) = combat_weapon::deploy_weapon(object, actor.veterancy.rank());
+            let area_fire = deployed_weapon
                 .and_then(|(weapon, _)| rules.weapon(weapon))
                 .is_some_and(|weapon| weapon.area_fire);
             if area_fire {

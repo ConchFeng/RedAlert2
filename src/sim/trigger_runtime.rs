@@ -381,16 +381,13 @@ impl RuntimeDefinitions {
         // ignoring case, and ReadINI727240/6E6080 read every record by that
         // Type's own ID, exact case. A key differing from an earlier one only
         // in case revisits that Type and reads the earlier key's records.
-        // Residual, exact duplicate keys: LoadFromStraw525A60 keeps every
-        // copy (526177 appends each to the entry list and CRC index without
-        // a duplicate check) and 7275D0/6E5ED0/4AD1B3 visit each copy by
-        // index, so native reads that Type once per copy: a duplicated
-        // [Triggers] key prepends its events again. ReadString finds the key
-        // through the qsorted CRC index (526B10), so the copy whose value it
-        // returns is the sort's. IniFile keeps the first copy only, so each
-        // Type is read once here. No extracted retail map has a duplicate.
+        // LoadFromStraw525A60/526177 retains every physical entry. The
+        // 7275D0/6E5ED0 loops revisit a Type for each copy, reading its header
+        // through the shared CRC lookup526B10: events prepend again while
+        // actions replace. No new RNG/timer/detach owner belongs to the read;
+        // the existing Fill/LiveTrigger constructor consumes those events.
         if let Some(section) = map.ini.section("Triggers") {
-            for key in section.keys() {
+            for key in section.physical_keys() {
                 if section.read_name(key, 24).is_none() {
                     continue;
                 }
@@ -446,7 +443,7 @@ impl RuntimeDefinitions {
             }
         }
         if let Some(section) = map.ini.section("Tags") {
-            for key in section.keys() {
+            for key in section.physical_keys() {
                 if section.read_name(key, 24).is_none() {
                     continue;
                 }
@@ -2761,6 +2758,21 @@ impl Simulation {
         std::array::from_fn(|index| self.trigger_runtime.globals_set.contains(&(index as u32)))
     }
 
+    /// Controlled campaign capture input through SetGlobal689670, including
+    /// its ordinary Tag timer resets. This does not replace the incoming
+    /// carry-over record; Victory4C6180 must capture it normally.
+    #[cfg(feature = "dev-overlays")]
+    pub fn dev_set_scenario_global(&mut self, index: i32, set: bool) {
+        Self::set_trigger_variable(
+            &self.session,
+            &mut self.scenario_rng,
+            &mut self.trigger_runtime,
+            true,
+            index,
+            set,
+        );
+    }
+
     /// Shared Scenario SetGlobal689670/SetLocal689910 mutation, including
     /// Tag timer resets. Trigger and Team scripts use this same owner.
     pub(crate) fn set_trigger_variable(
@@ -3295,7 +3307,7 @@ impl Simulation {
                     index: value.unwrap_or(0),
                 });
             }
-            31 => self.trigger_grow_shroud(
+            31 => self.grow_shroud(
                 crate::sim::world::UninitContext::new(rules, overlay_registry)
                     .with_effects(frame_effects),
             ),
@@ -4124,6 +4136,9 @@ impl Simulation {
             }
             110 => {
                 effects.extend(self.session.pause_scenario(value.unwrap_or(0)));
+                // ScenarioPause684060 pauses elapsed time and Vox inline,
+                // before a following result action or House's Vox poll.
+                frame_effects.consume_prefix_effects(effects);
             }
             87 => {
                 // Steam gamemd, Execute6DDBD5..6DDBF3.
@@ -4745,6 +4760,14 @@ impl Simulation {
 }
 
 impl TriggerRuntime {
+    /// Retail CellClass::Constructor @ 0x0047BBF0, reached by
+    /// MapClass::Resize @ 0x00565C10, directly clears Dummy+3C at 0x0047BC18.
+    /// This is not ReplaceTag485250: retain Tag refs, timers and live state.
+    /// Source: original gamemd.exe instructions.
+    pub(super) fn reconstruct_dummy_for_map_resize(&mut self) {
+        self.cell_tags.remove(&NativeCellIdentity::Dummy);
+    }
+
     fn replace_cell_trigger_tag(&mut self, cell: NativeCellIdentity, tag: Option<usize>) {
         if let Some(previous) = self.cell_tags.remove(&cell)
             && let Some(old) = self.tags[previous].as_mut()
@@ -4936,6 +4959,10 @@ fn count_techtype(sim: &Simulation, type_id: &str) -> usize {
 #[cfg(test)]
 #[path = "trigger_runtime_tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "trigger_runtime_duplicate_ini_tests.rs"]
+mod duplicate_ini_tests;
 
 #[cfg(test)]
 #[path = "trigger_runtime_zone_entry_tests.rs"]
@@ -5160,6 +5187,14 @@ mod restore_tests;
 #[cfg(test)]
 #[path = "trigger_runtime_scenario_pause_tests.rs"]
 mod scenario_pause_tests;
+
+#[cfg(test)]
+#[path = "trigger_runtime_outcome_tests.rs"]
+mod outcome_tests;
+
+#[cfg(test)]
+#[path = "trigger_runtime_digest_ini_tests.rs"]
+mod digest_ini_tests;
 
 #[cfg(test)]
 #[path = "world/building_sale_trigger_tests.rs"]

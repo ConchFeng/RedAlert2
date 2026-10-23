@@ -18,10 +18,11 @@ use crate::sim::combat;
 #[cfg(any(test, feature = "test-support"))]
 use crate::sim::combat::combat_aoe::CellTargetDetach;
 use crate::sim::command::{
-    BUILDING_OFF_LINE_OPCODE, BUILDING_ON_LINE_OPCODE, BuildingOnLineRecord, COMMAND_RECORD_LEN,
-    Command, CommandEnvelope, CommandRecord, DeployRecord, ExitRecord, GameSpeedRecord,
-    MegaMissionOrder, MegaMissionRecord, MegaMissionTarget, PlaceRecord, ProductionEvent,
-    ProductionRecord, ScatterRecord, SellWallAtCellRecord, StopRecord,
+    ArchiveRecord, BUILDING_OFF_LINE_OPCODE, BUILDING_ON_LINE_OPCODE, BuildingOnLineRecord,
+    COMMAND_RECORD_LEN, Command, CommandEnvelope, CommandRecord, DeployRecord, ExitRecord,
+    GameSpeedRecord, MegaMissionOrder, MegaMissionRecord, MegaMissionTarget, PlaceRecord,
+    ProductionEvent, ProductionRecord, RepairRecord, ScatterRecord, SellWallAtCellRecord,
+    StopRecord,
 };
 use crate::sim::house_diplomacy::HouseAlliances;
 use crate::sim::intern::{InternedId, StringInterner};
@@ -251,6 +252,48 @@ impl Simulation {
         Some(record)
     }
 
+    /// Display4AC0D3..4AC198 constructs REPAIR15 with PlayerPtr+30 and
+    /// the picked object's token. Preserve that token until execution;
+    /// constructor4C65E0 does not read its owner or repair eligibility.
+    /// Source: original gamemd.exe instructions.
+    pub fn encode_repair_record(
+        &self,
+        command_owner: InternedId,
+        entity_id: u64,
+    ) -> Option<CommandRecord> {
+        let mut record =
+            self.encode_header_event(command_owner, crate::sim::command::REPAIR_OPCODE)?;
+        RepairRecord {
+            house_id: record.house_id(),
+            frame: record.frame_stamp(),
+            entity_id: i32::try_from(entity_id).ok()?,
+        }
+        .write_into(&mut record);
+        Some(record)
+    }
+
+    /// SetRallyPoint4439C5 and object-click44367B ask the actor's vt+38
+    /// (Techno6F9DB0), not PlayerPtr. Preserve that House and both tokens
+    /// at issue; send-time retiming remains the packet codec's responsibility.
+    /// Source: original gamemd.exe constructor4C6780.
+    pub(super) fn encode_archive_record(
+        &self,
+        entity_id: u64,
+        target: MegaMissionTarget,
+    ) -> Option<CommandRecord> {
+        let owner = self.substrate.entities.get(entity_id)?.owner();
+        let mut record = self.encode_header_event(owner, crate::sim::command::ARCHIVE_OPCODE)?;
+        ArchiveRecord {
+            house_id: record.house_id(),
+            frame: record.frame_stamp(),
+            entity_id: i32::try_from(entity_id).ok()?,
+            target,
+        }
+        .write_into(&mut record)
+        .ok()?;
+        Some(record)
+    }
+
     /// Select6AAD00's production events use the clicked type's native array
     /// index, RTTI and Naval flag, captured now rather than when dispatched.
     pub fn encode_production_record(
@@ -313,10 +356,11 @@ impl Simulation {
             .factories()
             .view(command_owner, category)?
             .complete_object()?;
-        let selection = production::ProductionSelection::for_type(
-            rules,
-            self.object_type(held.type_id, rules)?,
-        )?;
+        let object = self.object_type(held.type_id, rules)?;
+        if object.category == crate::rules::object_type::ObjectCategory::Building {
+            return None;
+        }
+        let selection = production::ProductionSelection::for_type(rules, object)?;
         self.encode_place_record(
             command_owner,
             production::ProductionSelection {
@@ -670,6 +714,43 @@ impl Simulation {
         record: &CommandRecord,
         execute_tick: u64,
     ) -> Option<CommandEnvelope> {
+        if let Some(event) = RepairRecord::decode(record) {
+            let owner = *self
+                .houses
+                .order()
+                .get(usize::try_from(event.house_id).ok()?)?;
+            let entity_id = u64::try_from(event.entity_id).ok()?;
+            return self.houses.contains_key(&owner).then(|| {
+                CommandEnvelope::new(owner, execute_tick, Command::ToggleRepair { entity_id })
+            });
+        }
+        if let Some(event) = ArchiveRecord::decode(record) {
+            let owner = *self
+                .houses
+                .order()
+                .get(usize::try_from(event.house_id).ok()?)?;
+            if !self.houses.contains_key(&owner) {
+                return None;
+            }
+            // Preserve late object lookup and NULL. These semantic views do
+            // not replace the native record held by queues/replay/snapshots.
+            let entity_id = u64::try_from(event.entity_id).ok()?;
+            let payload = match event.target {
+                MegaMissionTarget::Cell { x, y } => Command::SetRally {
+                    rx: x as u16,
+                    ry: y as u16,
+                    producer_ids: vec![entity_id],
+                },
+                MegaMissionTarget::Object { id } if id >= 0 => Command::ArchiveObject {
+                    entity_id,
+                    target_id: id as u64,
+                },
+                _ => Command::SynchronizedRecord {
+                    record: record.clone(),
+                },
+            };
+            return Some(CommandEnvelope::new(owner, execute_tick, payload));
+        }
         if ProductionRecord::decode(record).is_some() || PlaceRecord::decode(record).is_some() {
             let owner = *self
                 .houses
@@ -1333,7 +1414,8 @@ impl Simulation {
         let ordinary_actor = match cmd {
             Command::Stop { entity_id }
             | Command::Scatter { entity_id }
-            | Command::DeployMcv { entity_id } => Some(*entity_id),
+            | Command::DeployMcv { entity_id }
+            | Command::ToggleRepair { entity_id } => Some(*entity_id),
             _ => cmd.megamission_actor(),
         };
         if !planned && let Some(actor) = ordinary_actor {
@@ -1388,6 +1470,21 @@ impl Simulation {
                 self.apply_planning_record(command_owner, record, rules)
             }
             Command::SynchronizedRecord { record } => {
+                if let Some(event) = ArchiveRecord::decode(record) {
+                    let Ok(entity_id) = u64::try_from(event.entity_id) else {
+                        return false;
+                    };
+                    let target = match event.target {
+                        MegaMissionTarget::Null => None,
+                        MegaMissionTarget::Cell { x, y } => {
+                            Some(combat::TargetKind::Cell(x as u16, y as u16))
+                        }
+                        MegaMissionTarget::Object { id } => {
+                            u64::try_from(id).ok().map(combat::TargetKind::Entity)
+                        }
+                    };
+                    return self.execute_archive_event(entity_id, target);
+                }
                 self.apply_production_record(record, rules, overlay_registry, frame_effects)
             }
             Command::Select { entity_ids, .. } => self.apply_selection_snapshot(
@@ -1714,7 +1811,9 @@ impl Simulation {
             Command::ArchiveObject {
                 entity_id,
                 target_id,
-            } => self.archive_object(command_owner, *entity_id, *target_id),
+            } => {
+                self.execute_archive_event(*entity_id, Some(combat::TargetKind::Entity(*target_id)))
+            }
             // Production events act on the event's own house (the
             // EventClass header's house id); the payload names no owner.
             Command::QueueProduction { type_id } => {
@@ -1836,13 +1935,30 @@ impl Simulation {
                 if !self.houses.contains_key(&owner) {
                     return false;
                 }
-                // `0x004C6CF0`/`0x004C6D4D`: a null, dead (`+0x90`) or limboed
-                // (`+0x81`) target is dropped before GoOnline/GoOffline.
-                if !self
-                    .substrate
-                    .entities
-                    .get(*entity_id)
-                    .is_some_and(|e| e.lifecycle.object_alive() && !e.lifecycle.in_limbo())
+                // `0x004C6D09`/`0x004C6D17` (and `0x004C6D68`/`0x004C6D76` on the
+                // 0x02 branch): a null target, one whose ObjectClass IsAlive
+                // (`+0x90`) is clear, or one in Limbo (`+0x81`) is dropped
+                // before GoOnline/GoOffline. `+0x81` is Limbo, not a busy flag:
+                // `0x005438DB` sets it while clearing `+0x80` and detaching the
+                // object's cells (Limbo), `0x00543805` clears it (Unlimbo), and
+                // the create path at `0x0044EC68`/`0x0044ECC4` brackets object
+                // construction with a save/set/restore of the same byte.
+                let Some(entity) = self.substrate.entities.get(*entity_id) else {
+                    return false;
+                };
+                if !entity.lifecycle.object_alive() || entity.lifecycle.in_limbo() {
+                    return false;
+                }
+                let type_ref = entity.type_ref();
+                // The branch's last gate reads `[target+0x520]+0x16C0`, and
+                // `+0x520` is `BuildingClass::pType` (docs/ghidra-workflow.md):
+                // the target TYPE's `FirestormWall=` byte
+                // (`ObjectType.firestorm_wall`). A Firestorm Wall building is
+                // driven by the firestorm logic, not an On/Off Line event, so
+                // the record is dropped. Stock rules leave the key unset.
+                if self
+                    .object_type(type_ref, rules)
+                    .is_some_and(|object| object.firestorm_wall)
                 {
                     return false;
                 }
@@ -1963,15 +2079,16 @@ impl Simulation {
                 self.flag_house_to_die(owner);
                 true
             }
-            // `EventClass::Execute 0x004C6ED2..0x004C6F01`: a live target
-            // (`+0x90`) toggles (`ToggleRepair(-1)`).
+            // Event4C6ED2 resolves Techno and detaches planning6386E0 above,
+            // before its only admission: Object+90. Accepted events survive
+            // capture; neither sender ownership nor CanRepair is rechecked.
+            // Source: original gamemd.exe instructions4C6ED2..4C6F01.
             Command::ToggleRepair { entity_id } => {
-                if !self.entity_owned_by_id(command_owner, *entity_id)
-                    || !self
-                        .substrate
-                        .entities
-                        .get(*entity_id)
-                        .is_some_and(|entity| entity.lifecycle.object_alive())
+                if !self
+                    .substrate
+                    .entities
+                    .get(*entity_id)
+                    .is_some_and(|entity| entity.lifecycle.object_alive())
                 {
                     return false;
                 }
@@ -2337,27 +2454,16 @@ impl Simulation {
     /// Map56DC20's nearby-passable search separately for each producer. This
     /// synchronized event stores that prepared target without searching again.
     fn set_rally_point_for_producers(&mut self, producer_ids: &[u64], rx: u16, ry: u16) -> bool {
-        let mut ids = producer_ids.to_vec();
-        ids.sort_unstable();
-        ids.dedup();
-        for stable_id in ids {
-            self.execute_archive_event(stable_id, crate::sim::combat::TargetKind::Cell(rx, ry));
+        for &stable_id in producer_ids {
+            self.execute_archive_event(
+                stable_id,
+                Some(crate::sim::combat::TargetKind::Cell(rx, ry)),
+            );
         }
         // `EVA_NewRallyPointEstablished` is not a sim fact: `BuildingClass::
         // SetRallyPoint 0x00443A69` speaks inside the click handler, after the
         // rally EventClass is pushed and before it executes — the app owns it.
         true
-    }
-
-    /// The object click's event 0x1E for a non-factory building
-    /// ([`Command::ArchiveObject`]), run by [`Self::execute_archive_event`].
-    /// The owner test is VERA's command admission.
-    ///
-    /// [`Command::ArchiveObject`]: crate::sim::command::Command::ArchiveObject
-    fn archive_object(&mut self, command_owner: &str, entity_id: u64, target_id: u64) -> bool {
-        self.entity_owned_by_id(command_owner, entity_id)
-            && self
-                .execute_archive_event(entity_id, crate::sim::combat::TargetKind::Entity(target_id))
     }
 
     /// `EventClass::Execute @ 0x004C6DAA`'s event 0x1E (ARCHIVE) for
@@ -2369,7 +2475,7 @@ impl Simulation {
     fn execute_archive_event(
         &mut self,
         entity_id: u64,
-        target: crate::sim::combat::TargetKind,
+        target: Option<crate::sim::combat::TargetKind>,
     ) -> bool {
         self.planning_detach_actor(entity_id);
         // The target resolves only for a live object (`0x004C6DCD` precedes
@@ -2382,7 +2488,7 @@ impl Simulation {
         {
             return false;
         }
-        let target = self.resolve_event_token(Some(target));
+        let target = self.resolve_event_token(target);
         if let Some(object) = self.substrate.entities.get_mut(entity_id) {
             object.set_archive_target(target);
         }
@@ -3102,6 +3208,129 @@ mod tests {
     }
 
     #[test]
+    fn accepted_archive_keeps_its_tokens_after_capture_and_resolves_missing_target_to_null() {
+        use crate::sim::house_state::HouseState;
+        let rules = amcv_move_rules();
+        let mut sim = Simulation::new();
+        let old_owner = sim.intern("Americans");
+        let new_owner = sim.intern("British");
+        for owner in [old_owner, new_owner] {
+            sim.houses
+                .register(HouseState::new(owner, 0, None, true, 0, 10));
+        }
+        spawn_rule_backed_unit(&mut sim, 42, "AMCV", &rules);
+        spawn_rule_backed_unit(&mut sim, 43, "AMCV", &rules);
+        sim.substrate
+            .entities
+            .get_mut(42)
+            .unwrap()
+            .set_archive_target(Some(combat::TargetKind::Cell(5, 6)));
+        assert!(sim.issue_local_command(CommandEnvelope::new(
+            old_owner,
+            0,
+            Command::ArchiveObject {
+                entity_id: 42,
+                target_id: 43,
+            }
+        )));
+        let record = sim.network_command_queues().local_records().unwrap()[0].clone();
+        assert_eq!(
+            ArchiveRecord::decode(&record).unwrap().target,
+            MegaMissionTarget::Object { id: 43 }
+        );
+        sim.change_owner_with_rules(42, new_owner, &rules, None, FrameEffects::default());
+        sim.substrate.entities.remove(43);
+        let queued = sim.take_frame_commands_for_test();
+        assert_eq!(queued.len(), 1);
+        assert_eq!(queued[0].owner, old_owner);
+        assert!(sim.apply_command("Americans", &queued[0].payload, Some(&rules)));
+        assert_eq!(
+            sim.substrate.entities.get(42).unwrap().archive_target(),
+            None
+        );
+
+        // Native6E6F0F resolves an unknown kind to NULL too. It must still
+        // execute the archive setter, rather than silently dropping the event.
+        sim.substrate
+            .entities
+            .get_mut(42)
+            .unwrap()
+            .set_archive_target(Some(combat::TargetKind::Cell(7, 8)));
+        let mut null = record;
+        null.payload_mut()[9] = 0xff;
+        let command = sim.decode_native_command_record(&null, 0).unwrap();
+        assert!(sim.apply_command("Americans", &command.payload, Some(&rules)));
+        assert_eq!(
+            sim.substrate.entities.get(42).unwrap().archive_target(),
+            None
+        );
+    }
+
+    #[test]
+    fn accepted_repair_resolves_the_captured_building_and_stale_target_at_dispatch() {
+        let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+            return;
+        };
+        let rules = retail.rules;
+        let mut sim = crate::sim::arena_fixture::rival_arena(&rules, 0x4C6ED2);
+        let old_owner = sim.interner.get("Americans").unwrap();
+        let new_owner = sim.interner.get("Russians").unwrap();
+        let building = sim
+            .spawn_object("GAPILE", "Americans", 8, 8, 0, &rules)
+            .unwrap();
+        sim.substrate
+            .entities
+            .get_mut(building)
+            .unwrap()
+            .health
+            .set(300);
+        let record = sim.encode_repair_record(old_owner, building).unwrap();
+        assert!(sim.admit_native_command_record(record.clone()));
+        sim.change_owner_with_rules(building, new_owner, &rules, None, FrameEffects::default());
+        assert!(
+            !sim.substrate
+                .entities
+                .get(building)
+                .unwrap()
+                .repairing
+                .is_on()
+        );
+        let bytes = crate::sim::snapshot::GameSnapshot::save(&sim, 0, 0, "repair", 0);
+        let mut sim = crate::sim::snapshot::GameSnapshot::load(&bytes)
+            .unwrap()
+            .sim;
+        sim.restore_after_snapshot_load().unwrap();
+        let admitted = sim.take_frame_commands_for_test();
+        assert_eq!(admitted.len(), 1);
+        assert_eq!(admitted[0].owner, old_owner);
+        let (accepted, draws) = crate::sim::rng::trace_draws(|| {
+            sim.apply_command("Americans", &admitted[0].payload, Some(&rules))
+        });
+        assert!(accepted, "the old issuer is not receiver admission");
+        assert!(draws.is_empty());
+        assert!(
+            sim.substrate
+                .entities
+                .get(building)
+                .unwrap()
+                .repairing
+                .is_on()
+        );
+        assert_eq!(
+            sim.substrate
+                .entities
+                .get(building)
+                .unwrap()
+                .health
+                .current(),
+            300
+        );
+        sim.substrate.entities.remove(building);
+        let stale = sim.decode_native_command_record(&record, 0).unwrap();
+        assert!(!sim.apply_command("Americans", &stale.payload, Some(&rules)));
+    }
+
+    #[test]
     fn idle_record_preserves_unresolved_token_and_decodes_at_execution() {
         use crate::sim::house_state::HouseState;
 
@@ -3491,7 +3720,15 @@ mod tests {
             .get_mut(2)
             .unwrap()
             .type_facts
-            .set_foundation_for_test(retail.rules.object("NATBNK").unwrap().foundation.clone());
+            .set_foundation_for_test(
+                retail
+                    .rules
+                    .object("NATBNK")
+                    .unwrap()
+                    .foundation
+                    .clone()
+                    .into(),
+            );
         // The install's arrival test reads its cell's building list
         // (`0x0047C520`), so the bunker stands on its retail foundation.
         for (rx, ry) in

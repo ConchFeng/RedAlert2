@@ -1,9 +1,81 @@
 # VERA20k Switch 移植
 
 这是原生 Horizon / 大气层移植入口，独立 Cargo workspace，不改变桌面客户端的依赖和锁文件。
-当前分支：`feature/switch-port`，上游基线：`38363bba0`。
+当前分支：`feature/switch-port`，上游基线：`0516477e7`。
 
-交接与继续工作见 [HANDOFF.md](HANDOFF.md)。用户最新要求：后续暂时只在模拟器运行验证。
+当前状态与验证证据见 [HANDOFF.md](HANDOFF.md)，后续执行顺序和验收条件见
+[PLAN.md](PLAN.md)。用户已确认上一版真机有声音；后续交付资源内置 NSP，
+存档使用启动时所选账号的系统 SaveData。
+完整客户端已在 Eden 跑通菜单、战役、遭遇战和电厂生产放置；资源内置 NSP
+也已从空 SD 资源目录启动并进入遭遇战。完整战术操作与新版真机验收尚未完成；
+下方早期检查点中的限制以 HANDOFF 顶部当前结论为准。
+
+上游 `main` 已同步到 `0516477e7`。安装版 NSP 的 `appletInitialize 0x3f59`
+已定位为 NPDM 服务白名单缺项，现改为安装客户端 wildcard 服务权限并重新打包；
+新包尚未在真机复测，不能提前标记为已修复。
+
+## 完整客户端入口（接入中）
+
+`--client` 直接编译共享 `vera20k` 客户端库，以 Horizon 窗口后端驱动同一个
+`App`，保留完整菜单、对局、输入、音频与存档代码。此入口没有 GPU 探针的
+60 秒超时。整体编译、链接和菜单到真实对局已通过，剩余验收见 PLAN。
+
+```bash
+python3 build.py --client
+```
+
+默认交付产物为 `dist/vera20k-client-assets.nsp`，标题 ID
+`0100f52556458000`。运行日志在客体 `sdmc:/switch/vera20k/logs/client.log`，
+错误结果在 `sdmc:/switch/vera20k/client.last-error.txt`；使用现有 master 模拟器
+数据目录。资源优先从包内 RomFS 读取，配置和日志目录为
+`sdmc:/switch/vera20k`。存档根为 `vera20k-user:/saves`，挂载到所选账号的
+系统 SaveData；NACP 要求选择用户，预设 256 MiB 数据空间和 64 MiB 日志空间。
+随构建生成的 NRO 留作诊断，当前客户端启动要求 NSP 的账号上下文。
+窗口后端来源与当前手柄映射见 [winit-horizon/UPSTREAM.md](winit-horizon/UPSTREAM.md)。
+
+## 把游戏资源一起打入 NSP
+
+完整客户端链接构建默认把本机资源目录打入 Program RomFS，`--check` 只检查编译。
+可显式指定不同资源目录：
+
+```bash
+cd ~/ws/projects/vera20k-switch/platform/switch
+python3 build.py --client --nsp \
+  --nsp-assets target/emulator/master-xdg-data/eden/sdmc/game
+```
+
+也可以把 `--nsp-assets` 指向单独准备的资源目录。目录根必须有非空的
+`ra2.mix`、`ra2md.mix`（小写文件名）；指定目录的全部文件和子目录原样入包，
+因此请只放需要随包携带的资源。原始资源留在本机，不加入 Git。
+
+资源版产物为 `dist/vera20k-client-assets.nsp`，独立于不含资源的
+`dist/vera20k-client.nsp`；两者标题 ID 相同，不是两个可同时安装的游戏。
+当前本机约 748 MiB 的资源生成 803,004,120 字节（约 766 MiB）的 NSP，
+SHA256 为
+`4ef00f71c4da3764ad89c0e6803fc24ee7c2fe2c76f509f5e6dcb03ed0404f8b`。
+本次命令也更新 NRO，但 NRO 本身不内置这些资源。
+
+客户端挂载 `romfs:/`；没有配置覆盖时优先从包内读取资源，找不到包内资源时
+回退到 `sdmc:/game`。配置、日志和录像保存在
+`sdmc:/switch/vera20k`；普通存档改用账号 SaveData。首次发现旧 SD `saves` 目录时，
+导入其中 `.bin` / `.sav` 文件，保留原件及账号下已有文件；导入完成标记按账号保存。
+旧 `config.toml` 的 `[paths] ra2_dir` 继续具有优先权；
+测试包内资源时，应先备份并移开旧配置，让默认资源发现生效。
+
+已在独立 Eden 配置下验证：SD 中没有 `game` 目录，NSP 能启动完整主菜单并
+进入 URBAN 遭遇战，完整侧栏和单位可见。首次配置需沿用现有的
+`disable_macro_jit=true` / `disable_macro_hle=true`，同时将各自的
+`\default` 设为 `false`，否则 Eden 会恢复默认值。验证证据见 HANDOFF 顶部。
+`run_eden.sh --client` 仍是旧 NRO 诊断入口；验证当前客户端须将 Eden 的 `-g`
+指向上述 NSP，以提供账号存档上下文。
+
+Horizon 对局呈现设置 30 FPS 上限；不改变屏幕刷新率。所有呈现路径都接入
+SaltyNX 共享页上报，无服务时跳过；已有 NX-FPS 上报者活跃时交由它负责。
+外部插件读数、实际帧率及用户存档隔离仍需用最终 NSP 在真机确认。
+
+资源打包不会补齐源目录缺少的音乐或影片。本机目录缺少主题音乐资源；
+随机地图生成仍有向资源目录写 `RandMap.Sed` / 预览文件的路径，在只读 RomFS
+模式下尚未适配，当前请使用已有地图。
 
 ## 已实现并验证
 
@@ -124,6 +196,12 @@ GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 此模式使用带本地 SDL3 生命周期修复、立即数乘法支持的 Eden master，
 并在配置中关闭 macro JIT/HLE；复现见 [HANDOFF.md](HANDOFF.md#nvk-当前进度与模拟器阻塞)。
 核心模式仍使用 Eden 0.2.1 发布版。GPU 模式目前只生成 NRO。
+
+**启动模式：** 相册/主页菜单直接启动 NRO 是 `LibraryApplet`，内存与 Vi/NV
+服务权限受限；完整零售图集会快速失败并提示使用 Application 启动。请优先从
+应用菜单启动已安装的 NSP，或使用标题覆盖/转发器启动 NRO。GPU 初始化后加载
+theater、地图、对象和实时场景时会持续呈现进度条，避免长时间纯黑屏。
+如需保留 Mesa 详细日志，设置 `VERA_MESA_DEBUG=1`；默认不启用。
 当前工作区已将生产 `BatchRenderer` 编译进该入口，实例属性和合成 RGBA
 纹理采样与完整绘制已通过。主画面现在直接绘制生产地图加载链生成的地形；
 此前相机数据在片段阶段正确、在顶点阶段为零；

@@ -23,6 +23,12 @@ pub(crate) use countdown::ScenarioTimerAction;
 /// the binary's only store to it) and no INI key reads it.
 pub const NUKE_LEVEL_UNITS: i32 = 100;
 
+/// ScenarioClass Set_Defaults68375F..68378E anchors both map-regrowth
+/// timers at the current frame, zero on a fresh start, with zero duration.
+const fn initial_map_regrowth_timer() -> CdTimer {
+    CdTimer::started(0, 0)
+}
+
 /// One map-authored global lighting profile in the native integer scales.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub struct ScenarioLightProfileUnits {
@@ -584,6 +590,10 @@ impl ScenarioGameMode {
             Self::Campaign
         }
     }
+    /// `g_GameMode` 0 or 5: campaign or skirmish.
+    pub const fn is_single_player(self) -> bool {
+        matches!(self, Self::Campaign | Self::Skirmish)
+    }
     pub const fn is_network(self) -> bool {
         matches!(self, Self::Lan | Self::Wol)
     }
@@ -637,6 +647,12 @@ pub struct ScenarioDescriptor {
     pub free_radar: bool,
     /// Map `[Basic] IgnoreGlobalAITriggers`, native Scenario+34B4.
     pub ignore_global_ai_triggers: bool,
+    /// Map Basic.TimerInherit, reset false at683875.
+    pub timer_inherit: bool,
+    /// Basic68A175/68A1B2, consumed by EvadeClass::Do4C6210 after startup.
+    /// None resolves to fresh SetDefaults68381E/68382A's zero values.
+    pub carry_over_money: Option<crate::util::native_x87::NativeF64Bits>,
+    pub carry_over_cap: Option<i32>,
     /// Map Basic.TrainCrate / TruckCrate, reset false by683842/68388D.
     pub train_crate: bool,
     pub truck_crate: bool,
@@ -765,6 +781,9 @@ pub struct ScenarioSession {
     start_header: crate::map::preview::ScenarioStartHeader,
     #[serde(default)]
     campaign: Option<CampaignScenarioState>,
+    /// Scenario+35A0: SetDefaults6839C7 clears the raw stage word. MapSelect
+    /// 5AE1FA/5AE0B8 writes the selected index; Scenario save/load retains it.
+    campaign_map_stage: u16,
     /// Scenario+35A2. Trigger actions46/47 own this retained input lock;
     /// presentation reads it and applies the ordered mouse/keyboard effects.
     #[serde(default)]
@@ -776,6 +795,11 @@ pub struct ScenarioSession {
     /// belong to the countdown owner; UI consumes only its retained view.
     #[serde(default)]
     scenario_countdown: countdown::ScenarioCountdown,
+    /// Destination Scenario+1C78/+1C80; immutable after its Basic read.
+    #[serde(default)]
+    carry_over_money: Option<crate::util::native_x87::NativeF64Bits>,
+    #[serde(default)]
+    carry_over_cap: i32,
     /// Process scenario-active byte A8ED5C. StartScenario683E75 publishes1;
     /// MainGame48CEBF clears it on exit, and LoadGame67E6C4 republishes1.
     /// It is reconstructed by the committed load/start route, not inferred
@@ -860,6 +884,14 @@ pub struct ScenarioSession {
     /// the presentation viewer and cannot be rebound from selection each frame.
     /// Evidence: docs/research/PHASE3_CURRENT_HOUSE_IDENTITY_GHIDRA_REPORT.md.
     current_house: Option<InternedId>,
+    /// Process result requests A83D49/A8ECD0. HouseClass::AI @0x004F8440
+    /// clears Won at4F8657 before raising victory; later House flag/timer
+    /// writes cannot revoke it. Main_Game__Route_Scenario_Termination
+    /// @0x0055CFD0 selects victory first at55D059.
+    #[serde(default)]
+    victory_requested: bool,
+    #[serde(default)]
+    defeat_requested: bool,
     /// Scenario+34B8: saved signed Side, independent of current House and
     /// process Vox selection. SetDefaults68389F initializes0; Full_Init
     /// 687819/68782D/68792A/687938 installs the fresh value. Load67E75B
@@ -868,6 +900,14 @@ pub struct ScenarioSession {
     /// Per-match game settings (the lobby options card). Set once at game
     /// start, read-only during gameplay.
     game_options: GameOptions,
+    /// Scenario+1218/+1220, reloaded before GrowShroud by Logic55B26E..278.
+    /// Save689378/Load6894B7 retain both dwords; NoInit683560 leaves them.
+    #[serde(default = "initial_map_regrowth_timer")]
+    shroud_growth_timer: CdTimer,
+    /// Scenario+1224/+122C, restarted before RegrowFog by
+    /// LogicClass::AI55B2DF..55B326. Save/load retains its frame anchor.
+    #[serde(default = "initial_map_regrowth_timer")]
+    fog_regrow_timer: CdTimer,
     /// Monotonic Rust-side simulation ordinal. This is kept separately from
     /// the wrapping native frame so long-running diagnostics and command
     /// bookkeeping do not lose their ordering at the 32-bit wrap.
@@ -955,6 +995,14 @@ impl ScenarioSession {
         &self.game_options
     }
 
+    pub const fn fog_regrow_timer(&self) -> CdTimer {
+        self.fog_regrow_timer
+    }
+
+    pub const fn shroud_growth_timer(&self) -> CdTimer {
+        self.shroud_growth_timer
+    }
+
     pub const fn tick(&self) -> u64 {
         self.tick
     }
@@ -991,6 +1039,35 @@ impl ScenarioSession {
     /// Per-match options from the accepted launch, before House creation.
     pub(crate) fn install_game_options(&mut self, options: GameOptions) {
         self.game_options = options;
+    }
+
+    /// Full_Init686BA2 clears the campaign bit before the map's
+    /// Read_SpecialFlags6B8E69..6B8E89 installs its override.
+    pub(super) fn install_campaign_fog_of_war(&mut self, enabled: bool) {
+        self.game_options.fog_of_war = enabled;
+    }
+
+    /// LogicClass::AI55B2DF..55B323: test against the native frame and
+    /// restart before the caller runs RegrowFog. Flag/rate admission belongs
+    /// to that caller, so a disabled flag/rate leaves this timer untouched.
+    pub(crate) fn poll_fog_regrowth(&mut self, interval_frames: i32) -> bool {
+        let frame = self.binary_frame as i32;
+        if !self.fog_regrow_timer.expired(frame) {
+            return false;
+        }
+        self.fog_regrow_timer.start(frame, interval_frames);
+        true
+    }
+
+    /// LogicClass::AI55B228..55B278: restart before the shared GrowShroud
+    /// body can raise discovery callbacks. Admission leaves disabled timers alone.
+    pub(crate) fn poll_shroud_growth(&mut self, interval_frames: i32) -> bool {
+        let frame = self.binary_frame as i32;
+        if !self.shroud_growth_timer.expired(frame) {
+            return false;
+        }
+        self.shroud_growth_timer.start(frame, interval_frames);
+        true
     }
 
     /// In-game Options speed transition (accepted only within range).
@@ -1355,6 +1432,14 @@ impl ScenarioSession {
         self.campaign.map(|campaign| campaign.campaign_index)
     }
 
+    pub fn campaign_map_stage(&self) -> u16 {
+        self.campaign_map_stage
+    }
+
+    pub(super) fn set_campaign_map_stage(&mut self, stage: u16) {
+        self.campaign_map_stage = stage;
+    }
+
     pub fn campaign_restart_carry_over(
         &self,
     ) -> Option<crate::sim::campaign_carry_over::CampaignCarryOver> {
@@ -1390,6 +1475,28 @@ impl ScenarioSession {
         self.current_house
     }
 
+    pub(crate) const fn outcome_request(
+        &self,
+    ) -> Option<crate::sim::house_state::HouseOutcomeKind> {
+        use crate::sim::house_state::HouseOutcomeKind;
+        if self.victory_requested {
+            Some(HouseOutcomeKind::Victory)
+        } else if self.defeat_requested {
+            Some(HouseOutcomeKind::Defeat)
+        } else {
+            None
+        }
+    }
+
+    /// HouseClass::AI @0x004F8440 (4F8692/4F87B2) raises the request after
+    /// its Vox wait. Other House callbacks cannot revoke an admitted result.
+    pub(crate) fn admit_outcome(&mut self, kind: crate::sim::house_state::HouseOutcomeKind) {
+        match kind {
+            crate::sim::house_state::HouseOutcomeKind::Victory => self.victory_requested = true,
+            crate::sim::house_state::HouseOutcomeKind::Defeat => self.defeat_requested = true,
+        }
+    }
+
     pub const fn scenario_side(&self) -> i32 {
         self.scenario_side
     }
@@ -1423,6 +1530,10 @@ impl ScenarioSession {
             b"scenario-campaign-startup-v1".hash(hasher);
             campaign.hash(hasher);
         }
+        if s.campaign_map_stage != 0 {
+            b"scenario-map-stage-v1".hash(hasher);
+            s.campaign_map_stage.hash(hasher);
+        }
         if s.scenario_paused() || s.scenario_pause_timed() {
             b"scenario-pause-v1".hash(hasher);
             s.scenario_pause.hash(hasher);
@@ -1438,12 +1549,27 @@ impl ScenarioSession {
             b"scenario-countdown-v1".hash(hasher);
             s.scenario_countdown.hash(hasher);
         }
+        if s.shroud_growth_timer != initial_map_regrowth_timer() {
+            b"scenario-shroud-growth-timer-v1".hash(hasher);
+            s.shroud_growth_timer.hash(hasher);
+        }
+        if s.fog_regrow_timer != initial_map_regrowth_timer() {
+            b"scenario-fog-regrow-timer-v1".hash(hasher);
+            s.fog_regrow_timer.hash(hasher);
+        }
+        let (money, cap) = s.campaign_money_policy();
+        if money != crate::util::native_x87::NativeF64Bits::POSITIVE_ZERO || cap != 0 {
+            b"scenario-campaign-money-policy-v1".hash(hasher);
+            money.hash(hasher);
+            cap.hash(hasher);
+        }
         if !s.waypoints.is_empty() {
             b"scenario-waypoints-v1".hash(hasher);
             s.waypoints.hash(hasher);
         }
-        // current_house and scenario_side are persisted process inputs, absent from
-        // the shared peer hash: native64DAB0 does not fold A83D4C, and different
+        // current_house, scenario_side and result requests A83D49/A8ECD0 are
+        // persisted process inputs, absent from the shared peer hash:
+        // native64DAB0 does not fold these globals, and different
         // participants legitimately select different current houses. Gameplay
         // mutations made by current-house callbacks retain their own hash owners.
         // This is not a claim that Rust's stronger hash equals native's CRC.
@@ -1620,6 +1746,15 @@ impl ScenarioSession {
         self.ice_growth = value as u8;
     }
 
+    /// Destination Basic policy, retained with the scenario across save/load.
+    pub(crate) fn campaign_money_policy(&self) -> (crate::util::native_x87::NativeF64Bits, i32) {
+        (
+            self.carry_over_money
+                .unwrap_or(crate::util::native_x87::NativeF64Bits::POSITIVE_ZERO),
+            self.carry_over_cap,
+        )
+    }
+
     pub fn from_descriptor(desc: &ScenarioDescriptor) -> Self {
         Self {
             seed: u64::from(desc.seed),
@@ -1631,10 +1766,13 @@ impl ScenarioSession {
             network_max_ahead_frames: None,
             start_header: crate::map::preview::ScenarioStartHeader::default(),
             campaign: None,
+            campaign_map_stage: 0,
             input_locked: false,
             chrono_screen: crate::sim::superweapon::chrono_screen::ChronoScreenState::default(),
             scenario_pause: pause::ScenarioPause::default(),
-            scenario_countdown: countdown::ScenarioCountdown::default(),
+            scenario_countdown: countdown::ScenarioCountdown::new(desc.timer_inherit),
+            carry_over_money: desc.carry_over_money,
+            carry_over_cap: desc.carry_over_cap.unwrap_or(0),
             started: false,
             no_damage: desc.no_damage,
             free_radar: desc.free_radar,
@@ -1658,8 +1796,12 @@ impl ScenarioSession {
             waypoints: BTreeMap::new(),
             start_slot_houses: BTreeMap::new(),
             current_house: None,
+            victory_requested: false,
+            defeat_requested: false,
             scenario_side: 0,
             game_options: GameOptions::default(),
+            shroud_growth_timer: initial_map_regrowth_timer(),
+            fog_regrow_timer: initial_map_regrowth_timer(),
             tick: 0,
             total_sim_ms: 0,
             binary_frame: 0,

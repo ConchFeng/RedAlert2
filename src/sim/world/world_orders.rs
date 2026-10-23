@@ -877,7 +877,7 @@ impl Simulation {
         &mut self,
         owner: InternedId,
         cell: (u16, u16),
-        building_cell: (u16, u16),
+        hut_location: crate::sim::anim_class::AnimWorldCoord,
     ) {
         let radar = self.house_is_human_player(owner).then(|| {
             crate::sim::radar::RadarEventRequest::new(
@@ -887,8 +887,7 @@ impl Simulation {
             )
         });
         self.sound_events.emit(SimSoundEvent::BridgeRepaired {
-            rx: building_cell.0,
-            ry: building_cell.1,
+            world: hut_location,
             radar,
         });
     }
@@ -1257,10 +1256,15 @@ impl Simulation {
                 return_before_foot: true,
             });
         }
-        let building_cell = (building.position.rx(), building.position.ry());
-        //519BB6 supplies the ENGINEER cell;519C02 supplies building XYZ.
+        //519BB6 supplies the ENGINEER cell;519BCE..519C02 the hut building's
+        //Location (Look_up_building_in_cell47C520 at519B20), before the repair.
         //519B90/50B6F0 gates insertion itself, including radar dedup state.
-        self.announce_bridge_repair(owner, cell, building_cell);
+        let hut_location = crate::sim::movement::ground_pose::object_location(
+            building,
+            self.resolved_terrain.as_ref(),
+        )
+        .into();
+        self.announce_bridge_repair(owner, cell, hut_location);
         let mut changed = crate::sim::world::bridge_orchestrator::repair_from_engineer(
             self,
             rules,
@@ -1499,9 +1503,10 @@ mod repair_notification_tests {
                 .unwrap()
                 .sim
         };
+        let hut = crate::sim::components::DriveCoord::cell(8, 8, 0).into();
         let mut restored = restore();
         assert_eq!(restored.session.current_house(), Some(owner));
-        restored.announce_bridge_repair(owner, (7, 8), (8, 8));
+        restored.announce_bridge_repair(owner, (7, 8), hut);
         assert!(
             matches!(
                 restored.sound_events.last(),
@@ -1521,7 +1526,7 @@ mod repair_notification_tests {
         other_current
             .session
             .set_current_house_for_test(Some(other));
-        other_current.announce_bridge_repair(owner, (7, 8), (8, 8));
+        other_current.announce_bridge_repair(owner, (7, 8), hut);
         assert!(
             matches!(
                 other_current.sound_events.last(),
@@ -1548,7 +1553,8 @@ mod repair_notification_tests {
             .get_mut(&player)
             .unwrap()
             .set_player_control_for_test(true);
-        sim.announce_bridge_repair(ai, (7, 8), (8, 8));
+        let hut = crate::sim::components::DriveCoord::cell(8, 8, 0).into();
+        sim.announce_bridge_repair(ai, (7, 8), hut);
         assert!(
             matches!(
                 sim.sound_events.last(),
@@ -1556,7 +1562,7 @@ mod repair_notification_tests {
             ),
             "an AI repair never reaches CreateRadarEvent, so it cannot dedupe the human's"
         );
-        sim.announce_bridge_repair(player, (7, 8), (8, 8));
+        sim.announce_bridge_repair(player, (7, 8), hut);
         assert!(matches!(
             sim.sound_events.last(),
             Some(SimSoundEvent::BridgeRepaired { radar: Some(_), .. })

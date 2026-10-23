@@ -112,6 +112,37 @@ fn nominal_type_reader_matches_executed_physical_history() {
     }
 }
 
+#[test]
+fn object_alpha_image_uses_retail_values_and_retains_current_per_rules_pass() {
+    use crate::rules::ruleset::RuleSet;
+
+    let Some((retail_rules, fixed_art)) = crate::rules::retail_ini_fixture::retail_rules_and_art()
+    else {
+        return;
+    };
+    let mut layers = RulesLayerStack::new(retail_rules);
+    let read = |layers: &RulesLayerStack| {
+        let processed = layers.process_with_fixed_art(&fixed_art).unwrap();
+        let rules = RuleSet::from_processed_rules(&processed).unwrap();
+        (
+            rules.object("TSTLAMP").unwrap().alpha_image.clone(),
+            rules.object("GALITE").unwrap().alpha_image.clone(),
+        )
+    };
+
+    assert_eq!(read(&layers), ("ALPHATST".into(), "NONE".into()));
+    layers.push(
+        RulesLayerKind::GameMode,
+        IniFile::from_str("[TSTLAMP]\nAlphaImage=LIGHTPOST\n[GALITE]\nAlphaImage=LIGHTNONE\n"),
+    );
+    assert_eq!(read(&layers), ("LIGHTPOST".into(), "LIGHTNONE".into()));
+    layers.push(
+        RulesLayerKind::Scenario,
+        IniFile::from_str("[TSTLAMP]\nStrength=601\n[GALITE]\nAlphaImage=\n"),
+    );
+    assert_eq!(read(&layers), ("LIGHTPOST".into(), "LIGHTNONE".into()));
+}
+
 ///71592A reads exact-case ART ShadowIndex with the current field as default,
 ///after each retained Rules Image read. Neither retail zero nor final-image
 ///defaults can replace the previous section's selected value.
@@ -895,7 +926,9 @@ fn building_foundation_pass_matches_original_art_reads() {
             .families
             .get_mut(&RulesTypeFamily::Building)
             .unwrap()[0]
-            .building_foundation = input["initial_foundation_id"].as_u64().unwrap() as u8;
+            .building_foundation = crate::rules::foundation::Foundation::Stock(
+            input["initial_foundation_id"].as_u64().unwrap() as u8,
+        );
         let mut raw = IniSection::new(type_id.to_owned());
         raw.set("Image", input["image"].as_str().unwrap());
         if let Some(poison) = input["rules_foundation_poison"].as_str() {
@@ -922,13 +955,13 @@ fn building_foundation_pass_matches_original_art_reads() {
         rules.install_art_data(crate::rules::art_data::ArtRegistry::from_ini(&fixed_art));
         let object = rules.object(type_id).unwrap();
         assert_eq!(
-            crate::rules::foundation::foundation_id(&object.foundation),
+            object.foundation.selector(),
             row["output"]["foundation_id"].as_u64().unwrap() as u8,
             "{}: projected and installed native field",
             input["name"]
         );
         assert_eq!(
-            crate::rules::foundation::foundation_dimensions(&object.foundation),
+            object.foundation.dimensions(),
             (
                 row["output"]["width"].as_u64().unwrap() as u16,
                 row["output"]["height"].as_u64().unwrap() as u16,
@@ -1322,6 +1355,62 @@ fn projectile_flat_survives_registry_handoff_and_resets_with_its_owner() {
             .projectile("SHOT")
             .unwrap()
             .flat
+    );
+}
+
+#[test]
+fn overlay_cell_anim_retains_its_factory_result_across_empty_reads() {
+    // OverlayTypeClass::ReadINI 0x005FE867..0x005FE8A0 retains an empty
+    // read, while AnimTypeClass::FindOrAllocate 0x00428B80 clears "none".
+    let Some((mut root, mut art)) = crate::rules::retail_ini_fixture::retail_rules_and_art() else {
+        return;
+    };
+    root.merge(&IniFile::from_str("[GEM01]\nCellAnim=VCELLFX\n"));
+    art.merge(&IniFile::from_str("[VCELLFX]\nImage=SMOKEY\n"));
+    let mut layers = RulesLayerStack::new(root);
+    let first = layers.process_with_fixed_art(&art).unwrap();
+    let reference = |processed: &ProcessedRulesLayers| {
+        let registry =
+            crate::rules::overlay_types::OverlayTypeRegistry::from_processed_rules(processed);
+        registry
+            .flags(registry.id_for_name("GEM01").unwrap())
+            .unwrap()
+            .cell_anim
+            .clone()
+    };
+    assert_eq!(reference(&first).as_deref(), Some("VCELLFX"));
+    assert!(
+        first
+            .anim_type_art_read_states()
+            .any(|state| state == ("VCELLFX", false))
+    );
+    let constructors = first.native_type_construction_trace().events();
+
+    layers.push(
+        RulesLayerKind::Scenario,
+        IniFile::from_str("[GEM01]\nTiberium=yes\nCellAnim=\n"),
+    );
+    let retained = layers.process_with_fixed_art(&art).unwrap();
+    assert_eq!(reference(&retained).as_deref(), Some("VCELLFX"));
+    assert!(
+        retained
+            .anim_type_art_read_states()
+            .any(|state| state == ("VCELLFX", true))
+    );
+    assert_eq!(
+        retained.native_type_construction_trace().events(),
+        constructors
+    );
+
+    layers.push(
+        RulesLayerKind::Scenario,
+        IniFile::from_str("[GEM01]\nCellAnim=none\n"),
+    );
+    let cleared = layers.process_with_fixed_art(&art).unwrap();
+    assert_eq!(reference(&cleared), None);
+    assert_eq!(
+        cleared.native_type_construction_trace().events(),
+        constructors
     );
 }
 
@@ -1919,7 +2008,7 @@ fn native_startup_prepass_repeat_and_reset_keep_each_phase_on_one_registry_owner
          [Animations]\n0=A\n\
          [BuildingTypes]\n0=B\n\
          [Countries]\n0=HOUSE\n\
-         [General]\nDamageFireTypes=SEED,PREANIM\n\
+         [General]\nDamageFireTypes=SEED,PREANIM\nTreeStrength=375\n\
          [A]\nNext=RULES_ANIM_BODY_IGNORED\n\
          [B]\nPrimary=W\nExplosion=BA\nFreeUnit=U\nSecretBuilding=B2\n\
          [B2]\nPrimary=W2\n\
@@ -1943,6 +2032,7 @@ fn native_startup_prepass_repeat_and_reset_keep_each_phase_on_one_registry_owner
         &crate::rules::sound_ini::EvaRegistry::default(),
     )
     .expect("synthetic startup processes");
+    assert_eq!(startup.registry_state().rules_tree_strength, 25);
     assert_eq!(boundaries, [1, 2, 4, 5, 12]);
     assert_eq!(
         startup.events()[..4]
@@ -2000,6 +2090,8 @@ fn native_startup_prepass_repeat_and_reset_keep_each_phase_on_one_registry_owner
     let retained_state = repeat.into_registry_state_discarding_events();
     let (prepass, prepass_boundaries) =
         process_native_noncampaign_rules_prepass_inner(retained_state, &root);
+    // ReadGeneral671DD2 runs in this prefix before TypeReset6686C0.
+    assert_eq!(prepass.registry_state().rules_tree_strength, 375);
     assert_eq!(
         prepass_boundaries,
         if crate::rules::ARES_ENABLED {
@@ -2036,6 +2128,7 @@ fn native_startup_prepass_repeat_and_reset_keep_each_phase_on_one_registry_owner
     let reset_state = prepass
         .into_registry_state_discarding_events()
         .destructive_reset();
+    assert_eq!(reset_state.rules_tree_strength, 375);
     let processed = RulesLayerStack::new(root)
         .process_with_fixed_art_and_registry_state(&fixed_art, reset_state)
         .expect("post-reset full Process succeeds");
@@ -2184,6 +2277,37 @@ fn fixed_art_and_member_major_type_data_follow_live_native_order() {
         ]
     );
     assert!(actual.iter().all(|(_, id)| *id != "TOO_LATE"));
+}
+
+/// Native46C2B9 stores the factory answer but never revisits the earlier
+/// Weapon sweep. Empty retains the pointer, none clears it, and a map-only
+/// factory allocation must not retroactively read that map's orphan body.
+#[test]
+fn airburst_reference_retains_rebinds_and_keeps_native_factory_timing() {
+    use crate::rules::ruleset::RuleSet;
+    let root = IniFile::from_str(
+        "[VehicleTypes]\n0=CARRIER\n[CARRIER]\nPrimary=ROOT\nSecondary=CHILD\n\
+         [ROOT]\nProjectile=SHOT\nWarhead=WH\n\
+         [CHILD]\nProjectile=FRAGMENT\nWarhead=WH\nDamage=37\n\
+         [SHOT]\nAirburst=yes\nAirburstWeapon=CHILD\n[FRAGMENT]\n\
+         [Warheads]\n0=WH\n[WH]\n",
+    );
+    for (value, expected) in [("", Some("CHILD")), ("none", None), ("LATE", Some("LATE"))] {
+        let mut layers = RulesLayerStack::new(root.clone());
+        layers.push(RulesLayerKind::Scenario, IniFile::from_str(&format!(
+            "[SHOT]\nAirburstWeapon={value}\n[LATE]\nDamage=99\nProjectile=FRAGMENT\nWarhead=WH\n",
+        )));
+        let processed = layers.process().unwrap();
+        let rules = RuleSet::from_processed_rules(&processed).unwrap();
+        assert_eq!(
+            rules.projectile("SHOT").unwrap().airburst_weapon.as_deref(),
+            expected
+        );
+        if value == "LATE" {
+            assert_eq!(rules.weapon("LATE").unwrap().damage, 0);
+            assert!(rules.weapon("LATE").unwrap().projectile.is_none());
+        }
+    }
 }
 
 #[test]
@@ -2563,6 +2687,92 @@ fn warhead_particle_system_and_voxel_children_obey_passed_family_timing() {
             "TOO_LATE_WARHEAD_BODY" | "TOO_LATE_PARTICLE_SYSTEM_BODY"
         )
     }));
+}
+
+#[test]
+fn warhead_retained_fields_match_stock_and_constructor_defaults() {
+    use crate::rules::ruleset::RuleSet;
+
+    let defaults = RulesLayerStack::new(IniFile::from_str("[Warheads]\n0=DEFAULT\n[DEFAULT]\n"))
+        .process()
+        .expect("default warhead process");
+    let default_rules = RuleSet::from_processed_rules(&defaults).unwrap();
+    let default = default_rules.warhead("DEFAULT").unwrap();
+    assert_eq!(default.particle_system, None);
+    assert_eq!(default.deform_f64, 0.0);
+    assert_eq!(default.deform_threshold, 0);
+    assert!(!default.bullets);
+    assert!(!default.veinhole);
+
+    let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+        return;
+    };
+    let he = retail.rules.warhead("HE").expect("stock HE warhead");
+    assert!((he.deform_f64 - 0.1).abs() < 1.0e-7);
+    assert_eq!(he.deform_threshold, 300);
+    assert_eq!(
+        retail
+            .rules
+            .warhead("Gas")
+            .expect("stock Battle Gas warhead")
+            .particle_system
+            .as_deref(),
+        Some("GasCloudSys")
+    );
+    assert!(
+        retail
+            .rules
+            .warhead("SA")
+            .expect("stock Battle SA warhead")
+            .bullets
+    );
+    assert!(
+        retail
+            .rules
+            .warhead("VeinholeWH")
+            .expect("stock VeinholeWH warhead")
+            .veinhole
+    );
+}
+
+#[test]
+fn warhead_particle_pointer_retains_on_empty_and_clears_on_native_none() {
+    use crate::rules::ruleset::RuleSet;
+
+    let root = "[Warheads]\n0=WH\n[ParticleSystems]\n0=PS\n[WH]\nParticle=PS\n";
+    let retained = process_rules_passes(root, "[WH]\nParticle=\n");
+    let retained = RuleSet::from_processed_rules(&retained)
+        .unwrap()
+        .warhead("WH")
+        .unwrap()
+        .particle_system
+        .clone();
+    assert_eq!(retained.as_deref(), Some("PS"));
+
+    let cleared = process_rules_passes(root, "[WH]\nParticle=none\n");
+    let cleared = RuleSet::from_processed_rules(&cleared)
+        .unwrap()
+        .warhead("WH")
+        .unwrap()
+        .particle_system
+        .clone();
+    assert_eq!(cleared, None);
+}
+
+#[test]
+fn warhead_retained_scalars_follow_native_layer_order_and_parser() {
+    use crate::rules::ruleset::RuleSet;
+
+    let processed = process_rules_passes(
+        "[Warheads]\n0=WH\n[WH]\nDeform=10%\nDeformThreshhold=300\nBullets=yes\nVeinhole=no\n",
+        "[WH]\nDeform=15%\nDeformThreshhold=-7\nBullets=no\nVeinhole=yes\n",
+    );
+    let rules = RuleSet::from_processed_rules(&processed).unwrap();
+    let wh = rules.warhead("WH").unwrap();
+    assert!((wh.deform_f64 - 0.15).abs() < 1.0e-7);
+    assert_eq!(wh.deform_threshold, -7);
+    assert!(!wh.bullets);
+    assert!(wh.veinhole);
 }
 
 #[test]
@@ -3333,6 +3543,40 @@ fn waypoint_cue_drop_zone_rules_keep_native_defaults_layers_and_saved_state() {
         Some("BEACON")
     );
     assert_eq!(retail.rules.general.drop_zone_radius, 1024);
+}
+
+#[test]
+fn warhead_cell_inset_uses_layered_float_reader_and_stock_battle_value() {
+    use crate::rules::ruleset::RuleSet;
+
+    let mut layers = RulesLayerStack::new(IniFile::from_str(
+        "[Warheads]\n0=WH\n[WH]\nCellInset=1.25\n",
+    ));
+    let first = RuleSet::from_processed_rules(&layers.process().unwrap()).unwrap();
+    assert_eq!(first.warhead("WH").unwrap().cell_inset_f32, 1.25);
+
+    layers.push(
+        RulesLayerKind::GameMode,
+        IniFile::from_str("[WH]\nCellInset=2.5\n"),
+    );
+    layers.push(
+        RulesLayerKind::Scenario,
+        IniFile::from_str("[WH]\nCellSpread=4\n"),
+    );
+    let layered = RuleSet::from_processed_rules(&layers.process().unwrap()).unwrap();
+    assert_eq!(layered.warhead("WH").unwrap().cell_inset_f32, 2.5);
+
+    let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+        return;
+    };
+    assert_eq!(
+        retail
+            .rules
+            .warhead("RadEruptionWarhead")
+            .expect("stock Battle RadEruptionWarhead")
+            .cell_inset_f32,
+        3.0
+    );
 }
 
 #[test]

@@ -277,6 +277,7 @@ fn live_tag_rgb_overrides_reach_packets_and_survive_ambient_writes_during_storm(
             art.anim_runtime_config("ALT"),
             false,
             None,
+            brightness,
         ),
         PaletteLight::new([1000; 3], 1, brightness, true)
     );
@@ -292,11 +293,12 @@ fn live_tag_rgb_overrides_reach_packets_and_survive_ambient_writes_during_storm(
             Some(&crate::sim::anim_class::AnimRemap::House(
                 crate::sim::intern::InternedId::default()
             )),
+            brightness,
         ),
         expected
     );
     assert_eq!(
-        anim_palette_light(&lights.grid, (0, 0), None, false, None),
+        anim_palette_light(&lights.grid, (0, 0), None, false, None, brightness),
         PaletteLight::plain(53, brightness)
     );
     //555E50 constructs a new Convert with Storm RGB even though the
@@ -316,4 +318,61 @@ fn live_tag_rgb_overrides_reach_packets_and_survive_ambient_writes_during_storm(
     );
     assert_eq!(lights.grid.palette_rgb(before), [1200, 800, 600]);
     assert_eq!(lights.grid.palette_rgb(after), [960, 640, 512]);
+}
+
+/// A radiation site's bound type drives the field's cell light: the same
+/// scene lights purple for a `255,0,255` type and green for the default one.
+/// Phobos builds only: other builds never read `[RadiationTypes]`.
+#[cfg(feature = "phobos")]
+#[test]
+fn a_bound_radiation_type_tints_the_field_with_its_own_color() {
+    let rules = crate::rules::ruleset::RuleSet::from_ini(&IniFile::from_str(
+        "[Radiation]\n\
+         RadDurationMultiple=1\nRadApplicationDelay=16\nRadLevelMax=500\n\
+         RadLevelDelay=90\nRadLevelFactor=.2\nRadSiteWarhead=RadSite\n\
+         [RadiationTypes]\n0=Violet\n\
+         [Violet]\nRadColor=255,0,255\nRadLightFactor=1.0\nRadTintFactor=1.0\n",
+    ))
+    .expect("rules with a violet radiation type");
+    let terrain = crate::map::resolved_terrain::test_grid(
+        20,
+        20,
+        crate::map::resolved_terrain::test_flat_cell,
+    );
+    let sample = |bound: Option<&str>| {
+        let mut sim = Simulation::with_seed(0);
+        let mut sources = std::mem::take(sim.lighting_sources_mut_for_test());
+        sim.radiation_mut_for_test().apply_detonation(
+            crate::sim::radiation::RadDetonation {
+                rx: 10,
+                ry: 10,
+                rad_level: 500,
+                spread: 2,
+                rad_type: bound.map(str::to_owned),
+                firing_house: None,
+                invoker: None,
+            },
+            0,
+            "TEMPERATE",
+            &rules,
+            Some(&terrain),
+            &mut sources,
+        );
+        *sim.lighting_sources_mut_for_test() = sources;
+        let mut lights = MatchLighting::default();
+        lights.apply_events(&terrain, sim.lighting_sources().pending());
+        let cell = lights.grid.cell_light_at((10, 10)).expect("lit cell");
+        lights.grid.palette_rgb(cell.profile_id)
+    };
+    let retail = sample(None);
+    let violet = sample(Some("Violet"));
+    assert_eq!(violet[0], violet[2], "red and blue match: {violet:?}");
+    assert!(
+        violet[1] * 2 < violet[0],
+        "green stays far under red/blue for a violet field: {violet:?}"
+    );
+    assert!(
+        retail[1] > violet[1],
+        "the default green field keeps more green: {retail:?} vs {violet:?}"
+    );
 }

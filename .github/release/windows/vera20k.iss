@@ -1,10 +1,10 @@
-; Windows installer for VERA20k. The Release workflow (.github/workflows/release.yml)
+; Windows installer for VERA20K. The Release workflow (.github/workflows/release.yml)
 ; compiles it with the Inno Setup 6 compiler on GitHub's Windows runner:
 ;
-;   ISCC /DAppVersion=<x.y.z> /DBuild=<YYYYMMDD-HHMMSS> /DPackageDir=<unpacked archive>
+;   ISCC /DAppVersion=<x.y.z> /DBuild=<YYYYMMDD-HHMMSS> /DPackageDir=<package folder>
 ;        /DOutputDir=<dir> /DOutputBaseFilename=<name> vera20k.iss
 ;
-; It installs the files of the Windows archive for the current user, without an
+; It installs the files of the package folder for the current user, without an
 ; administrator prompt, and asks for the Yuri's Revenge folder, offering the one
 ; it finds (DetectGameDir). It writes config.toml beside the program with that
 ; folder as ra2_dir and the install folder as settings_dir. Shortcuts start the
@@ -21,34 +21,38 @@
 #ifndef AppVersion
   #error Define AppVersion, Build, PackageDir, OutputDir and OutputBaseFilename
 #endif
+#if Ver < EncodeVer(6, 7, 0)
+  #error Compile with Inno Setup 6.7.0 or later, the first to accept the blank WizardSmallImageFile below
+#endif
 
 [Setup]
 ; Fixed for the life of the program: upgrades find the previous install by it.
 AppId={{9C9BFC32-A7B8-48ED-A428-72333354BDDB}
-AppName=VERA20k
+AppName=VERA20K
 AppVersion={#AppVersion}
 ; The version and build, which stay true when a release republishes this
 ; installer under a plain name.
-AppVerName=VERA20k {#AppVersion} (build {#Build})
-AppPublisher=VERA20k
+AppVerName=VERA20K {#AppVersion} (build {#Build})
+AppPublisher=VERA20K
 AppPublisherURL=https://github.com/YuriPlanet/vera20k
 AppSupportURL=https://github.com/YuriPlanet/vera20k/issues
 AppUpdatesURL=https://github.com/YuriPlanet/vera20k/releases
 VersionInfoVersion={#AppVersion}
 ; Per user: {autopf} is %LOCALAPPDATA%\Programs, which the program can write to.
 PrivilegesRequired=lowest
-DefaultDirName={autopf}\VERA20k
+DefaultDirName={autopf}\VERA20K
 DisableProgramGroupPage=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 MinVersion=10.0
 WizardStyle=modern
 ShowLanguageDialog=auto
-; Rendered from .github/release/icon.svg by icon.sh beside this script.
+; Red Alert 2's own icon: the 32-bit images of retail game.exe's icon group.
 SetupIconFile={#SourcePath}vera20k.ico
-WizardSmallImageFile={#SourcePath}wizard-small.png
+; No picture at the top right of the wizard's pages.
+WizardSmallImageFile=
 UninstallDisplayIcon={app}\vera20k.exe
-UninstallDisplayName=VERA20k
+UninstallDisplayName=VERA20K
 SourceDir={#PackageDir}
 OutputDir={#OutputDir}
 OutputBaseFilename={#OutputBaseFilename}
@@ -62,13 +66,13 @@ Name: "chinesesimplified"; MessagesFile: "{#SourcePath}ChineseSimplified.isl"
 [CustomMessages]
 english.GameDirCaption=Yuri's Revenge folder
 english.GameDirDescription=Where is Yuri's Revenge installed?
-english.GameDirSubCaption=VERA20k plays with the files of your own copy of Yuri's Revenge 1.001. Choose the folder that has ra2md.mix and ra2.mix, usually the one with gamemd.exe.
+english.GameDirSubCaption=VERA20K plays with the files of your own copy of Yuri's Revenge 1.001. Choose the folder that has ra2md.mix and ra2.mix, usually the one with gamemd.exe.
 english.GameDirPrompt=Yuri's Revenge folder:
 english.GameDirMissing=This folder does not contain Yuri's Revenge:%n%n%1%n%nChoose the folder that has ra2md.mix and ra2.mix, usually the one with gamemd.exe.
 english.ConfigNotWritten=Setup could not write %1.
 chinesesimplified.GameDirCaption=《尤里的复仇》文件夹
 chinesesimplified.GameDirDescription=《尤里的复仇》安装在哪里？
-chinesesimplified.GameDirSubCaption=VERA20k 使用你自己的《尤里的复仇》1.001 版游戏文件。请选择包含 ra2md.mix 和 ra2.mix 的文件夹，通常就是 gamemd.exe 所在的文件夹。
+chinesesimplified.GameDirSubCaption=VERA20K 使用你自己的《尤里的复仇》1.001 版游戏文件。请选择包含 ra2md.mix 和 ra2.mix 的文件夹，通常就是 gamemd.exe 所在的文件夹。
 chinesesimplified.GameDirPrompt=《尤里的复仇》文件夹：
 chinesesimplified.GameDirMissing=这个文件夹里没有《尤里的复仇》：%n%n%1%n%n请选择包含 ra2md.mix 和 ra2.mix 的文件夹，通常就是 gamemd.exe 所在的文件夹。
 chinesesimplified.ConfigNotWritten=安装程序无法写入 %1。
@@ -84,17 +88,17 @@ Source: "THIRD_PARTY_LICENSES.html"; DestDir: "{app}"; Flags: ignoreversion
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Icons]
-Name: "{autoprograms}\VERA20k"; Filename: "{app}\vera20k.exe"; WorkingDir: "{app}"
-Name: "{autodesktop}\VERA20k"; Filename: "{app}\vera20k.exe"; WorkingDir: "{app}"; Tasks: desktopicon
+Name: "{autoprograms}\VERA20K"; Filename: "{app}\vera20k.exe"; WorkingDir: "{app}"
+Name: "{autodesktop}\VERA20K"; Filename: "{app}\vera20k.exe"; WorkingDir: "{app}"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\vera20k.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,VERA20k}"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\vera20k.exe"; WorkingDir: "{app}"; Description: "{cm:LaunchProgram,VERA20K}"; Flags: nowait postinstall skipifsilent
 
 [Code]
 var
   GameDirPage: TInputDirWizardPage;
 
-{ VERA20k mounts both masters; without either it cannot start (AssetManager::new). }
+{ VERA20K mounts both masters; without either it cannot start (AssetManager::new). }
 function IsGameDir(Dir: String): Boolean;
 begin
   Result := (Dir <> '') and FileExists(AddBackslash(Dir) + 'ra2md.mix')

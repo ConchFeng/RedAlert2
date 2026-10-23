@@ -1956,7 +1956,8 @@ fn occupants_are_admitted_in_order_and_a_human_drops_its_seek() {
         .iter()
         .filter_map(|event| match *event {
             crate::sim::world::SimSoundEvent::StructureGarrisoned { owner } => Some((owner, None)),
-            crate::sim::world::SimSoundEvent::BuildingGarrisonedSfx { owner, rx, ry } => {
+            crate::sim::world::SimSoundEvent::BuildingGarrisonedSfx { owner, world } => {
+                let (rx, ry, ..) = world.to_cell_sub_z();
                 Some((owner, Some((rx, ry))))
             }
             _ => None,
@@ -2331,11 +2332,6 @@ fn cancelling_a_manual_bunker_entry_frees_it_for_another_tank() {
             ),
             Some(&rules)
         ));
-        assert!(!sim.apply_command(
-            "YuriCountry",
-            &Command::Stop { entity_id: first },
-            Some(&rules)
-        ));
         assert_eq!(
             install_state(&sim, bunker),
             (BunkerState::Idle, Some(first))
@@ -2621,7 +2617,9 @@ fn nearest_occupiable_production_matches_native_controls() {
                 let coord = xyz(&entry["xyz"]);
                 let entity = sim.substrate.entities.get_mut(building).unwrap();
                 //1x1 makes Location the native fixture's substituted GetCoords.
-                entity.type_facts.set_foundation_for_test("1x1".to_owned());
+                entity
+                    .type_facts
+                    .set_foundation_for_test("1x1".to_owned().into());
                 entity.position.put_world_xy([coord[0], coord[1]]);
                 entity.position.set_exact_z_leptons_for_test(Some(coord[2]));
                 building

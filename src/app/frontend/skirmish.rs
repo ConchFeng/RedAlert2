@@ -6,8 +6,7 @@ use std::collections::{BTreeMap, HashMap};
 
 use crate::assets::asset_manager::AssetManager;
 use crate::assets::pal_file::Palette;
-#[cfg(test)]
-use crate::map::houses::HouseRoster;
+use crate::map::houses::{HouseColorMap, HouseRoster};
 #[cfg(test)]
 use crate::map::map_file::MapFile;
 use crate::map::overlay::{OverlayEntry, TerrainObject};
@@ -16,17 +15,64 @@ use crate::render::bridge_atlas::{self, BridgeAtlas};
 use crate::render::gpu::GpuContext;
 use crate::render::overlay_assets::{render_overlay_names, resolve_overlay_name_for_render};
 use crate::render::overlay_atlas::{self, OverlayAtlas};
-#[cfg(test)]
-use crate::rules::house_colors::HouseColorIndex;
-use crate::rules::ini_parser::IniFile;
+use crate::rules::color_scheme::{
+    ColorSchemeEntry, scheme_entry_by_name, scheme_entry_for_priority,
+};
+use crate::rules::house_colors::{DEFAULT_SCHEME_ENTRY, HouseColorIndex};
 use crate::rules::overlay_types::OverlayTypeRegistry;
 use crate::rules::ruleset::RuleSet;
-#[cfg(test)]
 use crate::sim::scenario_bootstrap::normalized_launch_slots;
-#[cfg(test)]
 use crate::skirmish_launch::SkirmishLaunchSession;
 
-pub(crate) use crate::map::houses::house_color_map_for_launch_session;
+pub(crate) fn house_color_map_for_launch_session(
+    session: &SkirmishLaunchSession,
+    house_roster: &HouseRoster,
+    schemes: &[ColorSchemeEntry],
+) -> HouseColorMap {
+    // Active-retail CreateHouses @ 0x6882D1..0x68837D constructs Neutral and
+    // Special even without [Houses]. Each looks up literal "LightGrey" with
+    // 53 rows (0x688309/0x68835C -> 0x68CAB0), then calls InitColor (0x50B840).
+    // A failed lookup falls back to runtime scheme 5, logical entry 2.
+    let neutral_color = HouseColorIndex(
+        scheme_entry_by_name(schemes, "LightGrey")
+            .and_then(|entry| u8::try_from(entry).ok())
+            .filter(|&entry| entry != crate::rules::house_colors::NO_REMAP.0)
+            .unwrap_or(DEFAULT_SCHEME_ENTRY as u8),
+    );
+    let mut colors = HouseColorMap::new();
+    colors.insert("Neutral".to_string(), neutral_color);
+    colors.insert("Special".to_string(), neutral_color);
+    for house in &house_roster.houses {
+        if !is_playable_faction_name(&house.name) {
+            // Preserve authored identity casing, but these two skirmish houses
+            // use CreateHouses' explicit color rather than campaign Color=.
+            let color = if house.name.eq_ignore_ascii_case("Neutral")
+                || house.name.eq_ignore_ascii_case("Special")
+            {
+                neutral_color
+            } else {
+                house.color
+            };
+            colors.insert(house.name.clone(), color);
+        }
+    }
+    for slot in normalized_launch_slots(session) {
+        // `slot.color_index` is the gamemd color *priority* (lobby slot order);
+        // resolve it to a `[Colors]` entry index via the priority LUT + /2 doubling.
+        let entry = scheme_entry_for_priority(slot.color_index as i32) as u8;
+        colors.insert(slot.owner_name, HouseColorIndex(entry));
+    }
+    colors
+}
+
+/// Returns true for faction names that represent real players (not neutral/civilian).
+fn is_playable_faction_name(name: &str) -> bool {
+    let up = name.to_ascii_uppercase();
+    !matches!(
+        up.as_str(),
+        "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
+    )
+}
 
 /// Collect building type IDs that can be spawned at runtime and need atlas pre-loading.
 ///
@@ -73,7 +119,6 @@ pub(crate) fn build_overlay_presentation(
     batch: &BatchRenderer,
     theater_ext: &str,
     theater_name: &str,
-    rules_ini: &IniFile,
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
     theater_iso_palette: Option<&Palette>,
@@ -101,7 +146,6 @@ pub(crate) fn build_overlay_presentation(
         );
     }
 
-    let crate_rules = &rules.crate_rules;
     let art_registry = rules.art();
     let rubble_arts: Vec<_> = rules.building_rubble_arts().cloned().collect();
 
@@ -180,10 +224,10 @@ pub(crate) fn build_overlay_presentation(
         overlay_atlas::compute_overlay_radar_colors(
             asset_manager,
             overlay_registry,
+            overlay_atlas::OverlayRadarColorSource::Cell,
             &overlay_names,
             theater_ext,
             theater_name,
-            rules_ini,
             art_registry,
         );
 
@@ -204,10 +248,7 @@ pub(crate) fn build_overlay_presentation(
             theater_ext,
             theater_name,
             overlay_registry,
-            &rules.tiberium_types,
-            crate_rules,
-            rules_ini,
-            art_registry,
+            rules,
             Some(&rules.smudge_types),
             &rubble_arts,
         )
@@ -226,8 +267,6 @@ pub(crate) fn build_overlay_presentation(
             theater_ext,
             theater_name,
             overlay_registry,
-            rules_ini,
-            art_registry,
             &rubble_arts,
         )
     });

@@ -49,6 +49,9 @@ mod target_laser_gpu_tests;
 pub(crate) use draw_passes::{draw_bridge_shadows, draw_pooled_cell_bodies};
 pub(crate) mod draw_plan_lowering;
 mod merge_passes;
+mod object_stages;
+#[cfg(test)]
+mod object_stages_gpu_tests;
 pub(crate) mod minimap_transaction;
 
 use anyhow::Result;
@@ -170,8 +173,14 @@ pub(crate) fn render_game(
     let render_started = state.diag.telemetry_observer.active().then(Instant::now);
     // RadarClass::Draw 653100 consumes timeGetTime buckets. The frame owner
     // supplies wall time normally, or the map diagnostic's recorded OS input.
-    if let Some(radar) = state.match_state.match_presentation.radar_anim.as_mut() {
-        radar.tick(&state.renderer.gpu, times.radar_ms);
+    let housing_settled = state
+        .match_state
+        .match_presentation
+        .radar_anim
+        .as_mut()
+        .is_some_and(|radar| radar.tick(&state.renderer.gpu, times.radar_ms));
+    if housing_settled {
+        crate::app::radar_movie::end_radar_sound_loop(state);
     }
     let (sw, sh) = (state.render_width() as f32, state.render_height() as f32);
 
@@ -258,6 +267,19 @@ pub(crate) fn render_game(
     {
         let view = rt.view();
         let owner_id = view.interner().get(owner).unwrap_or_default();
+        // Rendering may perform native Dummy lookups without changing the
+        // simulation's retained Dummy coordinate or its fog cache bytes.
+        let cells = view
+            .resolved_terrain()
+            .map(crate::map::resolved_terrain::NativeCellQuery::isolated);
+        let fog_options = crate::render::shroud_buffer::FogDrawOptions {
+            fog_of_war: view.session().game_options().fog_of_war,
+            current_house_defeated: view
+                .session()
+                .current_house()
+                .and_then(|house| view.houses().get(&house))
+                .is_some_and(|house| house.is_defeated()),
+        };
         shroud_buf.rebuild_if_needed(
             &state.renderer.gpu.device,
             &state.renderer.gpu.queue,
@@ -268,6 +290,8 @@ pub(crate) fn render_game(
             rw,
             rh,
             state.match_state.input.zoom_level,
+            cells.as_ref(),
+            fog_options,
         );
     }
 
@@ -606,6 +630,7 @@ pub(crate) fn render_game(
             cell_body_draws: &world.cell_body_draws,
             bridge_shadows: &world.bridge_body_shadow,
             object_layers: &world.object_layers,
+            fogged_objects: &world.fogged_objects,
             building_status_text: &world.building_status_text,
             surface_effects,
             tactical_lines,
@@ -688,6 +713,11 @@ fn upload_to_gpu(
     let (super_timer_fill, super_timer_text) =
         crate::app::presentation::super_timers::build_super_timer_instances(state);
 
+    // GScreenClass_DrawText's Phobos build description, the tactical view's
+    // top-right identity box; empty outside Phobos builds.
+    let (build_text_fill, build_text_text) =
+        crate::app::presentation::build_text::build_instances(state);
+
     let pool: &mut InstanceBufferPool = &mut state.renderer.instance_pool;
 
     // Debug overlays
@@ -706,6 +736,11 @@ fn upload_to_gpu(
         &state.renderer.gpu,
         "building_status_text",
         &world.building_status_text.instances,
+    );
+    pool.upload(
+        &state.renderer.gpu,
+        "fogged_objects",
+        &world.fogged_objects.instances,
     );
     for (layer, objects) in world.object_layers.iter().enumerate() {
         pool.upload_page(
@@ -734,8 +769,13 @@ fn upload_to_gpu(
     pool.upload(&state.renderer.gpu, "cell_sparkles", &world.cell_sparkles);
     pool.upload(&state.renderer.gpu, "super_timer_fill", &super_timer_fill);
     pool.upload(&state.renderer.gpu, "super_timer_text", &super_timer_text);
+    pool.upload(&state.renderer.gpu, "build_text_fill", &build_text_fill);
+    pool.upload(&state.renderer.gpu, "build_text_text", &build_text_text);
 
     // UI overlays
+    for (house, beacons) in ui.beacons.iter().enumerate() {
+        pool.upload_page(&state.renderer.gpu, "beacons", house, beacons);
+    }
     pool.upload(&state.renderer.gpu, "drag", &ui.drag);
     pool.upload(&state.renderer.gpu, "software_cursor", &ui.software_cursor);
     pool.upload(&state.renderer.gpu, "placement", &ui.placement);

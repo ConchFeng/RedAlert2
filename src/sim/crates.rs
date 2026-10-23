@@ -35,14 +35,19 @@ mod runtime;
 mod speed;
 mod state;
 
+#[cfg(all(test, feature = "ares"))]
+pub(crate) use pickup::multiplayer_eligible_slot;
+#[cfg(all(test, feature = "ares"))]
+pub(crate) use speed::apply_speed_crate;
+
+#[cfg(all(test, feature = "ares"))]
+pub(crate) use effects::{Multiplier, apply_multiplier_crate};
+
 pub(crate) use effects::CrateMultipliers;
 pub(crate) use pickup::pickup_crate;
 pub(crate) use runtime::tick_crate_regeneration;
 pub use state::{CrateAuthority, CrateSlot};
 
-use crate::map::lighting::LightingProfileUnits;
-#[cfg(any(test, feature = "test-support"))]
-use crate::map::lighting::ParsedLightingProfiles;
 use crate::map::overlay_mark::{
     MarkCrateImages, OverlayMarkOutcome, OverlayMarkRequest, mark_overlay,
 };
@@ -149,40 +154,17 @@ struct CrateRandomFrame {
 /// the same member `Gather_Start_Positions` binds and the one VERA models as
 /// `scenario_rng`. Failed attempts spend X then Y. A successful overlay spends
 /// one additional `RandomRanged(0, 0x7fff_fffe)` draw for its crate slot timer.
-#[cfg(any(test, feature = "test-support"))]
 pub fn place_scenario_start_crates(
     sim: &mut Simulation,
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
     player_count: i32,
 ) -> CratePlacement {
-    place_scenario_start_crates_with_lighting(
-        sim,
-        rules,
-        overlay_registry,
-        player_count,
-        ParsedLightingProfiles::default().normal,
-    )
-}
-
-/// Production entry carrying the already parsed ordinary ScenarioClass
-/// lighting profile. `OverlayClass::Mark` copies each target CellClass's
-/// `+0x10A` value into a spawned CellAnim after construction. The runtime
-/// regeneration rung reaches the same Mark path every tick, so the shared
-/// helpers below are no longer scenario-start-only.
-pub(crate) fn place_scenario_start_crates_with_lighting(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    overlay_registry: &OverlayTypeRegistry,
-    player_count: i32,
-    lighting_profile: LightingProfileUnits,
-) -> CratePlacement {
     place_scenario_start_crates_with_failure(
         sim,
         rules,
         overlay_registry,
         player_count,
-        lighting_profile,
         ForcedPostPrecheckFailure::None,
     )
 }
@@ -192,7 +174,6 @@ fn place_scenario_start_crates_with_failure(
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
     player_count: i32,
-    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> CratePlacement {
     if !sim.session.game_options().crates {
@@ -214,13 +195,7 @@ fn place_scenario_start_crates_with_failure(
     let mut accepted = 0u32;
     let mut visible = 0u32;
     for _ in 0..requested {
-        match place_one_random_crate(
-            sim,
-            rules,
-            overlay_registry,
-            lighting_profile,
-            forced_failure,
-        ) {
+        match place_one_random_crate(sim, rules, overlay_registry, forced_failure) {
             OneCrateResult::HardRejected => {}
             OneCrateResult::AcceptedGhost => accepted = accepted.wrapping_add(1),
             OneCrateResult::AcceptedVisible => {
@@ -260,7 +235,6 @@ fn place_one_random_crate(
     sim: &mut Simulation,
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
-    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> OneCrateResult {
     let Some(slot_index) = sim.crate_authority.first_empty_index() else {
@@ -287,7 +261,6 @@ fn place_one_random_crate(
             overlay_registry,
             slot_index,
             cell,
-            lighting_profile,
             forced_failure,
         ) {
             return match accepted {
@@ -311,7 +284,6 @@ fn place_overlay_and_init_timer(
     overlay_registry: &OverlayTypeRegistry,
     slot_index: usize,
     cell: (u16, u16),
-    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> Option<AcceptedCellResult> {
     if cell == (0, 0)
@@ -332,14 +304,8 @@ fn place_overlay_and_init_timer(
     {
         return None;
     }
-    let accepted = validate_and_stamp_candidate_with_rules_and_lighting(
-        sim,
-        rules,
-        overlay_registry,
-        cell,
-        lighting_profile,
-        forced_failure,
-    );
+    let accepted =
+        validate_and_stamp_candidate_with_rules(sim, rules, overlay_registry, cell, forced_failure);
 
     // `CrateSlot__PlaceOverlayAndInitTimer @ 0x004A17C0`: accepted ghosts
     // and visible overlays both write the packed coordinate before drawing
@@ -379,18 +345,12 @@ pub(crate) fn place_crate(
     let Some(slot_index) = sim.crate_authority.first_empty_index() else {
         return false;
     };
-    let lighting = sim
-        .session
-        .lighting()
-        .profile(crate::sim::scenario_session::ScenarioLightingProfile::Normal)
-        .into();
     if place_overlay_and_init_timer(
         sim,
         rules,
         overlay_registry,
         slot_index,
         snapped,
-        lighting,
         ForcedPostPrecheckFailure::None,
     )
     .is_none()
@@ -442,35 +402,15 @@ fn validate_and_stamp_candidate(
         crate::rules::ruleset::RuleSet::empty_for_test(),
         overlay_registry,
         cell,
-        ParsedLightingProfiles::default().normal,
         forced_failure,
     )
 }
 
-#[cfg(any(test, feature = "test-support"))]
 fn validate_and_stamp_candidate_with_rules(
     sim: &mut Simulation,
     rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
     cell: (u16, u16),
-    forced_failure: ForcedPostPrecheckFailure,
-) -> AcceptedCellResult {
-    validate_and_stamp_candidate_with_rules_and_lighting(
-        sim,
-        rules,
-        overlay_registry,
-        cell,
-        ParsedLightingProfiles::default().normal,
-        forced_failure,
-    )
-}
-
-fn validate_and_stamp_candidate_with_rules_and_lighting(
-    sim: &mut Simulation,
-    rules: &RuleSet,
-    overlay_registry: &OverlayTypeRegistry,
-    cell: (u16, u16),
-    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> AcceptedCellResult {
     validate_and_stamp_candidate_inner(
@@ -479,7 +419,6 @@ fn validate_and_stamp_candidate_with_rules_and_lighting(
         rules,
         overlay_registry,
         cell,
-        lighting_profile,
         forced_failure,
     )
 }
@@ -490,7 +429,6 @@ fn validate_and_stamp_candidate_inner(
     full_rules: &RuleSet,
     overlay_registry: &OverlayTypeRegistry,
     cell: (u16, u16),
-    lighting_profile: LightingProfileUnits,
     forced_failure: ForcedPostPrecheckFailure,
 ) -> AcceptedCellResult {
     // CrateValidate4A18F0 clears A8E7AC at4A190B, then restores it on
@@ -507,15 +445,7 @@ fn validate_and_stamp_candidate_inner(
         if forced_failure != ForcedPostPrecheckFailure::None {
             return AcceptedCellResult::Ghost;
         }
-        construct_runtime_overlay(
-            sim,
-            rules,
-            full_rules,
-            overlay_registry,
-            cell,
-            selected_id,
-            lighting_profile,
-        )
+        construct_runtime_overlay(sim, rules, full_rules, overlay_registry, cell, selected_id)
     })
 }
 
@@ -532,7 +462,6 @@ pub(crate) fn construct_runtime_overlay(
     overlay_registry: &OverlayTypeRegistry,
     cell: (u16, u16),
     selected_id: u8,
-    lighting_profile: LightingProfileUnits,
 ) -> AcceptedCellResult {
     let Some(selected_flags) = overlay_registry.flags(selected_id).cloned() else {
         return AcceptedCellResult::Ghost;
@@ -591,7 +520,7 @@ pub(crate) fn construct_runtime_overlay(
         crate_images: MarkCrateImages::resolve(rules, overlay_registry),
     };
     let outcome = match mark_overlay(
-        &mut SimulationMarkHost::new(sim, full_rules, overlay_registry, lighting_profile),
+        &mut SimulationMarkHost::new(sim, full_rules, overlay_registry),
         &request,
     ) {
         Ok(outcome) => outcome,
@@ -1262,7 +1191,6 @@ pub(crate) mod tests {
                 &registry,
                 0,
                 cell,
-                ParsedLightingProfiles::default().normal,
                 ForcedPostPrecheckFailure::None,
             );
             assert_eq!(
@@ -1301,7 +1229,6 @@ pub(crate) mod tests {
                 &registry,
                 cell,
                 ordinary,
-                ParsedLightingProfiles::default().normal,
             );
             assert_eq!(
                 result,
@@ -1342,7 +1269,6 @@ pub(crate) mod tests {
                     &registry,
                     cell,
                     incoming,
-                    ParsedLightingProfiles::default().normal,
                 )
             };
             let result = if initial_scope {
@@ -1446,14 +1372,8 @@ pub(crate) mod tests {
         ] {
             let mut sim = sim_with_grid(0xFA11_0000 + failure as u64);
             sim.install_fixture_path_grid(Some(&grid));
-            let result = place_scenario_start_crates_with_failure(
-                &mut sim,
-                &rules,
-                &registry,
-                1,
-                ParsedLightingProfiles::default().normal,
-                failure,
-            );
+            let result =
+                place_scenario_start_crates_with_failure(&mut sim, &rules, &registry, 1, failure);
             assert_eq!((result.accepted, result.visible), (1, 0));
             let slot = sim.crate_authority.slots()[0];
             assert!(!slot.is_empty());
@@ -2017,22 +1937,28 @@ pub(crate) mod tests {
             "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
              [Colors]\nGold=43,239,255\nNeonGreen=104,241,195\n\
              [Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\nColor=NeonGreen\n\
-             [Animations]\n0=SPARK\n\
              [OverlayTypes]\n0=ANIMBOX\n[ANIMBOX]\nTiberium=yes\nCellAnim=SPARK\n\
              [CrateRules]\nCrateImg=ANIMBOX\nWoodCrateImg=ANIMBOX\nWaterCrateImg=ANIMBOX\n",
         );
-        let registry = OverlayTypeRegistry::from_ini(&ini, None);
-        let mut rules = RuleSet::from_ini(&ini).unwrap();
-        let mut art = crate::rules::art_data::ArtRegistry::from_ini(&IniFile::from_str(
-            "[SPARK]\nRate=1\nEnd=2\nLoopCount=1\n",
-        ));
+        let art_ini = IniFile::from_str("[SPARK]\nRate=1\nEnd=2\nLoopCount=1\n");
+        // OverlayRead5FE897 allocates SPARK after this pass's Anim sweep;
+        // the next normal pass supplies its ART before ordinary live Mark.
+        let mut layers = crate::rules::native_processing::RulesLayerStack::new(ini);
+        layers.push(
+            crate::rules::native_processing::RulesLayerKind::Scenario,
+            IniFile::empty(),
+        );
+        let processed = layers.process_with_fixed_art(&art_ini).unwrap();
+        let mut rules = RuleSet::from_processed_rules(&processed).unwrap();
+        let registry = rules.overlay_registry().clone();
+        let mut art = crate::rules::art_data::ArtRegistry::from_ini(&art_ini);
         art.bind_anim_frame_count_for_test("SPARK", 2);
-        rules.replace_art_registry_for_test(art);
+        rules.install_art_data(art);
         (rules, registry)
     }
 
     #[test]
-    fn restored_crate_regeneration_uses_incoming_normal_lighting() {
+    fn restored_crate_regeneration_keeps_light_independent_of_depth() {
         use crate::sim::scenario_session::{ScenarioLightingProfile, ScenarioLightingState};
         use crate::sim::snapshot::GameSnapshot;
         use crate::sim::world::SnapshotProcessState;
@@ -2123,8 +2049,8 @@ pub(crate) mod tests {
             );
             assert_eq!(
                 anims[0].z_adjust(),
-                775,
-                "cold/in-game restore must use incoming ordinary Cell10A, not defaults, outgoing, or selected Ion lighting"
+                0,
+                "OverlayMark5FD1F4 copies light to FC independently of depth100"
             );
         }
     }
@@ -2135,21 +2061,12 @@ pub(crate) mod tests {
         let cell = (12, 13);
 
         let mut visible = sim_with_grid(0x14090005);
-        let lighting = LightingProfileUnits {
-            ambient_percent: 80,
-            red_percent: 100,
-            green_percent: 100,
-            blue_percent: 100,
-            ground_units: 25,
-            level_units: 5,
-        };
         assert_eq!(
-            validate_and_stamp_candidate_with_rules_and_lighting(
+            validate_and_stamp_candidate_with_rules(
                 &mut visible,
                 &rules,
                 &registry,
                 cell,
-                lighting,
                 ForcedPostPrecheckFailure::None,
             ),
             AcceptedCellResult::Visible
@@ -2173,8 +2090,8 @@ pub(crate) mod tests {
         );
         assert_eq!(
             visible_anim.z_adjust(),
-            775,
-            "CellClass +0x10A is ambient*10 + level*height - ground"
+            0,
+            "OverlayMark5FD1F4 copies light to FC independently of depth100"
         );
         let encoded =
             crate::util::save_codec::serialize(&visible).expect("serialize CellAnim remap state");

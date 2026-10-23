@@ -15,7 +15,10 @@ mod popups;
 pub(crate) use channels::*;
 pub(crate) use popups::*;
 
-use crate::ui::lan_shell::{LanChatState, LanEditKey, LanListState, apply_chat_length_limit};
+use crate::ui::lan_shell::{
+    LanChatState, LanEditKey, LanListState, PlayerNameMatch, apply_chat_length_limit,
+    saved_player_name_matches,
+};
 use crate::ui::shell::button::ShellButtonInteraction;
 use crate::ui::shell::descriptor::{AnchorRule, DialogId};
 use crate::ui::shell::geom::{RectPx, SHELL_BASE_H, SHELL_BASE_W, ShellScale};
@@ -664,10 +667,29 @@ impl WolLobbyState {
         self.lobby_list.hot_row = None;
     }
 
-    /// `0x00783C80`: a reset list keeps only its top index.
+    /// WOL `0x00783C80` saves selected names before `LB_RESETCONTENT` and
+    /// restores every matching new row afterward (`0x005E5F10` / `0x005E6230`).
     pub(crate) fn replace_players(&mut self, rows: Vec<WolPlayerRow>) {
+        let mut selected_rows = self.selected_players.clone();
+        selected_rows.sort_unstable();
+        selected_rows.dedup();
+        let selected_names = selected_rows
+            .into_iter()
+            .filter_map(|index| self.player_rows.get(index))
+            .map(|row| row.name.clone())
+            .collect::<Vec<_>>();
         self.player_rows = rows;
-        self.selected_players.clear();
+        self.selected_players = self
+            .player_rows
+            .iter()
+            .enumerate()
+            .filter_map(|(index, row)| {
+                selected_names
+                    .iter()
+                    .any(|name| saved_player_name_matches(name, &row.name, PlayerNameMatch::Exact))
+                    .then_some(index)
+            })
+            .collect();
         self.player_list.hot_row = None;
     }
 
@@ -834,7 +856,7 @@ mod tests {
     }
 
     #[test]
-    fn refills_find_the_selection_by_name_and_reset_player_selection() {
+    fn refills_find_game_and_private_player_selections_by_name() {
         let row = |name: &str| WolGameRow {
             record: 0,
             name: name.into(),
@@ -864,9 +886,21 @@ mod tests {
         lobby.toggle_player(2);
         lobby.toggle_player(0);
         assert_eq!(lobby.private_targets(), ["x", "z"]);
-        lobby.toggle_player(0);
-        assert_eq!(lobby.private_targets(), ["z"]);
-        lobby.replace_players(vec![player("x")]);
+        lobby.replace_players(vec![
+            player("z"),
+            player("x"),
+            player("x"),
+            player("X"),
+            player("y"),
+        ]);
+        assert_eq!(lobby.selected_players, [0, 1, 2]);
+        assert_eq!(lobby.private_targets(), ["z", "x", "x"]);
+
+        lobby.replace_players(vec![player("x"), player("y")]);
+        assert_eq!(lobby.selected_players, [0]);
+        assert_eq!(lobby.private_targets(), ["x"]);
+
+        lobby.replace_players(vec![player("y")]);
         assert!(lobby.private_targets().is_empty());
     }
 

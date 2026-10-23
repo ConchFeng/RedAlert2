@@ -72,6 +72,7 @@ pub struct SavedSidebarOrder {
     flash_deadlines: [Vec<i32>; 4],
     redraw_until: i32,
     request_states: [Vec<u8>; 4],
+    factory_links: [Vec<Option<crate::sim::production::ProductionFactoryVisit>>; 4],
     prediction_categories: Vec<crate::sim::production::ProductionCategory>,
 }
 
@@ -79,6 +80,7 @@ impl SavedSidebarOrder {
     pub fn new(owner: InternedId, strips: [Vec<SavedCameoId>; 4], scroll_rows: [usize; 4]) -> Self {
         let flash_deadlines = std::array::from_fn(|index| vec![0; strips[index].len()]);
         let request_states = std::array::from_fn(|index| vec![0; strips[index].len()]);
+        let factory_links = std::array::from_fn(|index| vec![None; strips[index].len()]);
         Self {
             owner,
             strips,
@@ -86,6 +88,7 @@ impl SavedSidebarOrder {
             flash_deadlines,
             redraw_until: 0,
             request_states,
+            factory_links,
             prediction_categories: Vec::new(),
         }
     }
@@ -107,6 +110,24 @@ impl SavedSidebarOrder {
 
     pub fn requests(&self) -> &[Vec<u8>; 4] {
         &self.request_states
+    }
+
+    /// Mouse Save5BE6D0 retains each entry's Factory pointer (+64), including
+    /// associations to a Factory whose current product differs from the cameo.
+    /// VERA saves that foreign identity; the app validates it against the loaded
+    /// registry before installing the retained strips.
+    pub fn with_factory_links(
+        mut self,
+        links: [Vec<Option<crate::sim::production::ProductionFactoryVisit>>; 4],
+    ) -> Self {
+        self.factory_links = links;
+        self
+    }
+
+    pub fn factory_links(
+        &self,
+    ) -> &[Vec<Option<crate::sim::production::ProductionFactoryVisit>>; 4] {
+        &self.factory_links
     }
 
     /// HouseSave504080/Load503040 retain the independent category gates;
@@ -188,6 +209,9 @@ pub struct GameSnapshot {
     /// and no-init Foot4D3540 preserve this short (naval_lifetime_controls).
     /// Kept in the neutral envelope so sim never depends on a render owner.
     pub sinking_waterlines: Vec<(u64, i16)>,
+    /// Presentation-owned Anim+FC copies. AnimSave4253B0/AbstractSave410320
+    /// retain the signed dword independently of depth+100; no lockstep input.
+    pub anim_intensities: Vec<(u64, i32)>,
     /// Retained local sidebar order is presentation state, outside the lockstep
     /// simulation hash. The app validates/hydrates it before committing a load.
     sidebar_order: Option<SavedSidebarOrder>,
@@ -281,10 +305,21 @@ pub enum SnapshotError {
 /// Structural failures found before a deserialized simulation is admitted.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum SnapshotRestoreError {
+    #[cfg(feature = "ares")]
+    #[error("object {object_id} has invalid attached stats: {reason}")]
+    InvalidAttachedStatsState {
+        object_id: u64,
+        reason: &'static str,
+    },
+    #[error("invalid retained foundation for object {object_id}")]
+    InvalidFoundation { object_id: u64 },
     #[error("invalid UnitDelivery snapshot state: {0}")]
     InvalidUnitDelivery(&'static str),
     #[error("invalid paid two-stage selection: {0}")]
     InvalidPaidSuperWeaponSelection(&'static str),
+    #[cfg(feature = "ares")]
+    #[error("invalid superweapon launch history: {0}")]
+    InvalidSuperWeaponLaunchHistory(&'static str),
     #[error("invalid detached Particle {object_id}: {reason}")]
     InvalidDetachedParticleState {
         object_id: u64,
@@ -337,6 +372,8 @@ pub enum SnapshotRestoreError {
     InvalidCurrentHouse {
         owner: crate::sim::intern::InternedId,
     },
+    #[error("invalid saved frame continuation: {reason}")]
+    InvalidFrameContinuation { reason: &'static str },
     #[error("invalid saved multiplayer session: {reason}")]
     InvalidMultiplayerSession { reason: &'static str },
     #[cfg(feature = "ares")]
@@ -383,6 +420,8 @@ pub enum SnapshotRestoreError {
     MissingLogicIdentity { object_id: u64 },
     #[error("DisplayClass object id {object_id} has no restored registry identity")]
     MissingDisplayIdentity { object_id: u64 },
+    #[error("saved Terrain {object_id} references unresolved type {type_name}")]
+    MissingTerrainType { object_id: u64, type_name: String },
     #[error("live {registry} object id {object_id} is absent from LogicVector")]
     MissingRequiredLogicIdentity {
         registry: &'static str,
@@ -488,6 +527,7 @@ pub type SnapshotTerrainAssetPreparation<'a> = dyn FnMut(
 /// The app presentation saved beside the simulation, in `GameSnapshotRef` order.
 type SavedPresentationRef<'a> = (
     &'a [(u64, i16)],
+    &'a [(u64, i32)],
     Option<&'a SavedSidebarOrder>,
     Option<&'a SavedTacticalView>,
     Option<&'a SavedLocalView>,
@@ -509,6 +549,7 @@ struct GameSnapshotRef<'a> {
     compatibility: RulesCompatibility,
     sim: &'a Simulation,
     sinking_waterlines: &'a [(u64, i16)],
+    anim_intensities: &'a [(u64, i32)],
     sidebar_order: Option<&'a SavedSidebarOrder>,
     tactical_view: Option<&'a SavedTacticalView>,
     local_view: Option<&'a SavedLocalView>,
@@ -531,8 +572,14 @@ impl GameSnapshot {
         // Description. The active list admits only an exact internal-version
         // match at 0x00559ED0..0x0055A04A. VERA keeps its Rust-native bincode
         // body while making the same load-bearing envelope identities explicit.
-        let (sinking_waterlines, sidebar_order, tactical_view, local_view, scenario_resources) =
-            presentation;
+        let (
+            sinking_waterlines,
+            anim_intensities,
+            sidebar_order,
+            tactical_view,
+            local_view,
+            scenario_resources,
+        ) = presentation;
         let snapshot = GameSnapshotRef {
             product_magic: SNAPSHOT_PRODUCT_MAGIC,
             envelope_version: SNAPSHOT_ENVELOPE_VERSION,
@@ -549,6 +596,7 @@ impl GameSnapshot {
                 }),
             sim,
             sinking_waterlines,
+            anim_intensities,
             sidebar_order,
             tactical_view,
             local_view,
@@ -578,6 +626,7 @@ impl GameSnapshot {
             description,
             save_timestamp,
             &[],
+            &[],
             None,
             None,
             None,
@@ -594,6 +643,7 @@ impl GameSnapshot {
         description: &str,
         save_timestamp: u64,
         sinking_waterlines: &[(u64, i16)],
+        anim_intensities: &[(u64, i32)],
         sidebar_order: Option<&SavedSidebarOrder>,
         tactical_view: Option<&SavedTacticalView>,
         local_view: Option<&SavedLocalView>,
@@ -608,6 +658,7 @@ impl GameSnapshot {
             save_timestamp,
             (
                 sinking_waterlines,
+                anim_intensities,
                 sidebar_order,
                 tactical_view,
                 local_view,
@@ -648,7 +699,7 @@ impl GameSnapshot {
             map_name,
             map_name,
             save_timestamp,
-            (&[], None, None, None, None),
+            (&[], &[], None, None, None, None),
         )
     }
 
@@ -1632,12 +1683,21 @@ impl Simulation {
     /// order.
     pub fn restore_after_snapshot_load(&mut self) -> Result<(), SnapshotRestoreError> {
         for (_, entity) in self.substrate.entities.iter_sorted() {
+            if !entity.type_facts.foundation().valid() {
+                return Err(SnapshotRestoreError::InvalidFoundation {
+                    object_id: entity.stable_id(),
+                });
+            }
             entity
                 .validate_ares_build_compatibility()
                 .map_err(SnapshotRestoreError::InvalidUnitDelivery)?;
         }
         self.validate_paid_super_weapon_selections()
             .map_err(SnapshotRestoreError::InvalidPaidSuperWeaponSelection)?;
+        #[cfg(feature = "ares")]
+        self.super_weapons
+            .validate_ares_launch_history()
+            .map_err(SnapshotRestoreError::InvalidSuperWeaponLaunchHistory)?;
         self.unit_deliveries
             .validate(self)
             .map_err(SnapshotRestoreError::InvalidUnitDelivery)?;
@@ -1661,6 +1721,13 @@ impl Simulation {
         {
             return Err(SnapshotRestoreError::InvalidCurrentHouse { owner });
         }
+        if self.session.outcome_request().is_some() && self.session.current_house().is_none() {
+            return Err(SnapshotRestoreError::InvalidFrameContinuation {
+                reason: "scenario result request has no current House",
+            });
+        }
+        self.validate_frame_continuation_for_restore()
+            .map_err(|reason| SnapshotRestoreError::InvalidFrameContinuation { reason })?;
         if let Some(observer) = self.session.observer_house()
             && !self.houses.contains_key(&observer)
         {
@@ -1703,51 +1770,20 @@ impl Simulation {
             house.validate_production_history().map_err(|reason| {
                 SnapshotRestoreError::InvalidHouseProductionHistory { owner, reason }
             })?;
-            if house.is_to_die()
-                && (house.has_won() || house.has_lost() || house.outcome().is_some())
-            {
+            if house.is_to_die() && (house.has_won() || house.has_lost()) {
                 return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
                     owner,
                     reason: "Flag_To_Die conflicts with a terminal result",
                 });
             }
-            // MPlayer_Defeated flags only PlayerPtr (4FC5AA..6B7); every other
-            // defeated House, and a local one still watching, has no result.
-            let Some(outcome) = house.outcome() else {
-                if house.has_won() || house.has_lost() {
-                    return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                        owner,
-                        reason: "terminal flags require serialized outcome authority",
-                    });
-                }
-                continue;
-            };
-            let flags_match = match outcome.kind {
-                crate::sim::house_state::HouseOutcomeKind::Victory => {
-                    //FlagWin4FC9EE guards Won/FlagToDie/Lost, not Defeated.
-                    house.has_won() && !house.has_lost()
-                }
-                crate::sim::house_state::HouseOutcomeKind::Defeat => {
-                    house.has_lost() && !house.has_won()
-                }
-            };
-            if !flags_match {
+            // FlagWin4FC9EE refuses Lost, and FlagLose4FCBDE clears Won.
+            // House4F8657 also clears Won after its wait, independently of
+            // the sticky process result requests. A later Action2 may change
+            // the House flags and restart +298 after victory was admitted.
+            if house.has_won() && house.has_lost() {
                 return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
                     owner,
-                    reason: "kind disagrees with terminal house flags",
-                });
-            }
-            // A pending result can legally have an expired timer: campaign
-            // AllowWin Tags still block it, or this frame's House rung has not
-            // visited it yet. Only the admitted exit latch requires zero.
-            if outcome.exit_ready
-                && !house
-                    .outcome_timer()
-                    .expired(self.session.binary_frame() as i32)
-            {
-                return Err(SnapshotRestoreError::InvalidHouseOutcomeState {
-                    owner,
-                    reason: "shared result timer disagrees with expiry latch",
+                    reason: "Won and Lost flags conflict",
                 });
             }
         }
@@ -1822,28 +1858,28 @@ impl Simulation {
                 }
             }
         }
+        self.terrain_objects
+            .validate_membership()
+            .map_err(|reason| SnapshotRestoreError::InvalidCellMembership { reason })?;
         for terrain in self.terrain_objects.objects().values() {
             let in_logic = seen_logic.contains(&terrain.stable_id());
             let pending_delete = pending_delete_ids.contains(&terrain.stable_id());
-            if terrain.is_live() && !in_logic {
-                return Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
-                    registry: "TerrainObjectStore",
-                    object_id: terrain.stable_id(),
-                });
-            }
             if !terrain.is_live() && in_logic {
                 return Err(SnapshotRestoreError::InactiveLogicIdentity {
                     registry: "TerrainObjectStore",
                     object_id: terrain.stable_id(),
                 });
             }
-            if terrain.is_live() && pending_delete {
+            if terrain.object_alive() && pending_delete {
                 return Err(SnapshotRestoreError::DeferredDeleteLogicIdentity {
                     registry: "TerrainObjectStore",
                     object_id: terrain.stable_id(),
                 });
             }
-            if !terrain.is_live() && !pending_delete {
+            // ObjectCtor5F3930 starts Alive even while InLimbo. A zero-cell
+            // TerrainCtor71BC34 skips Unlimbo without scheduling deletion;
+            // ObjectUnInit5F6625, rather than Limbo, clears Alive.
+            if !terrain.object_alive() && !pending_delete {
                 return Err(SnapshotRestoreError::MissingDeferredDeleteIdentity {
                     registry: "TerrainObjectStore",
                     object_id: terrain.stable_id(),
@@ -1908,6 +1944,9 @@ impl Simulation {
         // ParasiteClass Load 6295DB..6295F3 does the same for its suppression
         // and bite timers: a bite is due at once and suppression is dropped.
         let frame = self.session.binary_frame();
+        // RadSiteClass::Load65B3D0 also restarts its level/light clocks;
+        // the saved field and source stay intact until ordinary RadSite AI.
+        self.radiation.restart_timers_after_load(frame);
         for id in self.substrate.entities.keys_sorted() {
             self.substrate.restore_move_sound_state_after_load(id);
             if let Some(entity) = self.substrate.entities.get_mut(id) {
@@ -1944,6 +1983,37 @@ impl Simulation {
         prepare_terrain_assets: Option<&mut SnapshotTerrainAssetPreparation<'_>>,
     ) -> Result<SnapshotMapRestoreOutput, SnapshotRestoreError> {
         self.validate_type_tech_levels(rules)?;
+        // TerrainLoad71CDA0 preserves the separately saved Display/Logic
+        // vectors. Only ObjectUnlimbo5F4FEF..5F5040's eligible spawners need
+        // Logic; validate with restored type state without rebuilding order.
+        for terrain in self.terrain_objects.objects().values() {
+            if !terrain.is_live() {
+                continue;
+            }
+            let type_name = self.interner.resolve(terrain.type_ref());
+            let terrain_type = rules
+                .terrain_object_type_case_insensitive(type_name)
+                .ok_or_else(|| SnapshotRestoreError::MissingTerrainType {
+                    object_id: terrain.stable_id(),
+                    type_name: type_name.to_owned(),
+                })?;
+            if !terrain.in_logic_vector()
+                && terrain.joins_logic_on_unlimbo(terrain_type, self.session.game_mode())
+            {
+                return Err(SnapshotRestoreError::MissingRequiredLogicIdentity {
+                    registry: "TerrainObjectStore",
+                    object_id: terrain.stable_id(),
+                });
+            }
+        }
+        #[cfg(feature = "ares")]
+        self.validate_attached_stats_after_restore(rules)
+            .map_err(
+                |(object_id, reason)| SnapshotRestoreError::InvalidAttachedStatsState {
+                    object_id,
+                    reason,
+                },
+            )?;
         #[cfg(feature = "ares")]
         self.validate_factory_country_references(rules)
             .map_err(|reason| SnapshotRestoreError::InvalidFactoryCountry { reason })?;
@@ -2130,13 +2200,8 @@ impl Simulation {
                 component: "ResolvedTerrainGrid",
             },
         )?;
-        let mut source_object_cells: BTreeSet<(u16, u16)> = self
-            .terrain_objects
-            .objects()
-            .values()
-            .filter(|terrain| terrain.is_live())
-            .map(crate::sim::terrain_object::TerrainObjectState::cell)
-            .collect();
+        let mut source_object_cells: BTreeSet<(u16, u16)> =
+            self.terrain_objects.cell_index().keys().copied().collect();
         source_object_cells.extend(
             self.substrate
                 .occupancy
@@ -2199,6 +2264,116 @@ mod tests {
         )
     }
 
+    #[test]
+    fn retail_static_tree_display_survives_load_without_logic_membership() {
+        use crate::sim::world::display_layers::DisplayLayer;
+
+        let Some(battle) =
+            crate::rules::retail_ini_fixture::retail_battle_rules_for_map("Dustbowl.mmx")
+        else {
+            return;
+        };
+        let rules = &battle.rules;
+        let registry = crate::rules::overlay_types::OverlayTypeRegistry::from_ini(
+            &battle.processed_rules,
+            Some(&battle.fixed_art),
+        );
+        let terrain = flat_terrain(8, 8);
+        let mut sim = Simulation::new();
+        sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(8, 8));
+        sim.install_resolved_terrain_for_new_map(terrain.clone());
+        crate::sim::terrain_spawn::construct_terrain_objects(
+            &mut sim,
+            &[
+                crate::map::overlay::TerrainObject {
+                    rx: 3,
+                    ry: 4,
+                    name: "TREE01".into(),
+                },
+                crate::map::overlay::TerrainObject {
+                    rx: 5,
+                    ry: 4,
+                    name: "TIBTRE01".into(),
+                },
+            ],
+            rules,
+            false,
+        );
+        let tree = sim.terrain_objects.id_at((3, 4)).unwrap();
+        let spawner = sim.terrain_objects.id_at((5, 4)).unwrap();
+        assert_eq!(sim.live_object_order_snapshot(), [spawner]);
+        assert_eq!(
+            sim.substrate.display.members(DisplayLayer::GROUND),
+            [tree, spawner]
+        );
+        let bytes = GameSnapshot::save(&sim, 0, 0, "terrain-membership", 0);
+        let mut loaded = GameSnapshot::load(&bytes).unwrap().sim;
+        loaded
+            .restore_after_snapshot_load()
+            .expect("a live static tree needs no Logic slot");
+        loaded.rebuild_caches_after_load(
+            terrain,
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            rules,
+        );
+        loaded
+            .restore_map_authority_after_snapshot_load(rules, &registry, None)
+            .unwrap();
+        assert_eq!(loaded.live_object_order_snapshot(), [spawner]);
+        assert_eq!(
+            loaded.substrate.display.members(DisplayLayer::GROUND),
+            [tree, spawner]
+        );
+        assert!(!loaded.terrain_objects.get(tree).unwrap().in_logic_vector());
+        let warhead_ref = loaded.interner.intern("HE");
+        loaded.commit_direct_terrain_damage_receiver(
+            rules,
+            Some(&registry),
+            crate::sim::combat::TerrainDamageEvent {
+                stable_id: tree,
+                rx: 3,
+                ry: 4,
+                damage: loaded.terrain_objects.get(tree).unwrap().health(),
+                distance_leptons: 0,
+                warhead_ref,
+                near_center_ic_isolation_eligible: false,
+            },
+            crate::sim::world::FrameEffects::default(),
+        );
+        assert_eq!(
+            loaded.substrate.display.members(DisplayLayer::GROUND),
+            [spawner]
+        );
+        assert_eq!(loaded.live_object_order_snapshot(), [spawner]);
+        assert!(loaded.terrain_objects.id_at((3, 4)).is_none());
+        assert_eq!(loaded.substrate.pending_delete.object_ids(), [tree]);
+
+        loaded.set_logic_order_for_test(Vec::new());
+        loaded.rebuild_logic_membership();
+        assert_eq!(
+            loaded
+                .restore_map_authority_after_snapshot_load(rules, &registry, None)
+                .unwrap_err(),
+            SnapshotRestoreError::MissingRequiredLogicIdentity {
+                registry: "TerrainObjectStore",
+                object_id: spawner,
+            },
+        );
+        assert_eq!(
+            loaded
+                .restore_map_authority_after_snapshot_load(
+                    crate::rules::ruleset::RuleSet::empty_for_test(),
+                    &registry,
+                    None,
+                )
+                .unwrap_err(),
+            SnapshotRestoreError::MissingTerrainType {
+                object_id: spawner,
+                type_name: "TIBTRE01".into(),
+            },
+        );
+    }
+
     mod gsi_17_04_tests {
         use super::flat_terrain;
         use crate::map::basic::{BasicSection, SpecialFlagsSection};
@@ -2228,6 +2403,8 @@ mod tests {
                  [AircraftTypes]\n\
                  [BuildingTypes]\n\
                  [Warheads]\n\
+                 [TerrainTypes]\n0=TREE01\n\
+                 [TREE01]\nFixtureOnly=1\n\
                  [OverlayTypes]\n\
                  0=ORE\n\
                  [ORE]\n\
@@ -2318,17 +2495,12 @@ mod tests {
                 .insert(stable_id, {
                     let mut terrain =
                         TerrainObjectState::for_test(stable_id, type_ref, cell.0, cell.1);
-                    terrain.set_in_logic_vector_for_test(true);
                     terrain.set_occupation_bits_for_test(7);
                     terrain
                 });
             sim.terrain_objects
                 .cell_index_mut_for_test()
                 .insert(cell, stable_id);
-            sim.substrate
-                .logic
-                .try_push(stable_id)
-                .expect("fixture TerrainClass Logic registration");
         }
 
         fn seed_serialized_queue_state(
@@ -3175,10 +3347,12 @@ mod tests {
     fn snapshot_capability_rejects_foreign_mode_before_body_decode() {
         let bytes = GameSnapshot::save_validated(&Simulation::new(), 0, 0, "synthetic", 0);
         let mut header = GameSnapshot::read_header(&bytes).unwrap();
-        header.compatibility = match RulesCompatibility::default() {
-            RulesCompatibility::Retail => RulesCompatibility::Ares,
-            RulesCompatibility::Ares => RulesCompatibility::Retail,
-        };
+        // Flip every capability bit: the result is a foreign mode for any build.
+        header.compatibility = RulesCompatibility::from_capabilities(
+            !crate::rules::ARES_ENABLED,
+            !crate::rules::PHOBOS_ENABLED,
+            !crate::rules::NPATCH_ENABLED,
+        );
         // A complete header with no body proves capability admission runs before
         // Simulation deserialization, even without bound scenario resources.
         let bytes = save_codec::serialize(&header).unwrap();
@@ -5198,7 +5372,7 @@ mod tests {
         let restored_house = restored.houses.get(&owner).expect("restored house");
         let outcome = restored_house.outcome().expect("accepted outcome");
         assert_eq!(outcome.kind, HouseOutcomeKind::Victory);
-        assert!(!outcome.exit_ready);
+        assert!(restored.session().outcome_request().is_none());
         assert_eq!(
             restored_house
                 .outcome_timer()
@@ -5206,34 +5380,29 @@ mod tests {
             45
         );
 
-        let mut boundary = restored_house.clone();
-        assert!(!boundary.advance_outcome_savour(189, true));
-        assert!(boundary.advance_outcome_savour(190, true));
+        assert_eq!(restored_house.pending_outcome(189, true), None);
+        assert_eq!(
+            restored_house.pending_outcome(190, true),
+            Some(HouseOutcomeKind::Victory)
+        );
     }
 
     #[test]
-    fn gsi_01_04_malformed_current_snapshot_naked_terminal_flags_are_rejected() {
+    fn gsi_01_04_conflicting_native_house_result_flags_are_rejected() {
         use crate::sim::house_state::HouseState;
 
-        for terminal_flag in ["has_won", "has_lost"] {
+        for (won, lost, to_die) in [
+            (true, true, false),
+            (true, false, true),
+            (false, true, true),
+        ] {
             let mut malformed = Simulation::new();
             let owner = malformed.interner.intern("Americans");
             let mut house = HouseState::new(owner, 0, None, true, 10_000, 10);
-            match terminal_flag {
-                "has_won" => house.supply_outcome_state_for_test(
-                    true,
-                    false,
-                    None,
-                    crate::sim::timer::CdTimer::default(),
-                ),
-                "has_lost" => house.supply_outcome_state_for_test(
-                    false,
-                    true,
-                    None,
-                    crate::sim::timer::CdTimer::default(),
-                ),
-                _ => unreachable!(),
+            if to_die {
+                assert!(house.flag_to_die(0));
             }
+            house.supply_result_flags_for_test(won, lost, crate::sim::timer::CdTimer::default());
             malformed.houses.register(house);
 
             let bytes = GameSnapshot::save(&malformed, 11, 22, "", 33);
@@ -5242,9 +5411,13 @@ mod tests {
                 restored.restore_after_snapshot_load(),
                 Err(SnapshotRestoreError::InvalidHouseOutcomeState {
                     owner,
-                    reason: "terminal flags require serialized outcome authority",
+                    reason: if to_die {
+                        "Flag_To_Die conflicts with a terminal result"
+                    } else {
+                        "Won and Lost flags conflict"
+                    },
                 }),
-                "naked {terminal_flag} must not enter a world whose app bridge can only consume outcome_state"
+                "FlagWin/FlagLose cannot produce conflicting House flags"
             );
         }
     }
@@ -6205,7 +6378,7 @@ mod tests {
         );
         building
             .type_facts
-            .set_foundation_for_test("4x3".to_string());
+            .set_foundation_for_test("4x3".to_string().into());
         let mut profile = crate::rules::object_type::BuildingHiddenOccupancyProfile::default();
         profile.add_occupy[0] = Some((-1, 0));
         profile.add_occupy[1] = Some((-1, -1));
@@ -6220,13 +6393,19 @@ mod tests {
         // hidden-occupation persistence on that same post-load cursor.
         sim.scenario_rng = crate::sim::rng::SimRng::new(0);
         let expected_hash = sim.state_hash();
-        sim.substrate
-            .hidden_occupation
-            .exit_building((10, 10), "4x3", profile, Some((32, 32)));
+        sim.substrate.hidden_occupation.exit_building(
+            (10, 10),
+            &"4x3".into(),
+            profile,
+            Some((32, 32)),
+        );
         assert_ne!(sim.state_hash(), expected_hash);
-        sim.substrate
-            .hidden_occupation
-            .enter_building((10, 10), "4x3", profile, Some((32, 32)));
+        sim.substrate.hidden_occupation.enter_building(
+            (10, 10),
+            &"4x3".into(),
+            profile,
+            Some((32, 32)),
+        );
         let mut stored = profile;
         stored.occupy_height = 4;
         sim.substrate
@@ -8285,16 +8464,12 @@ mod tests {
             terrain
         };
         for terrain in [&damaged, &destroyed, &spawner] {
-            sim.terrain_objects
-                .objects_mut_for_test()
-                .insert(terrain.stable_id(), terrain.clone());
-            assert!(sim.register_terrain_object(
-                terrain.stable_id(),
-                crate::rules::ruleset::RuleSet::empty_for_test()
-            ));
-            sim.terrain_objects
-                .cell_index_mut_for_test()
-                .insert(terrain.cell(), terrain.stable_id());
+            sim.terrain_objects.insert_constructed(
+                terrain.clone(),
+                terrain.stable_id() == spawner_id,
+                true,
+            );
+            assert!(sim.register_terrain_object(terrain.stable_id(), &rules));
             mark_terrain_raw_occupation(
                 &mut sim.substrate.raw_cell_occupation,
                 terrain.cell(),
@@ -8303,7 +8478,7 @@ mod tests {
         }
         sim.set_next_stable_object_id_for_test(spawner_id + 1);
         sim.terrain_objects.animations_mut_for_test().insert(
-            spawner_cell,
+            spawner_id,
             TerrainAnimationState::new(
                 spawner_type,
                 crate::util::native_x87::NativeF32Bits::from_bits(0x3b44_9ba6),
@@ -8338,7 +8513,8 @@ mod tests {
             sim.resolved_terrain.as_mut(),
         );
         assert_eq!(result, TerrainDamageResult::Destroyed);
-        assert!(sim.unregister_non_entity_object(destroyed_id));
+        assert!(!sim.unregister_non_entity_object(destroyed_id));
+        assert_eq!(sim.substrate.display.layer_of(destroyed_id), None);
         sim.substrate.pending_delete.queue_object(destroyed_id);
         // Native in-scenario load restarts Scenario RNG from Seed0; isolate
         // destroyed-terrain persistence on that same post-load cursor.
@@ -8386,7 +8562,7 @@ mod tests {
             spawner_id
         );
         assert_eq!(
-            restored.terrain_objects.animations()[&spawner_cell].type_ref(),
+            restored.terrain_objects.animations()[&spawner_id].type_ref(),
             spawner_type
         );
         assert!(

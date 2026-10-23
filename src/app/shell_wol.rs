@@ -466,6 +466,7 @@ impl App {
     /// (`0x0077B2D7..0x0077B31D`) and `0x10E` is created after the empty
     /// backdrop (`0x00798DE0`).
     pub(super) fn open_wol_welcome_page(state: &mut AppState) {
+        crate::app::shell_main_menu::clear_typed_codes_for_network_session(state);
         crate::app::frontend::main_menu_shell_render::clear_ra2ts_movie_session(state);
         crate::app::frontend::shell_transition::invalidate_main_menu_dialog_instance(state);
         // The message boxes paint from the skirmish chrome atlas.

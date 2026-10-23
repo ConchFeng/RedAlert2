@@ -48,7 +48,9 @@ pub use self::production_placement::{
     is_within_build_area, placement_preview_for_owner_with_overlays,
 };
 #[cfg(any(test, feature = "test-support"))]
-pub use self::production_queue::dispatch_production_changes_for_tests;
+pub use self::production_queue::{
+    dispatch_production_changes_for_tests, publish_production_changes_for_tests,
+};
 #[cfg(any(test, feature = "test-support"))]
 pub(in crate::sim) use self::production_queue::house_for_test;
 pub use self::production_queue::{
@@ -58,10 +60,8 @@ pub use self::production_queue::{
 };
 pub(crate) use self::production_refinery::spawn_building_free_unit;
 pub use self::production_repair::can_repair_building;
-pub use self::production_repair::{RepairControl, toggle_repair};
-pub(crate) use self::production_repair::{
-    engineer_repair, repair_step_cost, update_repair_and_power,
-};
+pub use self::production_repair::{RepairControl, repair_step_cost, toggle_repair};
+pub(crate) use self::production_repair::{engineer_repair, update_repair_and_power};
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use self::production_sell::begin_selling;
 pub(crate) use self::production_sell::sell_back;

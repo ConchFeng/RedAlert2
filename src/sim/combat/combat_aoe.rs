@@ -37,7 +37,7 @@ use crate::sim::overlay_grid::{
 };
 use crate::sim::pathfinding::zone_incremental::ZoneRepairKind;
 use crate::sim::rng::SimRng;
-use crate::sim::terrain_object::{TerrainObjectLifecycle, TerrainObjectState};
+use crate::sim::terrain_object::TerrainObjectState;
 use crate::util::fixed_math::SimFixed;
 use crate::util::lepton::{CELL_CENTER_LEPTON, LEPTONS_PER_LEVEL, ground_height_leptons};
 use crate::util::native_x87::distance_3d_leptons;
@@ -149,6 +149,101 @@ pub(crate) fn tiberium_reduction_cell_admitted(
         .overlay_id
         .and_then(|overlay_id| registry.flags(overlay_id))
         .is_some_and(|flags| flags.tiberium && flags.chain_reaction)
+}
+
+/// `TechnoClass::TriggersCellInset @ 0x006F7660`, retained as a dormant
+/// production query until its native caller is established. It asks the
+/// shared deploy-weapon owner for the selected WeaponType, applies native
+/// `IsAreaFire @ 0x0070DD50`, resolves that weapon's Warhead, then compares
+/// `ftol(Sqrt_Approx(dx² + dy²))` in signed-cell coordinates against
+/// `CellSpread - CellInset`. Native `TriggersCellInset @ 0x006F7660` calls
+/// `Sqrt_Approx @ 0x004CAC40` then `Math__ftol @ 0x007C5F00`. The coordinate
+/// owner dispatches `GetCoords` at vtable +0x48 (Object `0x005F65A0`, Building
+/// `0x00447AC0`, Cell `0x00486840`). Native's `IsAreaFire` and subsequent
+/// weapon read both use `GetDeployWeapon @ 0x0070E120`; this pure selection is
+/// resolved once here and consumes no RNG or mutable state.
+pub fn techno_triggers_cell_inset(
+    world: &crate::sim::world::Simulation,
+    techno_id: u64,
+    target: super::TargetKind,
+    rules: &RuleSet,
+) -> bool {
+    let Some(techno) = world.substrate.entities.get(techno_id) else {
+        return false;
+    };
+    let Some(object_type) = world.interner.object_type(techno.type_ref(), rules) else {
+        return false;
+    };
+    let (_, deployed) = super::combat_weapon::deploy_weapon(object_type, techno.veterancy.rank());
+    let Some((weapon_id, _)) = deployed else {
+        return false;
+    };
+    let Some(weapon) = rules.weapon(weapon_id) else {
+        return false;
+    };
+    if !weapon.area_fire {
+        return false;
+    }
+    let Some(warhead) = super::combat_weapon::warhead_of(rules, weapon) else {
+        return false;
+    };
+
+    // Keep the native GetCoords (+0x48) dispatch in ground_pose/target_get_coords
+    // so Buildings, Cells and Terrain targets do not fall back to raw Location
+    // fields or a fabricated point.
+    let cells = world
+        .resolved_terrain
+        .as_ref()
+        .map(NativeCellQuery::canonical);
+    let Some(techno_coords) = crate::sim::movement::ground_pose::target_get_coords(
+        super::TargetKind::Entity(techno_id),
+        world,
+        cells.as_ref(),
+    ) else {
+        return false;
+    };
+    let Some(target_coords) =
+        crate::sim::movement::ground_pose::target_get_coords(target, world, cells.as_ref())
+    else {
+        return false;
+    };
+    let techno_x = crate::util::lepton::lepton_to_cell_packed(techno_coords.x);
+    let techno_y = crate::util::lepton::lepton_to_cell_packed(techno_coords.y);
+    let target_x = crate::util::lepton::lepton_to_cell_packed(target_coords.x);
+    let target_y = crate::util::lepton::lepton_to_cell_packed(target_coords.y);
+    let dx = target_x.wrapping_sub(techno_x);
+    let dy = target_y.wrapping_sub(techno_y);
+    let distance =
+        crate::util::native_x87::sqrt_approx_length([i32::from(dx), i32::from(dy)]) as i16;
+
+    // Native FLD CellSpread / FSUB CellInset / FSTP float produces one
+    // binary32 threshold. The distance is then narrowed to signed i16, so
+    // comparing that exact integer to a downward-projected I16F16 threshold
+    // preserves the inclusive integer boundary while keeping sim math fixed.
+    let threshold = warhead.cell_spread_f64 as f32 - warhead.cell_inset_f32;
+    cell_inset_distance_within_threshold(distance, threshold)
+}
+
+fn cell_inset_distance_within_threshold(distance: i16, threshold: f32) -> bool {
+    if threshold.is_nan() {
+        // Native FCOMP sets the unordered C0/C3 flags; TEST AH, 0x41 is then
+        // nonzero, so the following JZ (false path) is not taken.
+        return true;
+    }
+    if threshold >= 32767.0 {
+        return true;
+    }
+    if threshold < -32768.0 {
+        return false;
+    }
+
+    let nearest = SimFixed::from_num(threshold);
+    let threshold_fixed = if nearest.to_num::<f32>() > threshold {
+        SimFixed::from_bits(nearest.to_bits() - 1)
+    } else {
+        nearest
+    };
+    SimFixed::from_num(i32::from(distance)) <= threshold_fixed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -280,8 +375,7 @@ pub(crate) enum AreaDamageReceiver {
 
 #[derive(Clone, Copy)]
 pub(crate) struct TerrainCollectionView<'a> {
-    pub objects: &'a BTreeMap<u64, TerrainObjectState>,
-    pub cells: &'a BTreeMap<(u16, u16), u64>,
+    pub store: &'a crate::sim::terrain_object::TerrainObjectStore,
 }
 
 impl AoEDamageResult {
@@ -375,7 +469,8 @@ pub(crate) fn apply_aoe_damage_with_terrain<O: Into<AoEDamageOrigin>>(
         rules, interner,
     ));
     let no_terrain_objects = BTreeMap::new();
-    let target_terrain_objects = terrain_objects.map_or(&no_terrain_objects, |view| view.objects);
+    let target_terrain_objects =
+        terrain_objects.map_or(&no_terrain_objects, |view| view.store.objects());
     apply_aoe_damage_with_terrain_and_scenario(
         entities,
         target_terrain_objects,
@@ -1020,43 +1115,37 @@ fn push_terrain_aoe_damage(
     let Some(view) = terrain_objects else {
         return;
     };
-    let Some(&stable_id) = view.cells.get(&(scan_rx, scan_ry)) else {
-        return;
-    };
-    let Some(object) = view.objects.get(&stable_id) else {
-        return;
-    };
-    if object.lifecycle() != TerrainObjectLifecycle::Live
-        || object.cell().0 != scan_rx
-        || object.cell().1 != scan_ry
-    {
-        return;
+    // Apply_area_damage489280 walks every Cell member; GetTerrain's first
+    // matching object is insufficient when generated constructors overlap.
+    for stable_id in view.store.members_at((scan_rx, scan_ry)) {
+        let object = &view.store.objects()[&stable_id];
+        if !object.is_live() {
+            continue;
+        }
+        let impact_point = impact.world_point(impact_rx, impact_ry);
+        let target_coord = object.world_coord();
+        let distance_leptons = distance_3d_leptons(
+            [impact_point.x, impact_point.y, impact.z_leptons],
+            [target_coord.x, target_coord.y, target_coord.z],
+        );
+        if i64::from(distance_leptons) > spread_leptons {
+            continue;
+        }
+        result.push_terrain(TerrainDamageEvent {
+            stable_id,
+            rx: scan_rx,
+            ry: scan_ry,
+            damage: base_damage,
+            distance_leptons,
+            warhead_ref,
+            near_center_ic_isolation_eligible: false,
+        });
     }
-
-    let impact_point = impact.world_point(impact_rx, impact_ry);
-    let (impact_x, impact_y) = (impact_point.x, impact_point.y);
-    let target_coord = object.world_coord();
-    let distance_leptons = distance_3d_leptons(
-        [impact_x, impact_y, impact.z_leptons],
-        [target_coord.x, target_coord.y, target_coord.z],
-    );
-    if i64::from(distance_leptons) > spread_leptons {
-        return;
-    }
-
-    result.push_terrain(TerrainDamageEvent {
-        stable_id,
-        rx: scan_rx,
-        ry: scan_ry,
-        damage: base_damage,
-        distance_leptons,
-        warhead_ref,
-        near_center_ic_isolation_eligible: false,
-    });
 }
 
 #[cfg(test)]
 mod tests {
+    use crate::sim::terrain_object::TerrainObjectLifecycle;
     use std::collections::BTreeMap;
 
     use super::*;
@@ -1074,9 +1163,103 @@ mod tests {
     use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
     use crate::sim::movement::locomotor::MovementLayer;
     use crate::sim::occupancy::{CellListInsertion, OccupancyGrid};
+    use crate::sim::world::Simulation;
+
+    const CELL_INSET_FIXTURE_RULES: &str = "[VehicleTypes]\n0=FIRER\n1=SPRAY\n2=NOAREA\n3=EMPTY\n4=TARGET\n\
+             [WeaponTypes]\n0=AREA\n1=DIRECT\n[Projectiles]\n0=INVIS\n\
+             [Warheads]\n0=WH\n[FIRER]\nSecondary=AREA\n\
+             [SPRAY]\nSprayAttack=yes\nPrimary=AREA\nSecondary=DIRECT\n\
+             [NOAREA]\nSecondary=DIRECT\n\
+             [AREA]\nProjectile=INVIS\nWarhead=WH\nAreaFire=yes\n\
+             [DIRECT]\nProjectile=INVIS\nWarhead=WH\nAreaFire=no\n\
+             [INVIS]\n[WH]\nCellSpread=3\nCellInset=2\n";
+
+    fn cell_inset_fixture() -> (RuleSet, Simulation) {
+        let ini = IniFile::from_str(CELL_INSET_FIXTURE_RULES);
+        let rules = RuleSet::from_ini(&ini).expect("CellInset fixture rules parse");
+        cell_inset_world(rules)
+    }
+
+    fn cell_inset_world(rules: RuleSet) -> (RuleSet, Simulation) {
+        let mut world = Simulation::new();
+        let entities = [
+            (1, "FIRER", 10, 10),
+            (2, "TARGET", 11, 10),
+            (3, "TARGET", 12, 10),
+            (4, "SPRAY", 10, 10),
+            (5, "NOAREA", 10, 10),
+            (6, "EMPTY", 10, 10),
+        ];
+        for (stable_id, type_id, rx, ry) in entities {
+            let type_ref = world.interner.intern(type_id);
+            let mut entity = GameEntity::test_default(stable_id, type_id, "House", rx, ry);
+            entity.set_type_ref_for_test(type_ref);
+            world.substrate.entities.insert(entity);
+        }
+        world.interner.bind_types(&rules);
+        (rules, world)
+    }
 
     fn hit_ids(hits: &[EntityDamageEvent]) -> Vec<u64> {
         hits.iter().map(|event| event.target_id).collect()
+    }
+
+    #[test]
+    fn techno_triggers_cell_inset_includes_threshold_and_uses_native_deploy_slot() {
+        let (rules, world) = cell_inset_fixture();
+
+        assert!(techno_triggers_cell_inset(
+            &world,
+            1,
+            TargetKind::Entity(2),
+            &rules,
+        ));
+        assert!(!techno_triggers_cell_inset(
+            &world,
+            1,
+            TargetKind::Entity(3),
+            &rules,
+        ));
+        assert!(techno_triggers_cell_inset(
+            &world,
+            4,
+            TargetKind::Entity(2),
+            &rules,
+        ));
+
+        let mut layers = crate::rules::native_processing::RulesLayerStack::new(IniFile::from_str(
+            CELL_INSET_FIXTURE_RULES,
+        ));
+        layers.push(
+            crate::rules::native_processing::RulesLayerKind::Scenario,
+            IniFile::from_str("[WH]\nCellSpread=1e999\nCellInset=1e999\n"),
+        );
+        let nan_rules = RuleSet::from_rules_layers(&layers).expect("NaN threshold rules");
+        let (nan_rules, nan_world) = cell_inset_world(nan_rules);
+        assert!(techno_triggers_cell_inset(
+            &nan_world,
+            1,
+            TargetKind::Entity(2),
+            &nan_rules,
+        ));
+    }
+
+    #[test]
+    fn techno_triggers_cell_inset_requires_area_fire_and_a_deploy_weapon() {
+        let (rules, world) = cell_inset_fixture();
+
+        assert!(!techno_triggers_cell_inset(
+            &world,
+            5,
+            TargetKind::Entity(2),
+            &rules,
+        ));
+        assert!(!techno_triggers_cell_inset(
+            &world,
+            6,
+            TargetKind::Entity(2),
+            &rules,
+        ));
     }
 
     fn hit_id_distances(hits: &[EntityDamageEvent]) -> Vec<(u64, i32)> {
@@ -1399,10 +1582,12 @@ mod tests {
             }
             let mut overlays = OverlayGrid::new(32, 32);
             overlays.place_overlay(20, 20, 0, 0);
-            let mut objects = BTreeMap::new();
-            objects.insert(8, TerrainObjectState::for_test(8, tree_ref, 20, 20));
-            let mut object_cells = BTreeMap::new();
-            object_cells.insert((20, 20), 8);
+            let mut objects = crate::sim::terrain_object::TerrainObjectStore::default();
+            objects.insert_constructed(
+                TerrainObjectState::for_test(8, tree_ref, 20, 20),
+                false,
+                true,
+            );
             let mut rng = SimRng::new(0x489608);
             let mut prelude = ObserveDummy::default();
             let result = apply_aoe_damage_with_terrain_and_scenario(
@@ -1422,10 +1607,7 @@ mod tests {
                     scenario_rng: Some(&mut rng),
                     ..native_lists(&occupancy, &mut terrain, Some(0))
                 },
-                Some(TerrainCollectionView {
-                    objects: &objects,
-                    cells: &object_cells,
-                }),
+                Some(TerrainCollectionView { store: &objects }),
                 false,
                 Some(&mut prelude),
             );
@@ -4280,15 +4462,17 @@ mod tests {
         prepend_ground(&mut occupancy, 5, 5, 20);
         append_building(&mut occupancy, 5, 5, 30);
 
-        let mut terrain_objects = BTreeMap::new();
-        let mut terrain_cells = BTreeMap::new();
+        let mut terrain_objects = crate::sim::terrain_object::TerrainObjectStore::default();
         for (stable_id, rx) in [(100, 5), (101, 6), (102, 8)] {
-            terrain_objects.insert(stable_id, {
-                let mut terrain = TerrainObjectState::for_test(stable_id, tree_ref, rx, 5);
-                terrain.set_occupation_bits_for_test(4);
-                terrain
-            });
-            terrain_cells.insert((rx, 5), stable_id);
+            terrain_objects.insert_constructed(
+                {
+                    let mut terrain = TerrainObjectState::for_test(stable_id, tree_ref, rx, 5);
+                    terrain.set_occupation_bits_for_test(4);
+                    terrain
+                },
+                false,
+                true,
+            );
         }
 
         let mut terrain = crate::map::resolved_terrain::test_grid(12, 12, test_terrain_cell);
@@ -4303,8 +4487,7 @@ mod tests {
             (crate::sim::combat::RAD_NO_ATTACKER, None, warhead_ref),
             native_lists(&occupancy, &mut terrain, Some(1)),
             Some(TerrainCollectionView {
-                objects: &terrain_objects,
-                cells: &terrain_cells,
+                store: &terrain_objects,
             }),
         );
 

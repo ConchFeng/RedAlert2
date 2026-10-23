@@ -586,8 +586,15 @@ impl ApplicationHandler for App {
                 crate::app::input::keyboard::prepare_terminal_exit(state);
                 Self::close_launcher_options_terminal(state);
                 if Self::native_skirmish_shell_active(state) {
-                    // Pump/quit exits write the last durable snapshot after
-                    // teardown, without a fresh control pack or RNG draw.
+                    // A terminal exit has no Start/Back transaction, so pack the
+                    // page's current controls into the durable record first. The
+                    // pack spends no `Scenario` draw: Random markers keep the
+                    // value already cached behind them.
+                    state.frontend.multiplayer_shell_runtime.pack_durable_state(
+                        &state.frontend.skirmish_shell_state,
+                        state.frontend.scenario_catalog.shell_maps(),
+                        &state.frontend.skirmish_modes,
+                    );
                     Self::teardown_skirmish_shell_for_start(state);
                     state.frontend.multiplayer_shell_runtime.persist_snapshot();
                 }
@@ -709,6 +716,14 @@ impl ApplicationHandler for App {
                 // recorded before screen-specific dispatch own this state.
             }
             WindowEvent::KeyboardInput { event, .. } => {
+                if Self::house_outcome_wait_pending(state) {
+                    if !event.state.is_pressed()
+                        && let PhysicalKey::Code(code) = event.physical_key
+                    {
+                        state.match_state.input.keys_held.remove(&code);
+                    }
+                    return;
+                }
                 if crate::app::match_runtime::network_failure::pending(state) {
                     crate::app::match_runtime::network_failure::key(state, &event);
                     return;
@@ -876,6 +891,9 @@ impl ApplicationHandler for App {
                         event.state.is_pressed(),
                         event.repeat,
                     ) {
+                        return;
+                    }
+                    if Self::handle_main_menu_typed_code_key(state, &event) {
                         return;
                     }
 
@@ -1077,6 +1095,9 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 state.set_cursor_from_window(position.x as f32, position.y as f32);
+                if Self::house_outcome_wait_pending(state) {
+                    return;
+                }
                 if crate::app::match_runtime::network_failure::pending(state) {
                     crate::app::match_runtime::network_failure::cursor_moved(state);
                     return;
@@ -1172,6 +1193,12 @@ impl ApplicationHandler for App {
                 button,
                 ..
             } => {
+                if Self::house_outcome_wait_pending(state) {
+                    if !btn_state.is_pressed() {
+                        Self::release_in_game_pointer_state(state);
+                    }
+                    return;
+                }
                 if crate::app::match_runtime::network_failure::pending(state) {
                     crate::app::match_runtime::network_failure::mouse(
                         state,
@@ -1351,6 +1378,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if Self::house_outcome_wait_pending(state) {
+                    return;
+                }
                 if crate::app::match_runtime::network_failure::pending(state) {
                     return;
                 }

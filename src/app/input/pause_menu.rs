@@ -67,7 +67,7 @@ fn select_template(state: &AppState) -> PauseMenuTemplate {
         .as_ref()
         .is_some_and(|runtime| runtime.simulation.local_player_defeated());
     PauseMenuTemplate::select(
-        matches!(mode, SessionMode::Campaign | SessionMode::Skirmish),
+        mode.is_single_player(),
         mode == SessionMode::Wol,
         local_defeated,
     )
@@ -212,8 +212,9 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
     if pressed {
         interaction.press(over);
         if over.is_some() {
-            // Common type2 button61374B..613771: generic cue at button-down.
-            App::play_skirmish_shell_generic_click_sound(state);
+            // Owner-draw button-down: GUIMainButtonSound (Rules+0x188,
+            // 0x0061374B..0x00613771).
+            App::play_main_menu_button_sound(state);
         }
     } else if let Some(button) = interaction.release(over) {
         activate(state, button);

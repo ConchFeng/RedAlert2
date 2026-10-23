@@ -40,6 +40,14 @@ fn main() -> Result<()> {
         std::env::consts::ARCH,
     );
     log::info!("Ares support compiled in: {}", vera20k::rules::ARES_ENABLED);
+    log::info!(
+        "Phobos support compiled in: {}",
+        vera20k::rules::PHOBOS_ENABLED
+    );
+    log::info!(
+        "NPatch support compiled in: {} (placeholder)",
+        vera20k::rules::NPATCH_ENABLED
+    );
     if let Some(path) = &log_path {
         log::info!("Log file: {}", path.display());
     }

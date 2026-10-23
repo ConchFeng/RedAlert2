@@ -16,59 +16,6 @@ use crate::rules::ini_parser::{IniFile, IniSection};
 use crate::rules::ini_value::{crt_atoi, strtok};
 use crate::rules::ruleset::RuleSet;
 
-/// Resolve authored and generated launch House colours for every frontend.
-pub fn house_color_map_for_launch_session(
-    session: &crate::skirmish_launch::SkirmishLaunchSession,
-    house_roster: &HouseRoster,
-    schemes: &[ColorSchemeEntry],
-) -> HouseColorMap {
-    use crate::rules::color_scheme::{scheme_entry_by_name, scheme_entry_for_priority};
-    use crate::sim::scenario_bootstrap::normalized_launch_slots;
-    // Active-retail CreateHouses @ 0x6882D1..0x68837D constructs Neutral and
-    // Special even without [Houses]. Each looks up literal "LightGrey" with
-    // 53 rows (0x688309/0x68835C -> 0x68CAB0), then calls InitColor (0x50B840).
-    // A failed lookup falls back to runtime scheme 5, logical entry 2.
-    let neutral_color = HouseColorIndex(
-        scheme_entry_by_name(schemes, "LightGrey")
-            .and_then(|entry| u8::try_from(entry).ok())
-            .filter(|&entry| entry != crate::rules::house_colors::NO_REMAP.0)
-            .unwrap_or(DEFAULT_SCHEME_ENTRY as u8),
-    );
-    let mut colors = HouseColorMap::new();
-    colors.insert("Neutral".to_string(), neutral_color);
-    colors.insert("Special".to_string(), neutral_color);
-    for house in &house_roster.houses {
-        if !is_playable_faction_name(&house.name) {
-            // Preserve authored identity casing, but these two skirmish houses
-            // use CreateHouses' explicit color rather than campaign Color=.
-            let color = if house.name.eq_ignore_ascii_case("Neutral")
-                || house.name.eq_ignore_ascii_case("Special")
-            {
-                neutral_color
-            } else {
-                house.color
-            };
-            colors.insert(house.name.clone(), color);
-        }
-    }
-    for slot in normalized_launch_slots(session) {
-        // `slot.color_index` is the gamemd color *priority* (lobby slot order);
-        // resolve it to a `[Colors]` entry index via the priority LUT + /2 doubling.
-        let entry = scheme_entry_for_priority(slot.color_index as i32) as u8;
-        colors.insert(slot.owner_name, HouseColorIndex(entry));
-    }
-    colors
-}
-
-/// Returns true for faction names that represent real players (not neutral/civilian).
-fn is_playable_faction_name(name: &str) -> bool {
-    let up = name.to_ascii_uppercase();
-    !matches!(
-        up.as_str(),
-        "NEUTRAL" | "SPECIAL" | "CIVILIAN" | "GOODGUY" | "BADGUY" | "JP"
-    )
-}
-
 /// Ordered map-side BasePlan node, installed into House simulation state before
 /// map objects are spawned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

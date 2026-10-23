@@ -297,6 +297,92 @@ fn retail_particle_systems_bind_registered_particles() {
     assert_eq!(unbound, ["SmallGreySmokeSys"]);
 }
 
+#[test]
+fn particle_object_image_uses_the_retail_type_name_default() {
+    let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+        return;
+    };
+    let id = retail
+        .rules
+        .p_type_id_by_name("SmallRailgunPart")
+        .expect("stock Battle registers SmallRailgunPart");
+    assert_eq!(
+        retail.rules.particle_type(id).image,
+        "SmallRailgunPart",
+        "ObjectType constructor supplies the particle ID when Image is absent"
+    );
+    let system_id = retail
+        .rules
+        .ps_type_id_by_name("FireStreamSys")
+        .expect("stock Battle registers FireStreamSys");
+    assert_eq!(
+        retail.rules.particle_system_type(system_id).image,
+        "TWLT036",
+        "the inherited ObjectType reader retains explicit Image"
+    );
+}
+
+#[test]
+fn particle_object_image_uses_its_type_name_on_reached_layers() {
+    let mut layers = RulesLayerStack::new(IniFile::from_str(
+        "[Particles]\n0=RetainedParticle\n1=DefaultParticle\n\
+         [ParticleSystems]\n0=RetainedSystem\n1=DefaultSystem\n\
+         [RetainedParticle]\nBehavesLike=Gas\nImage=EARLY\n\
+         [DefaultParticle]\nBehavesLike=Gas\n\
+         [RetainedSystem]\nHoldsWhat=RetainedParticle\nImage=EARLY\n\
+         [DefaultSystem]\nHoldsWhat=RetainedParticle\n",
+    ));
+    layers.push(
+        RulesLayerKind::GameMode,
+        IniFile::from_str(
+            "[RetainedParticle]\nImage=none\n\
+             [DefaultParticle]\nFixtureOnly=1\n\
+             [RetainedSystem]\nHoldsWhat=RetainedParticle\nImage=MIDDLE\n",
+        ),
+    );
+    layers.push(
+        RulesLayerKind::Scenario,
+        IniFile::from_str(
+            "[RetainedParticle]\nFixtureOnly=2\n\
+             [DefaultParticle]\nFixtureOnly=2\n\
+             [RetainedSystem]\nHoldsWhat=RetainedParticle\nImage=\n",
+        ),
+    );
+    let rules = RuleSet::from_rules_layers(&layers).expect("layered particle rules");
+    let particle_id = rules
+        .p_type_id_by_name("RetainedParticle")
+        .expect("root-registered particle");
+    assert_eq!(
+        rules.particle_type(particle_id).image,
+        "none",
+        "Image=none is retained as literal ObjectType text and a later missing key keeps it"
+    );
+    let default_id = rules
+        .p_type_id_by_name("DefaultParticle")
+        .expect("root-registered particle");
+    assert_eq!(
+        rules.particle_type(default_id).image,
+        "DefaultParticle",
+        "later missing Image keys retain the constructor's type-name buffer"
+    );
+    let system_id = rules
+        .ps_type_id_by_name("RetainedSystem")
+        .expect("root-registered particle system");
+    assert_eq!(
+        rules.particle_system_type(system_id).image,
+        "MIDDLE",
+        "a present Image overrides and a later empty ReadString retains it"
+    );
+    let default_system_id = rules
+        .ps_type_id_by_name("DefaultSystem")
+        .expect("root-registered particle system");
+    assert_eq!(
+        rules.particle_system_type(default_system_id).image,
+        "DefaultSystem",
+        "a registered system with no Image keeps the ObjectType constructor default"
+    );
+}
+
 /// `[CombatDamage] DeathWeapon=` is RulesClass state (+FDC): ReadCombatDamage
 /// keeps it on an empty read (`0x0066C57E..0x0066C5A8`), so a continued
 /// process whose current stack omits it uses the earlier scenario's weapon,
@@ -722,7 +808,9 @@ fn continued_process_keeps_the_rules_class_type_pointers() {
 /// restarted from the constructor.
 #[test]
 fn scenario_reset_clears_the_rules_class_type_pointers_and_keeps_the_scalars() {
-    let rules = after_rules_class_references(RulesProcessContext::ScenarioReset);
+    let rules = after_rules_class_references(RulesProcessContext::ScenarioReset(
+        crate::rules::object_image::ImageTheater::Temperate,
+    ));
 
     assert_eq!(rules.combat_damage.ivan_warhead, None);
     assert_eq!(rules.bridge_warheads.c4_name, "");
@@ -885,7 +973,9 @@ fn retail_published_references_are_pinned() {
                     .process_with_fixed_art_and_registry_state_recovering(
                         &artmd,
                         state,
-                        RulesProcessContext::ScenarioReset,
+                        RulesProcessContext::ScenarioReset(
+                            crate::rules::object_image::ImageTheater::Temperate,
+                        ),
                         &crate::rules::sound_ini::EvaRegistry::default(),
                     )
                     .unwrap();

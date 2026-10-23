@@ -78,6 +78,8 @@ impl Drop for OwnedTransferFile {
 pub enum LanTarget {
     LiveHost,
     LiveGuest,
+    LiveTimeoutHost,
+    LiveQuitHost,
     BattleHost,
     BattleGuest,
     Lobby,
@@ -202,6 +204,8 @@ pub enum LanTarget {
 pub(crate) const LAN_CHECKPOINTS: &[(&str, LanTarget)] = &[
     ("lan-live-host", LanTarget::LiveHost),
     ("lan-live-guest", LanTarget::LiveGuest),
+    ("lan-live-timeout-host", LanTarget::LiveTimeoutHost),
+    ("lan-live-quit-host", LanTarget::LiveQuitHost),
     ("lan-battle-host", LanTarget::BattleHost),
     ("lan-battle-guest", LanTarget::BattleGuest),
     ("lan-0xbb-steady", LanTarget::Lobby),
@@ -294,7 +298,12 @@ impl LanTarget {
     pub(crate) fn live(self) -> bool {
         matches!(
             self,
-            Self::LiveHost | Self::LiveGuest | Self::BattleHost | Self::BattleGuest
+            Self::LiveHost
+                | Self::LiveGuest
+                | Self::LiveTimeoutHost
+                | Self::LiveQuitHost
+                | Self::BattleHost
+                | Self::BattleGuest
         )
     }
     fn host_observer(self) -> bool {
@@ -504,7 +513,15 @@ impl LanCapture {
     }
     pub(super) fn timeout(&self) -> Duration {
         if self.target.live() {
-            return Duration::from_secs(180);
+            // Only the extended diagnostic opening gets more wall time;
+            // network and production deadlines remain their ordinary owners.
+            return Duration::from_secs(
+                if matches!(self.target, LanTarget::BattleHost | LanTarget::BattleGuest) {
+                    300
+                } else {
+                    180
+                },
+            );
         }
         // Original peer wait is3600 wall-clock buckets (57.6s). Only this
         // diagnostic budget grows; loading retains its production timer.

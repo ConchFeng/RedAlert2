@@ -93,70 +93,35 @@ fn replay_flush_facts(state: &AppState) -> (u64, u64) {
     (session_tick, now)
 }
 
-/// Drive the app-owned Vox wait after serialized HouseState reaches its exact
-/// SavourDelay expiry frame. A loaded expiry latch reconstructs this wait but
-/// never reconstructs the already-consumed transition EVA edge.
-pub(crate) fn drive_local_player_outcome_voice_wait(state: &mut AppState, wall_ms: u64) {
+/// Route an admitted native result after its in-House Vox wait and callbacks.
+/// The pending wait is serviced through the suspended frame's client boundary.
+pub(crate) fn drive_local_player_outcome_exit(state: &mut AppState, wall_ms: u64) {
     if !matches!(state.frontend.screen, GameScreen::InGame)
         || state.match_state.scenario_exit.is_some()
     {
         return;
     }
-    if state.match_state.scenario_outcome.is_none() {
-        let Some(owner) = state.match_state.local_player_owner() else {
-            return;
-        };
-        let outcome = state
-            .match_state
-            .sim_runtime
-            .as_ref()
-            .map(|rt| &rt.simulation)
-            .and_then(|sim| {
-                sim.interner()
-                    .get(owner)
-                    .and_then(|owner| sim.ready_outcome_for_owner(owner))
-            });
-        let Some(outcome) = outcome else {
-            return;
-        };
-        log::info!(
-            "Match end ready for local player '{owner}': {}",
-            crate::app::match_runtime::scenario_exit::outcome_title(outcome.kind)
-        );
-        state.match_state.scenario_outcome = Some(
-            crate::app::match_runtime::scenario_exit::ScenarioOutcomeVoiceWait::start(
-                wall_ms,
-                outcome.kind,
-            ),
-        );
-    }
-
-    let voices_active = match (
-        &mut state.audio.sfx_player,
-        state.process_assets.manager(),
-        state.process_assets.audio_catalog(),
-    ) {
-        (Some(sfx), Some(assets), Some(catalog)) => {
-            sfx.pump_and_check_voices(catalog.eva(), assets, catalog.index())
-        }
-        _ => false,
-    };
-    let finished = state
-        .match_state
-        .scenario_outcome
-        .as_ref()
-        .is_some_and(|outcome| outcome.tick(wall_ms, voices_active));
-    if !finished {
+    let Some(owner) = state.match_state.local_player_owner() else {
         return;
-    }
-
+    };
     let outcome = state
         .match_state
-        .scenario_outcome
+        .sim_runtime
         .as_ref()
-        .expect("finished outcome voice wait remains present")
-        .kind();
-    state.match_state.scenario_outcome = None;
+        .map(|rt| &rt.simulation)
+        .filter(|sim| sim.pending_outcome_wait().is_none())
+        .and_then(|sim| {
+            sim.interner()
+                .get(owner)
+                .and_then(|owner| sim.ready_outcome_for_owner(owner))
+        });
+    let Some(outcome) = outcome.map(|outcome| outcome.kind) else {
+        return;
+    };
+    log::info!(
+        "Match end ready for local player '{owner}': {}",
+        crate::app::match_runtime::scenario_exit::outcome_title(outcome)
+    );
     //685670/685DC0 clear5BF450 before either outcome fade.
     crate::app::radar_movie::retire(state, wall_ms);
     crate::app::chrono_screen::retire(state, wall_ms);
@@ -462,8 +427,9 @@ pub(crate) enum ExactStepError {
     FrameDelta { actual: u32 },
 }
 
-/// One `AudioSystem::Pump @ 0x00406F70` service pass, run every frame whether
-/// or not the simulation stepped.
+/// One `AudioSystem::Pump @ 0x00406F70` service pass. It runs once per pass
+/// on the shell, menu, wait and network paths, and at Main_Tick's own points
+/// in a running offline match ([`main_tick_owns_audio_pump`]).
 ///
 /// Native reaches the pump from `Network_ServiceLoop @ 0x0048D080`, not from
 /// the game frame, so `SoundSystem::UpdateTick @ 0x004041D0` keeps reaping
@@ -497,12 +463,12 @@ pub(crate) enum ExactStepError {
 /// "menu open is not really a pause" carve-out here; that would be a
 /// regression against the binary.
 ///
-/// A fullscreen movie also pauses: `Play_Movie @ 0x005BED40` pauses the EVA
-/// stream (`Audio__PauseForMovie @ 0x005BF580`, behind guard `0x00ABF35C`)
-/// and suspends the sound events (`0x00406EA0`) for the whole movie, and
-/// resumes the events after it (`0x00406EC0`). This pump is the only writer of
-/// the SFX pause, so the sources are combined here, one frame after the movie
-/// starts and ends.
+/// Movies are separate owners: every movie takes the hold of
+/// `Audio__PauseForMovie @ 0x005BF580` (guard `0x00ABF35C`: EVA and the
+/// stream players pause, the masters halve), and only full-screen
+/// `Play_Movie @ 0x005BED40` also suspends the sound events (`0x00406EA0`,
+/// resumed by `0x00406EC0`). The movie routes apply both through
+/// `AppAudioRuntime`; the SFX player combines their reasons with this pause.
 pub(crate) fn pump_audio_service(state: &mut AppState, now_ms: u64) {
     crate::app::presentation::building_anim::refresh_coordinate_sound_gains(state);
     // The process audio service remains live while the loading job holds the
@@ -528,6 +494,48 @@ pub(crate) fn pump_audio_service(state: &mut AppState, now_ms: u64) {
         state.process_assets.audio_catalog(),
         &mut main,
     );
+}
+
+/// The per-pass audio work outside the pump, for the passes whose pump belongs
+/// to Main_Tick: the pause state, the master fades and the device queues.
+/// Native applies the pause synchronously (`GamePause::Enter @ 0x00406F00` /
+/// `Exit`) and ticks the master InterpGroups on its own audio thread
+/// (`0x004095B0`), neither through the pump.
+pub(crate) fn service_audio_outputs(state: &mut AppState, now_ms: u64) {
+    let paused = state
+        .match_state
+        .presentation_paused(&state.frontend.screen);
+    state.audio.service_audio_outputs(now_ms, paused);
+}
+
+/// Whether this pass's audio pump belongs to Main_Tick. In campaign and
+/// skirmish (`g_GameMode` 0 and 5) `Main::ThrottleFrame @ 0x0055E160` only
+/// sleeps, so `Network_ServiceLoop @ 0x0048D080`, and with it
+/// `AudioSystem::Pump`, runs once per `Main_Tick @ 0x0055D360`: after Logic
+/// (`0x0055DE4A`) or on the scenario-pause path (`0x0055D835`). An offline
+/// window parked by focus loss (`0x0055D39B..0x0055D3AE`: `Sleep(500)` and
+/// the Win32 message pump `0x005D4D50`) runs neither, so it is not pumped.
+/// Network modes also pump in the throttle spin, and the in-game menu's
+/// modal pump (`0x00623120`) and the exit and outcome waits pump from their
+/// own loops, so those passes keep the per-pass pump.
+pub(crate) fn main_tick_owns_audio_pump(state: &AppState, simulation_allowed: bool) -> bool {
+    let match_state = &state.match_state;
+    audio_pump_follows_main_tick(
+        match_state.session_mode(),
+        state.frontend.screen == GameScreen::InGame
+            && simulation_allowed
+            && match_state.startup.admits_ordinary_tick(),
+        match_state.match_presentation.in_game_menu.is_open()
+            || match_state.debug_pause
+            || match_state.scenario_exit.is_some()
+            || match_state.scenario_outcome.is_some(),
+    )
+}
+
+/// [`main_tick_owns_audio_pump`]'s decision: an admitted match in
+/// `g_GameMode` 0 or 5, on a pass no loop of its own pumps.
+fn audio_pump_follows_main_tick(mode: SessionMode, match_admitted: bool, own_loop: bool) -> bool {
+    mode.is_single_player() && match_admitted && !own_loop
 }
 
 /// Pure modal-pump decision: should the simulation advance one frame while a
@@ -678,7 +686,13 @@ pub(crate) fn decide_runtime_pass(inputs: RuntimePassInputs) -> RuntimePassDecis
     }
 }
 
-pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) -> bool {
+/// `main_tick_pumps_audio` ([`main_tick_owns_audio_pump`]) runs the audio
+/// service at Main_Tick's own points instead of once per pass.
+pub(crate) fn advance_in_game_runtime(
+    state: &mut AppState,
+    now_ms: u64,
+    main_tick_pumps_audio: bool,
+) -> bool {
     let startup_admitted = state.match_state.startup.admits_ordinary_tick();
     if !startup_admitted {
         log::error!("Accepted match tick blocked: matching Rust L0 receipt is absent");
@@ -692,6 +706,7 @@ pub(crate) fn advance_in_game_runtime(state: &mut AppState, now_ms: u64) -> bool
         state,
         RuntimeAdvanceMode::WallClock { now_ms },
         startup_admitted,
+        main_tick_pumps_audio,
     )
 }
 
@@ -720,7 +735,7 @@ pub(crate) fn advance_in_game_runtime_exact_step(
         .map(|sim| (sim.session().tick(), sim.session().binary_frame()))
         .ok_or(ExactStepError::SimulationMissing)?;
 
-    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep, admitted);
+    advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep, admitted, false);
     let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
     state.platform.frame_pacer.reanchor(now_ms);
 
@@ -761,12 +776,23 @@ fn advance_in_game_runtime_mode(
     state: &mut AppState,
     mode: RuntimeAdvanceMode,
     startup_admitted: bool,
+    main_tick_pumps_audio: bool,
 ) -> bool {
     // ExecuteDoList64CD0C is a blocking message box inside this frame. Even
     // exact-step diagnostics must not admit another Logic pass while it waits.
     if super::network_failure::pending(state) {
         super::network_failure::show(state);
         return false;
+    }
+    if crate::app::App::house_outcome_wait_pending(state) {
+        // House4F8649/4F8772 services48D080 inside this Main_Tick;
+        // it never re-enters55D7C2's timed-pause/Chrono/input prelude.
+        return advance_one_simulation_frame(
+            state,
+            TickLane::Ordinary,
+            None,
+            FrameResume::OutcomeWait,
+        );
     }
     crate::app::input::commands::reconcile_paid_super_weapon_cursor(state);
     let frame_stepping = matches!(mode, RuntimeAdvanceMode::WallClock { .. })
@@ -821,7 +847,11 @@ fn advance_in_game_runtime_mode(
         && pacer_timing_admits
     {
         // Main_Tick55D830..55D859 services53B560 and returns without Logic.
-        // A Finish here admits the world only on the following pass.
+        // A Finish here admits the world only on the following pass. Its
+        // Network_ServiceLoop (`0x0055D835`) comes first.
+        if main_tick_pumps_audio {
+            pump_audio_service(state, wall_ms);
+        }
         super::scenario_pause::apply_service(state, ScenarioServiceInput::StepChronoScreen);
         state.platform.frame_pacer.record_admitted_frame(wall_ms);
     }
@@ -873,6 +903,9 @@ fn advance_in_game_runtime_mode(
             FrameResume::None
         };
         let frame_committed = advance_one_simulation_frame(state, tick_lane, mouse_scroll, resume);
+        if crate::app::App::house_outcome_wait_pending(state) {
+            return false;
+        }
         if super::network_failure::pending(state) {
             super::network_failure::show(state);
             return false;
@@ -950,8 +983,10 @@ fn advance_in_game_runtime_mode(
     crate::app::input::gadget_input::idle_tick(state);
     // The audio service is NOT gated on the simulation. gamemd's
     // `AudioSystem::Pump @ 0x00406F70` hangs off `Network_ServiceLoop @
-    // 0x0048D080`, whose callers include `Main::ThrottleFrame @ 0x0055E160`,
-    // `ProcessModalServicePump @ 0x00623120` and `ShellDialog::RunUntilResult
+    // 0x0048D080`, whose callers include `Main_Tick` itself (offline, the
+    // running match's: `main_tick_owns_audio_pump`), the network modes'
+    // `Main::ThrottleFrame @ 0x0055E160`, `ProcessModalServicePump @
+    // 0x00623120`, the House and GameExit waits and `ShellDialog::RunUntilResult
     // @ 0x0060D380`, so the sound arbiter, the EVA queue and `ThemeClass::AI`
     // keep running behind a pause, an open menu and a loading screen alike.
     // Pause is expressed separately, by suspending the events and stopping the
@@ -964,6 +999,12 @@ fn advance_in_game_runtime_mode(
     crate::app::presentation::building_anim::drain_sound_events(state);
     let in_game_music = state.persistence.options_profile.in_game_music;
     state.audio.main_tick_theme(in_game_music, music_now_ms);
+    // Main_Tick's Network_ServiceLoop after Logic (`0x0055DE4A`). Logic's
+    // sounds reach the arbiter in the drain above, so they start in this
+    // same Main_Tick, as native's direct submissions do.
+    if decision.run_sim && main_tick_pumps_audio {
+        pump_audio_service(state, music_now_ms);
+    }
     if decision.scroll_input {
         crate::app::input::camera::queue_keyboard_scroll(state);
     }
@@ -1002,6 +1043,7 @@ enum FrameResume {
     ChecksumModal,
     NetworkWait,
     NetworkLeave,
+    OutcomeWait,
 }
 
 fn advance_one_simulation_frame(
@@ -1042,6 +1084,8 @@ fn advance_one_simulation_frame(
         // Cache local owner name before mutable sim borrow (avoids borrow conflict).
         let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
         let sound_listener = crate::app::presentation::building_anim::sound_listener(state);
+        let session_mode = state.match_state.session_mode();
+        let other_local_pause = state.match_state.paused();
         let rules_owner = state.process_assets.native_rules();
         let initial_save = if !resuming && tick_lane == TickLane::Ordinary {
             crate::app::persistence::commands::prepare_initial_campaign_save(state, rules_owner)
@@ -1086,19 +1130,34 @@ fn advance_one_simulation_frame(
             // F07: the runtime is the one production frame API — bound
             // resources, no caller-substitutable inputs.
             let mut output = {
-                let initial_save = std::cell::RefCell::new((
-                    initial_save,
-                    &mut state.persistence,
-                    &mut state.match_state.scenario_elapsed_clock,
-                ));
+                let sidebar = std::cell::RefCell::new(
+                    &mut state.match_state.match_presentation.sidebar_projection,
+                );
+                let production_visits = sidebar.borrow().production_factory_visits(&rt.simulation);
+                let clear_production_request = |type_id| {
+                    sidebar.borrow_mut().clear_production_request(type_id);
+                };
+                let elapsed_clock =
+                    std::cell::RefCell::new(&mut state.match_state.scenario_elapsed_clock);
+                let initial_save = std::cell::RefCell::new((initial_save, &mut state.persistence));
                 let before_logic = |sim: &crate::sim::world::Simulation| {
                     let mut save = initial_save.borrow_mut();
-                    let (prepared, persistence, clock) = &mut *save;
+                    let (prepared, persistence) = &mut *save;
+                    if let Some(Ok(prepared)) = prepared.as_mut() {
+                        // Strip6A8F42 clears requests before MainTick55DBCD.
+                        // Preparation preceded the input prefix; snapshot the
+                        // same sidebar owner again at the actual save boundary.
+                        let mut sidebar = sidebar.borrow_mut();
+                        if let Some(owner) = sim.session().current_house() {
+                            sidebar.reconcile_factory_links(sim, owner);
+                        }
+                        prepared.refresh_sidebar_order(sidebar.saved_order());
+                    }
                     crate::app::persistence::commands::initial_campaign_save(
                         prepared.take(),
                         sim,
                         persistence,
-                        clock,
+                        &mut elapsed_clock.borrow_mut(),
                     );
                 };
                 let playback = match (
@@ -1133,21 +1192,42 @@ fn advance_one_simulation_frame(
                     &mut state.match_state.input.selection_state,
                 )
                 .with_network_session(&mut state.match_state.session)
-                .with_live_network(state.match_state.live_network.as_mut());
+                .with_live_network(state.match_state.live_network.as_mut())
+                .with_scenario_pause(
+                    &mut state.match_state.match_presentation.scenario_pause,
+                    &elapsed_clock,
+                    session_mode,
+                    other_local_pause,
+                )
+                .with_outcome_wait(&mut state.match_state.scenario_outcome);
                 let effects = FrameEffects::for_sound(&boundary)
                     .with_local_planning(&boundary)
                     .with_network_commands(&boundary)
+                    .with_outcome_wait(&boundary)
+                    .with_production_strip(&production_visits, &clear_production_request)
                     .with_before_logic(&before_logic);
                 match resume {
                     FrameResume::ChecksumModal => rt.resume_after_network_failure(effects),
                     FrameResume::NetworkWait => rt.resume_network_wait(effects),
                     FrameResume::NetworkLeave => rt.leave_network_wait(effects),
+                    FrameResume::OutcomeWait => rt.resume_outcome_wait(effects),
                     FrameResume::None => {
                         rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane, effects)
                     }
                 }
                 .expect("simulation frame failed; prior world mutations remain")
             };
+            state
+                .match_state
+                .match_presentation
+                .screen_shake
+                .apply_updates(&output.screen_shake_updates);
+            if output.outcome_waiting {
+                // The simulation retains this frame's non-sound facts until
+                // the same House suffix finishes. Its sound prefix has already
+                // reached the synchronous boundary above exactly once.
+                return false;
+            }
             #[cfg(feature = "telemetry-dashboard")]
             {
                 let tick_ms = telemetry_advance_started.elapsed().as_secs_f32() * 1000.0;
@@ -1205,6 +1285,7 @@ fn advance_one_simulation_frame(
                 multiplayer_checksum,
                 network_failure,
                 network_waiting,
+                outcome_waiting,
                 ..
             } = output;
             // Queue_AI already published this checksum to the process session
@@ -1330,7 +1411,7 @@ fn advance_one_simulation_frame(
             if should_record_replay_tick(
                 &tick_result,
                 &admitted_commands,
-                network_failure.is_some() || network_waiting,
+                network_failure.is_some() || network_waiting || outcome_waiting,
             ) && let Some(log) = &mut state.match_state.match_diagnostics.replay_log
             {
                 log.record_tick(tick_result.tick, admitted_commands, tick_result.state_hash);
@@ -1555,8 +1636,9 @@ fn advance_one_simulation_frame(
         }
 
         for message in hud_messages {
-            // MPlayer_Defeated's local branch sets the chat mask
-            // (0x004FC23E) before it posts its line (0x004FC271).
+            // MPlayer_Defeated's local branch deletes the player's beacons
+            // and leaves beacon mode (0x004FC1C6, 0x004FC1FA), then sets the
+            // chat mask (0x004FC23E) before it posts its line (0x004FC271).
             if let crate::app::input::messages::HudMessage::PlayerDefeated(house) = message
                 && state
                     .match_state
@@ -1565,6 +1647,7 @@ fn advance_one_simulation_frame(
                     .and_then(|runtime| runtime.simulation.session().current_house())
                     == Some(house)
             {
+                super::beacons::local_player_defeated(state);
                 state
                     .match_state
                     .match_presentation
@@ -1608,6 +1691,14 @@ fn advance_one_simulation_frame(
                         state.match_state.match_presentation.sprite_atlas.as_ref(),
                         &runtime.simulation,
                         &state.match_state.match_presentation.house_color_map,
+                    ) || !sprite_atlas::atlas_covers_sprite_keys(
+                        state.match_state.match_presentation.sprite_atlas.as_ref(),
+                        &sprite_atlas::collect_fogged_sprite_keys(
+                            &runtime.simulation,
+                            &runtime.resources.rules,
+                            &state.match_state.match_presentation.house_color_map,
+                        ),
+                        Some(&runtime.resources.rules),
                     )
                 }))
     {
@@ -1773,10 +1864,10 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     let (fw, fh, foundation_str) = rules
         .object(type_id)
         .map(|obj| {
-            let (w, h) = crate::rules::foundation::foundation_dimensions(&obj.foundation);
+            let (w, h) = obj.foundation.dimensions();
             (w, h, obj.foundation.clone())
         })
-        .unwrap_or((1, 1, "1x1".to_string()));
+        .unwrap_or((1, 1, crate::rules::foundation::Foundation::default()));
     // Log at info level once per type_id change so it's visible in console.
     static LAST_LOG: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     let hash: u64 = type_id
@@ -1800,8 +1891,7 @@ pub(crate) fn update_building_placement_preview(state: &mut AppState) {
     // UpdateFoundationCenter4A91B0 uses center + the type's active offset.
     // Resolve it before admission/ground/shroud, through the shared owner
     // also used by a fresh LeftUp; rendering consumes the resulting Cells.
-    let (rx, ry) =
-        crate::rules::foundation::placement_origin_at_cursor(&foundation_str, cursor_cell);
+    let (rx, ry) = foundation_str.placement_origin_at_cursor(cursor_cell);
     state.match_state.input.building_placement_preview =
         production::placement_preview_for_owner_with_overlays(
             sim,
@@ -1850,6 +1940,11 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         sim,
         &state.match_state.match_presentation.house_color_map,
     );
+    let frozen_keys = sprite_atlas::collect_fogged_sprite_keys(
+        sim,
+        &rt.resources.rules,
+        &state.match_state.match_presentation.house_color_map,
+    );
     let sprite_rebuild = !sprite_atlas::atlas_covers_world(
         state.match_state.match_presentation.sprite_atlas.as_ref(),
         sim.entities(),
@@ -1857,6 +1952,10 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
         &extra_buildings,
         &anim_remap_keys,
         Some(sim.interner()),
+    ) || !sprite_atlas::atlas_covers_sprite_keys(
+        state.match_state.match_presentation.sprite_atlas.as_ref(),
+        &frozen_keys,
+        bound_rules,
     );
 
     if !unit_rebuild && !sprite_rebuild {
@@ -1913,6 +2012,7 @@ pub(crate) fn refresh_entity_atlases(state: &mut AppState) {
             &extra_buildings,
             &anim_remap_keys,
             &cell_drawer_type_ids,
+            &frozen_keys,
             Some(&cell_palette),
             existing,
             Some(sim.interner()),
@@ -2296,8 +2396,9 @@ mod camera_cadence_tests;
 #[cfg(test)]
 mod modal_pump_tests {
     use super::{
-        SessionMode, modal_pump_should_advance_sim, resolve_score_rows, score_title_key,
-        should_record_replay_tick, wall_clock_service_admission,
+        SessionMode, audio_pump_follows_main_tick, modal_pump_should_advance_sim,
+        resolve_score_rows, score_title_key, should_record_replay_tick,
+        wall_clock_service_admission,
     };
 
     /// 0x005C9BE7: only GameMode 5 retitles 0x108.
@@ -2406,6 +2507,33 @@ mod modal_pump_tests {
                 denied
             );
         }
+    }
+
+    #[test]
+    fn offline_matches_leave_the_audio_pump_to_main_tick() {
+        // g_GameMode 0 and 5 only: Main::ThrottleFrame 0x0055E160 only sleeps.
+        assert!(audio_pump_follows_main_tick(
+            SessionMode::Campaign,
+            true,
+            false
+        ));
+        assert!(audio_pump_follows_main_tick(
+            SessionMode::Skirmish,
+            true,
+            false
+        ));
+        assert!(!audio_pump_follows_main_tick(SessionMode::Lan, true, false));
+        assert!(!audio_pump_follows_main_tick(
+            SessionMode::Other,
+            true,
+            false
+        ));
+        // The in-game menu's modal pump 0x00623120 services its own passes.
+        assert!(!audio_pump_follows_main_tick(
+            SessionMode::Skirmish,
+            true,
+            true
+        ));
     }
 
     #[test]

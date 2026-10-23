@@ -314,6 +314,45 @@ fn building_on_off_line_opcodes_decode_direction_and_target() {
     assert!(!sim.substrate.entities.get(7).unwrap().building_online());
 }
 
+/// Native's last 0x01/0x02 gate (`0x004C6D2D`/`0x004C6D8A`) reads
+/// `[target+0x520]+0x16C0`, and `+0x520` is `BuildingClass::pType`
+/// (docs/ghidra-workflow.md): the target TYPE's `FirestormWall=` byte
+/// (`ObjectType.firestorm_wall`). A Firestorm Wall building is driven by the
+/// firestorm logic, so the record is dropped before GoOnline/GoOffline; stock
+/// rules leave the key unset and the gate is open.
+#[test]
+fn building_on_off_line_dropped_for_a_firestorm_wall_type() {
+    let (mut sim, owner) = game_speed_command_sim();
+    let mut building = GameEntity::test_default(7, "GAPOWR", "Local", 30, 40);
+    building.set_owner_for_test(owner);
+    building.set_type_ref_for_test(sim.interner.intern("GAPOWR"));
+    building.set_category_for_test(EntityCategory::Structure);
+    building.lifecycle.set_object_alive_for_test(true);
+    building.lifecycle.set_in_limbo_for_test(false);
+    sim.substrate.entities.insert(building);
+
+    let off = Command::SetBuildingOnLine {
+        entity_id: 7,
+        on: false,
+    };
+
+    // A `FirestormWall=yes` type is dropped; the online latch stays set.
+    let firestorm = RuleSet::from_ini(&IniFile::from_str(
+        "[BuildingTypes]\n1=GAPOWR\n[GAPOWR]\nPower=-20\nFirestormWall=yes\n",
+    ))
+    .unwrap();
+    assert!(!sim.apply_command("Local", &off, Some(&firestorm)));
+    assert!(sim.substrate.entities.get(7).unwrap().building_online());
+
+    // The stock (keyless) type passes the gate and the latch clears.
+    let stock = RuleSet::from_ini(&IniFile::from_str(
+        "[BuildingTypes]\n1=GAPOWR\n[GAPOWR]\nPower=-20\n",
+    ))
+    .unwrap();
+    assert!(sim.apply_command("Local", &off, Some(&stock)));
+    assert!(!sim.substrate.entities.get(7).unwrap().building_online());
+}
+
 /// A launch hashes every frame and a test world none until the caller asks.
 /// Then only a frame whose tick is a multiple of the interval hashes, and its
 /// hash is the state's.
@@ -4112,7 +4151,9 @@ fn flag_to_die_destroys_owned_objects_at_frame_zero_before_defeat_gate() {
         "Flag_To_Die has no RNG call"
     );
     assert!(sim.houses[&owner].is_to_die());
-    let generated = sim.house_rung(&rules, None, false, FrameEffects::default());
+    let generated = sim
+        .house_rung(&rules, None, false, FrameEffects::default(), None)
+        .expect("headless outcome waits complete synchronously");
     assert!(generated.is_empty());
     assert!(!sim.houses[&owner].is_to_die());
     assert!(
@@ -4198,7 +4239,7 @@ fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
         sim.houses[&winner].outcome_timer(),
         crate::sim::timer::CdTimer::started(10, 26)
     );
-    assert!(!winner_outcome.exit_ready);
+    assert!(sim.session.outcome_request().is_none());
     assert_eq!(
         sim.sound_events
             .iter()
@@ -4212,14 +4253,18 @@ fn gsi_01_04_house_rung_owns_savour_deadline_and_emits_one_transition_edge() {
     sim.session.set_tick_for_test(35);
     sim.session.set_binary_frame_for_test(35);
     check_defeat_now(&mut sim, Some(&rules));
-    assert!(!sim.houses[&winner].outcome().unwrap().exit_ready);
+    assert!(sim.ready_outcome_for_owner(winner).is_none());
     assert!(!sim.termination_frame_requested());
     assert!(sim.sound_events.is_empty(), "accepted edges never replay");
 
     sim.session.set_tick_for_test(36);
     sim.session.set_binary_frame_for_test(36);
     check_defeat_now(&mut sim, Some(&rules));
-    assert!(sim.houses[&winner].outcome().unwrap().exit_ready);
+    assert_eq!(
+        sim.ready_outcome_for_owner(winner).unwrap().kind,
+        HouseOutcomeKind::Victory
+    );
+    assert!(!sim.houses[&winner].has_won());
     assert!(sim.houses[&loser].is_defeated());
     assert!(
         sim.houses[&loser].outcome().is_none(),
@@ -6667,7 +6712,8 @@ fn insert_revealed_structure(sim: &mut Simulation, id: u64, rx: u16, ry: u16) {
     );
     s.set_owner_for_test(sim.interner.intern("Americans"));
     s.set_type_ref_for_test(sim.interner.intern("GAPOWR"));
-    s.type_facts.set_foundation_for_test("2x2".to_string());
+    s.type_facts
+        .set_foundation_for_test("2x2".to_string().into());
     sim.substrate.entities.insert(s);
     sim.reveal(id);
 }
@@ -6767,7 +6813,8 @@ fn sale_death_is_ignored_before_ordinary_tail_drain() {
             ry,
             EntityCategory::Structure,
         );
-        bld.type_facts.set_foundation_for_test("2x2".to_string());
+        bld.type_facts
+            .set_foundation_for_test("2x2".to_string().into());
         bld.health = Health::new(750);
         sim.substrate.entities.insert(bld);
         sim.reveal(id);
@@ -6855,7 +6902,8 @@ fn combat_death_after_its_repair_visit_is_freed_at_end_of_tick() {
     // Damaged, auto-repairing enemy building MTNK destroys this tick at Phase 5.
     let mut bld =
         GameEntity::test_default_of_category(2, "TARGB", "Russia", 7, 5, EntityCategory::Structure);
-    bld.type_facts.set_foundation_for_test("1x1".to_string());
+    bld.type_facts
+        .set_foundation_for_test("1x1".to_string().into());
     bld.health = Health::new(50);
     bld.repairing.set_for_test(true);
     sim.interner = crate::sim::intern::test_interner();
@@ -8867,15 +8915,16 @@ fn runtime_frame_call_order_matches_the_app_seam() {
 /// both the store and its logic membership.
 #[test]
 fn gsi_05_14_death_debris_joins_the_live_order_the_hash_and_the_snapshot() {
-    let voxel_type = crate::rules::voxel_anim_type::VoxelAnimType::from_ini_section(
-        "TIRE",
-        IniFile::from_str(
-            "[TIRE]\nElasticity=0.8\nMinAngularVelocity=12.0\nMaxAngularVelocity=24.0\n\
-             MinZVel=28.0\nMaxZVel=32.0\nMaxXYVel=10.0\nDuration=150\n",
-        )
-        .section("TIRE")
-        .unwrap(),
-    );
+    // The visits read the piece's type (its IsMeteor at expiry) from the rules
+    // they are given, so the spawn and the visits share one RuleSet.
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VoxelAnims]\n0=TIRE\n\
+         [TIRE]\nElasticity=0.8\nMinAngularVelocity=12.0\nMaxAngularVelocity=24.0\n\
+         MinZVel=28.0\nMaxZVel=32.0\nMaxXYVel=10.0\nDuration=150\n",
+    ))
+    .expect("TIRE rules parse");
+    let tire = rules.voxel_anim_type_id_by_name("TIRE").unwrap();
+    let voxel_type = rules.voxel_anim_type(tire);
 
     let mut sim = Simulation::new();
     let empty_hash = sim.state_hash();
@@ -8884,8 +8933,8 @@ fn gsi_05_14_death_debris_joins_the_live_order_the_hash_and_the_snapshot() {
     let mut deferred = Vec::new();
     for _ in 0..3 {
         sim.emit_debris_voxel(
-            crate::rules::voxel_anim_type::VoxelAnimTypeId(0),
-            &voxel_type,
+            tire,
+            voxel_type,
             None,
             glam::IVec3::new(1280, 2560, 0),
             true,
@@ -8960,14 +9009,14 @@ fn gsi_05_14_death_debris_joins_the_live_order_the_hash_and_the_snapshot() {
     // order once its AI reaches Delete.
     let first = first_id;
     let before = sim.substrate.voxel_anims.get(first).unwrap().world_coord();
-    sim.visit_voxel_anim(first, crate::rules::ruleset::RuleSet::empty_for_test());
+    sim.visit_voxel_anim(first, &rules);
     let after = sim.substrate.voxel_anims.get(first).unwrap().world_coord();
     assert_ne!(before, after, "one AI visit moves the body");
     for _ in 0..200 {
         if !sim.substrate.voxel_anims.contains_key(first) {
             break;
         }
-        sim.visit_voxel_anim(first, crate::rules::ruleset::RuleSet::empty_for_test());
+        sim.visit_voxel_anim(first, &rules);
     }
     assert!(
         !sim.substrate.voxel_anims.contains_key(first),

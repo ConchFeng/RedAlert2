@@ -525,7 +525,7 @@ impl OptionsDialogState {
             .collect()
     }
 
-    /// The Display face's text: the picked screen's summary, or just the id
+    /// The Display face's text: the picked screen's row text, or just the id
     /// when the window layer no longer lists it.
     pub(crate) fn shell_display_label(&self) -> String {
         match &self.display {
@@ -533,16 +533,21 @@ impl OptionsDialogState {
             DisplayTarget::Fixed(id) => self
                 .displays
                 .iter()
-                .find(|choice| &choice.id == id)
-                .map_or_else(|| id.clone(), DisplayChoice::label),
+                .position(|choice| &choice.id == id)
+                .map_or_else(|| id.clone(), |index| self.displays[index].label(index + 1)),
         }
     }
 
     /// The Display popup's rows, top to bottom: [`DISPLAY_AUTO_LABEL`], then
-    /// each screen's [`DisplayChoice::label`].
+    /// each screen's [`DisplayChoice::label`], numbered from 1.
     pub(crate) fn shell_display_rows(&self) -> Vec<String> {
         std::iter::once(DISPLAY_AUTO_LABEL.to_owned())
-            .chain(self.displays.iter().map(DisplayChoice::label))
+            .chain(
+                self.displays
+                    .iter()
+                    .enumerate()
+                    .map(|(index, choice)| choice.label(index + 1)),
+            )
             .collect()
     }
 
@@ -1392,8 +1397,8 @@ mod tests {
             state.shell_display_rows(),
             [
                 DISPLAY_AUTO_LABEL.to_owned(),
-                "DISPLAY1: 1920x1080: 60Hz".to_owned(),
-                "DISPLAY2: 2560x1440: 144Hz".to_owned(),
+                "Screen 1: 1920x1080 60Hz".to_owned(),
+                "Screen 2: 2560x1440 144Hz".to_owned(),
             ]
         );
         // The second screen's row: the pick publishes at once, like Sidebar.
@@ -1401,7 +1406,7 @@ mod tests {
         let second = popup.row_rect(2);
         state.shell_mouse_down(second.x + 10, second.y + 5, &layout);
         assert_eq!(state.open_combo, None);
-        assert_eq!(state.shell_display_label(), "DISPLAY2: 2560x1440: 144Hz");
+        assert_eq!(state.shell_display_label(), "Screen 2: 2560x1440 144Hz");
         assert_eq!(
             state.drain_output().events,
             [

@@ -447,10 +447,7 @@ pub(crate) fn place_ready_building_at_cell(
             rules.object(type_id).map(|object| {
                 // LeftUp4ABA16 adds the same type-derived offset as preview,
                 // using this fresh clicked Cell rather than the last draw.
-                let origin = crate::rules::foundation::placement_origin_at_cursor(
-                    &object.foundation,
-                    cursor_cell,
-                );
+                let origin = object.foundation.placement_origin_at_cursor(cursor_cell);
                 let in_build_area = crate::sim::production::is_within_build_area(
                     sim, rules, &owner, object, origin.0, origin.1,
                 );
@@ -1191,10 +1188,11 @@ pub(crate) fn object_move_destination(
 /// Make ordinary local mission bytes authoritative at issue time.
 ///
 /// Active YR routes a cell click through `ClickedAction` (`0x004D7D50`), and a
-/// Move over an object through `0x004D74E0`, to
-/// `EventClass__BuildMegaMissionEnvelope` (`0x004C6860`). Guard key730D60
-/// reaches the same producer through QueueMegaMission6FFBE0. Move, to a Cell
-/// or an object, AreaGuard and self-click Unload share this codec. The D key
+/// Move or Attack over an object through `0x004D74E0`, to
+/// `EventClass__BuildMegaMissionEnvelope` (`0x004C6860`). ClickedMission6FFBE0
+/// promotes Move/Attack to attack-move before QueueMission646E90 appends.
+/// Move, Attack, attack-move, AreaGuard and self-click Unload share this codec.
+/// Guard key730D60 reaches the same producer. The D key
 /// constructs its distinct Event9 before reaching this boundary. Other
 /// semantic commands pass through until their native record is established.
 pub(crate) fn encode_ordinary_local_command(
@@ -1209,6 +1207,9 @@ pub(crate) fn encode_ordinary_local_command(
     match payload {
         Command::Move { .. }
         | Command::MoveToObject { .. }
+        | Command::Attack { .. }
+        | Command::ForceAttackCell { .. }
+        | Command::AttackMove { .. }
         | Command::Guard { .. }
         | Command::DeployMcv { .. }
         | Command::ToggleInfantryDeploy { .. }
@@ -1218,6 +1219,10 @@ pub(crate) fn encode_ordinary_local_command(
         }
         Command::Stop { entity_id } => {
             let record = sim.encode_stop_record(owner, entity_id)?;
+            Some(CommandEnvelope::synchronized(record, execute_tick))
+        }
+        Command::ToggleRepair { entity_id } => {
+            let record = sim.encode_repair_record(owner, entity_id)?;
             Some(CommandEnvelope::synchronized(record, execute_tick))
         }
         payload => Some(CommandEnvelope::new(owner, execute_tick, payload)),
@@ -1352,13 +1357,117 @@ mod tests {
     use crate::sim::world::Simulation;
 
     #[test]
-    fn stress_march_queues_one_attack_move_per_object_through_the_local_gate() {
-        let mut sim = Simulation::new();
-        let local = sim.intern("Local");
-        sim.houses_mut_for_test()
-            .register(HouseState::new(local, 0, None, true, 0, 10));
+    fn repair_click_publishes_a_raw_target_and_still_handles_a_full_outlist() {
+        let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+            return;
+        };
+        let rules = retail.rules;
+        let mut sim = crate::sim::arena_fixture::rival_arena(&rules, 0x4AC0BE);
+        let building = sim
+            .spawn_object("GAPILE", "Americans", 8, 8, 0, &rules)
+            .unwrap();
+        sim.session_mut_for_test().set_tick_for_test(41);
+        sim.session_mut_for_test().set_binary_frame_for_test(77);
+        let command = Command::ToggleRepair {
+            entity_id: building,
+        };
+        let before = sim.state_hash();
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Americans", command.clone()),
+            Some(41)
+        );
+        assert_eq!(
+            sim.state_hash(),
+            before,
+            "input cannot toggle before dispatch"
+        );
+        let record = sim.network_command_queues().local_records().unwrap()[0].clone();
+        assert_eq!(
+            (record.opcode(), record.house_id(), record.frame_stamp()),
+            (0x15, 1, 77)
+        );
+        assert_eq!(&record.payload()[..4], &(building as i32).to_le_bytes());
+        assert_eq!(record.payload()[4], 0x34);
+        for _ in 1..128 {
+            assert!(sim.issue_local_command(CommandEnvelope::synchronized(record.clone(), 41)));
+        }
+        assert_eq!(
+            schedule_command_in_sim(&mut sim, "Americans", command),
+            Some(41)
+        );
+        assert_eq!(
+            sim.network_command_queues().local_records().unwrap().len(),
+            128
+        );
+        assert_eq!(sim.state_hash(), before);
+    }
 
-        let accepted = schedule_stress_attack_moves(&mut sim, "Local", &[11, 12, 13], (40, 60));
+    #[test]
+    fn ordinary_attacks_reach_the_raw_network_queue_before_stop() {
+        let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+            return;
+        };
+        let (mut sim, rules, _) = Simulation::walk_cell_input_test_scene_with(retail.rules, false);
+        let gi = sim.spawn_object("E1", "Local", 3, 5, 0, &rules).unwrap();
+        let target = sim.spawn_object("E1", "Local", 5, 5, 0, &rules).unwrap();
+        sim.session_mut_for_test().set_tick_for_test(41);
+        sim.session_mut_for_test().set_binary_frame_for_test(77);
+        let commands = [
+            Command::Attack {
+                attacker_id: gi,
+                target_id: target,
+            },
+            Command::ForceAttackCell {
+                attacker_id: gi,
+                target_rx: 6,
+                target_ry: 5,
+            },
+            Command::AttackMove {
+                entity_id: gi,
+                target: Some(TargetKind::Entity(target)),
+                destination: None,
+            },
+            Command::Stop { entity_id: gi },
+        ];
+        for command in &commands {
+            assert_eq!(
+                schedule_command_in_sim(&mut sim, "Local", command.clone()),
+                Some(41)
+            );
+        }
+        let records = sim
+            .network_command_queues()
+            .local_records()
+            .unwrap()
+            .into_iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        assert_eq!(
+            records
+                .iter()
+                .map(|record| record.opcode())
+                .collect::<Vec<_>>(),
+            [4, 4, 4, 6]
+        );
+        for (record, command) in records.iter().zip(commands) {
+            assert_eq!(record.frame_stamp(), 77);
+            assert_eq!(
+                sim.decode_native_command_record(record, 41)
+                    .unwrap()
+                    .payload,
+                command
+            );
+        }
+    }
+
+    #[test]
+    fn stress_march_queues_one_attack_move_per_object_through_the_local_gate() {
+        let (mut sim, rules, first) = Simulation::walk_cell_input_test_scene(false);
+        let second = sim.spawn_object("E1", "Local", 3, 5, 0, &rules).unwrap();
+        let third = sim.spawn_object("E1", "Local", 4, 5, 0, &rules).unwrap();
+
+        let accepted =
+            schedule_stress_attack_moves(&mut sim, "Local", &[first, second, third], (40, 60));
         assert_eq!(
             accepted, 3,
             "every object of the stress army gets its own order"
@@ -1805,9 +1914,7 @@ mod tests {
 
         let due = sim.take_due_commands();
         let result = sim.advance_tick(&due, None, None, None, 33);
-        let local_outcome_exit_ready = sim.houses()[&local]
-            .outcome()
-            .is_some_and(|outcome| outcome.exit_ready);
+        let local_outcome_exit_ready = sim.ready_outcome_for_owner(local).is_some();
 
         assert!(!result.frame_committed);
         assert!(local_outcome_exit_ready, "House expiry happened this frame");

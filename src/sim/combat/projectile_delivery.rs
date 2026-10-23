@@ -88,11 +88,14 @@ pub(super) fn bullet_type<'r>(
 /// `[base + displacement]` operand forms via `search_instructions`) — these keys
 /// must NOT divert a shot off authoritative flight, because native never reads
 /// them in the flight loop at all:
-/// - `Bouncy=` (`+0x2A7`) has **no consumer anywhere in the binary**. The
-///   apparent hits at `0x0070D2D2`/`0x0070D2EE` are `TechnoTypeClass+0x2A7`
-///   behind `VeterancyClass::IsVeteran/IsElite`. Stock `[Lobbed]` (the dog
-///   discus) is therefore an ordinary `Arcing` shell.
-/// - `Proximity=` (`+0x29F`) likewise has no consumer; `0x00702BC0`ff. are
+/// - `Bouncy=` (`+0x2A7`) is read by `BulletTypeClass::ComputeCRC @
+///   0x0046C560` (`0x0046C632`), but the bounded direct-displacement scan found
+///   no runtime gameplay read. The apparent hits at `0x0070D2D2`/`0x0070D2EE`
+///   are `TechnoTypeClass+0x2A7` behind `VeterancyClass::IsVeteran/IsElite`.
+///   Stock `[Lobbed]` (the dog discus) is therefore an ordinary `Arcing` shell.
+/// - `Proximity=` (`+0x29F`) is likewise read by `BulletTypeClass::ComputeCRC
+///   @ 0x0046C560` (`0x0046C5C2`); the bounded direct-displacement scan found no
+///   runtime gameplay read. The apparent `0x00702BC0` hits are
 ///   `TechnoTypeClass+0x29F` behind the same veterancy pattern.
 /// - `SubjectToCliffs=` (`+0x296`) is consumed only by the AI collision probe
 ///   `FUN_00468BB0 @ 0x00468BEC`, and `SubjectToElevation=` (`+0x297`) only by

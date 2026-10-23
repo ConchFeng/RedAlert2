@@ -4,8 +4,6 @@
 //! before the live Logic cursor advances; no lifecycle work is deferred to a
 //! batch tail. Native order and coordinate evidence remain beside each seam.
 
-use std::collections::BTreeSet;
-
 use super::{Simulation, techno_ai};
 use crate::map::entities::EntityCategory;
 use crate::rules::ruleset::RuleSet;
@@ -405,6 +403,7 @@ impl Simulation {
             Self::teleport_warp_sound(
                 &mut sim.interner,
                 &sim.substrate,
+                sim.resolved_terrain.as_ref(),
                 &mut sim.sound_events,
                 stable_id,
                 teleport_movement::WarpSound::Out,
@@ -428,6 +427,7 @@ impl Simulation {
             Self::teleport_warp_sound(
                 &mut sim.interner,
                 &sim.substrate,
+                sim.resolved_terrain.as_ref(),
                 &mut sim.sound_events,
                 stable_id,
                 teleport_movement::WarpSound::In,
@@ -732,16 +732,9 @@ impl Simulation {
     ) -> Result<LiveObjectPassOutcome, super::FrameAdvanceError> {
         self.answer_batched_path_searches(rules, overlay_registry);
         self.answer_batched_scans(rules, overlay_registry);
-        let terrain_spawner_cells = self
-            .terrain_objects
-            .animations()
-            .keys()
-            .copied()
-            .collect::<BTreeSet<_>>();
         let object_ctx = techno_ai::ObjectAiCtx {
             effects,
             overlay_registry,
-            terrain_spawner_cells: Some(&terrain_spawner_cells),
         };
 
         let mut outcome = LiveObjectPassOutcome::default();
@@ -1110,6 +1103,14 @@ impl Simulation {
             stable_id,
             rules,
         );
+        // Aircraft414DA8..414DB0 rereads Object+90 after the complete Foot
+        // tail. A dead aircraft returns before descent, wake draws and the
+        // remaining class suffix, regardless of which callback cleared Alive.
+        if sim.substrate.entities.get(stable_id).is_some_and(|entity| {
+            entity.category() == EntityCategory::Aircraft && !entity.lifecycle.object_alive()
+        }) {
+            return Ok(outcome);
+        }
         if sim.tick_ship_sinking(stable_id, rules, overlay_registry, object_ctx.effects) {
             return Ok(outcome);
         }

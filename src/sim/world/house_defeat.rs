@@ -61,9 +61,10 @@
 //!   whole-map reveal, the radar and Session `+0x300` (see `mplayer_defeated`;
 //!   `local_player_defeated` names the ported readers). The borrowed client
 //!   boundary leaves planning (`0x00637A10`), supplies its2B event to the same
-//!   frame's dispatcher and rejects re-entry (`0x00731A50`). Remaining UI:
-//!   beacons deleted (`0x00431410`), and beacon mode left (`0x004AC960`). The
-//!   chat-mask set (`0x00A8D108..0x00A8D10F`, `0x004FC23E`) is the app's
+//!   frame's dispatcher and rejects re-entry (`0x00731A50`). The beacons'
+//!   deletion (`0x00431410`) and beacon mode's exit (`0x004AC960`) are the
+//!   app's `match_runtime::beacons` owner, run from the PlayerDefeated line.
+//!   The chat-mask set (`0x00A8D108..0x00A8D10F`, `0x004FC23E`) is the app's
 //!   `input::chat` owner, run from the PlayerDefeated line; dialog 0x73
 //!   reads the mask whenever it draws (`0x004FC239..0x004FC25D` refresh). The command bar is
 //!   saved/closed6D1660 but restored4FC591→6D1610 on the common sole-human
@@ -71,14 +72,14 @@
 //!   close/restore paths remain outside this chain. Session+300 already guards
 //!   band-box/type/navigation selection, Cheer input and the command-bar
 //!   opener (`0x006D08F5`). Its F0 close remains allowed. Remaining UI readers
-//!   include beacon and taunt (`0x00731A30`, `0x0053636C`),
+//!   include taunt (`0x0053636C`),
 //!   `RadarClass::SetRadarMode` (`0x00656CCC`), MakeAlly's
 //!   alliance line (`0x004F9E49`) and the dialog and session readers
 //!   (`0x004F1534`, `0x00657F4A`, `0x0078D52A`, `0x004E20BA`, `0x004F10FD`,
 //!   `0x0055EE60` and others). Trigger: the local player is defeated. Effect:
 //!   for the savour delay (retail `SavourDelay=.1`) those UI states and
-//!   commands may stay as they were. Frequency: once on a local loss; beacon,
-//!   dialog and multiplayer consequences need their own connected mechanisms.
+//!   commands may stay as they were. Frequency: once on a local loss; dialog
+//!   and multiplayer consequences need their own connected mechanisms.
 
 use crate::rules::overlay_types::OverlayTypeRegistry;
 use crate::rules::ruleset::RuleSet;
@@ -95,6 +96,15 @@ pub(crate) enum HouseBlowupSubset {
     Buildings,
     Land,
     Naval,
+}
+
+/// The paused House's result head has already run its assessment prefix.
+/// Generated events are still unadmitted until the complete House pass.
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(super) struct HouseOutcomeCursor {
+    pub(super) index: usize,
+    pub(super) kind: crate::sim::house_state::HouseOutcomeKind,
+    pub(super) generated: Vec<crate::sim::command::CommandEnvelope>,
 }
 
 impl Simulation {
@@ -124,12 +134,15 @@ impl Simulation {
         rules: Option<&RuleSet>,
         registry: Option<&OverlayTypeRegistry>,
     ) {
-        let generated = self.house_rung(
-            rules.unwrap_or(crate::rules::ruleset::RuleSet::empty_for_test()),
-            registry,
-            true,
-            crate::sim::world::FrameEffects::default(),
-        );
+        let generated = self
+            .house_rung(
+                rules.unwrap_or(crate::rules::ruleset::RuleSet::empty_for_test()),
+                registry,
+                true,
+                crate::sim::world::FrameEffects::default(),
+                None,
+            )
+            .expect("headless House wait completes immediately");
         self.queue_commands(generated);
     }
 
@@ -189,8 +202,12 @@ impl Simulation {
         registry: Option<&OverlayTypeRegistry>,
         defeat_pass: bool,
         frame_effects: FrameEffects<'_>,
-    ) -> Vec<crate::sim::command::CommandEnvelope> {
-        let mut generated = Vec::new();
+        cursor: Option<HouseOutcomeCursor>,
+    ) -> Result<Vec<crate::sim::command::CommandEnvelope>, HouseOutcomeCursor> {
+        let (mut index, mut generated, mut resumed_kind) = match cursor {
+            Some(cursor) => (cursor.index, cursor.generated, Some(cursor.kind)),
+            None => (0, Vec::new(), None),
+        };
         // 0x004F8E86..0x004F8EB7: not a campaign, past frame zero.
         let defeat_gate = defeat_pass
             && self.session.game_mode_nonzero()
@@ -198,19 +215,34 @@ impl Simulation {
         // Logic55B68D reloads the live House count after each complete body.
         // A House's power/radar and activation must precede its own teams,
         // EVA, defeat and production; no global half-body sweeps intervene.
-        let mut index = 0;
         while index < self.houses.order().len() {
             let owner = self.houses.order()[index];
-            self.assess_house_derived_state(owner, rules);
-            self.update_house_anger_and_activation(owner, rules);
-            // House4F85BE/4F86FE precedes team creation, defeat and this
-            // House's Tags. Result countdown and AllowWin-tag teardown share
-            // the sole private +298 CdTimer; use NativeFrame, not Rust tick+1.
-            if let Some(house) = self.houses.get_mut(&owner) {
-                house.advance_outcome_savour(
-                    self.session.binary_frame() as i32,
-                    self.session.game_mode_nonzero(),
-                );
+            let kind = if let Some(kind) = resumed_kind.take() {
+                Some(kind)
+            } else {
+                self.assess_house_derived_state(owner, rules);
+                self.update_house_anger_and_activation(owner, rules);
+                self.houses.get(&owner).and_then(|house| {
+                    house.pending_outcome(
+                        self.session.binary_frame() as i32,
+                        self.session.game_mode_nonzero(),
+                    )
+                })
+            };
+            if let Some(kind) = kind {
+                // HouseClass::Update4F860F/4F8736 pumps all preceding Vox
+                // before publishing the request and visiting later Houses.
+                frame_effects.consume_prefix_effects(&mut self.trigger_effects);
+                frame_effects.flush_sound(self, rules);
+                if !frame_effects.outcome_wait_complete(owner, kind) {
+                    return Err(HouseOutcomeCursor {
+                        index,
+                        kind,
+                        generated,
+                    });
+                }
+                self.houses.get_mut(&owner).unwrap().complete_outcome(kind);
+                self.admit_house_outcome(owner, kind);
             }
             // Original4F87C2..4F87FA runs even on frame zero and before
             // team/EVA/defeat work. Clear1F6 before entering ReceiveDamage.
@@ -265,7 +297,43 @@ impl Simulation {
             );
             index += 1;
         }
-        generated
+        Ok(generated)
+    }
+
+    /// House4F865E..4F87BB publishes independent session requests. A later
+    /// House callback may replace PlayerPtr's pending flags, never this fact.
+    fn admit_house_outcome(
+        &mut self,
+        owner: InternedId,
+        kind: crate::sim::house_state::HouseOutcomeKind,
+    ) {
+        use crate::sim::house_state::HouseOutcomeKind;
+        use crate::sim::scenario_session::ScenarioGameMode;
+        let house = &self.houses[&owner];
+        let local = if !self.session.game_mode_nonzero() {
+            house.is_controlled_by_human(false)
+        } else {
+            self.session.current_house() == Some(owner)
+                || (kind == HouseOutcomeKind::Victory
+                    && matches!(
+                        self.session.game_mode(),
+                        ScenarioGameMode::Lan | ScenarioGameMode::Wol
+                    )
+                    && self
+                        .session
+                        .multiplayer_mode_class()
+                        .is_some_and(|mode| mode.restates_mission_for_diplomacy())
+                    && house.is_controlled_by_human(true))
+        };
+        let routed = if local {
+            kind
+        } else {
+            match kind {
+                HouseOutcomeKind::Victory => HouseOutcomeKind::Defeat,
+                HouseOutcomeKind::Defeat => HouseOutcomeKind::Victory,
+            }
+        };
+        self.session.admit_outcome(routed);
     }
     /// The defeat gate's test (`0x004F8E92..0x004F8F77`): a house neither
     /// defeated nor `MultiplayPassive=` whose counts say it holds nothing.

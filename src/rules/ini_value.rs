@@ -150,7 +150,85 @@ const ABSTRACT_TYPES: &[(&str, i32)] = &[
     ("DiskLaser", 73),
 ];
 
+/// Native `TechnoType+0x3BC` `Category=` value. Keep this enum and its name
+/// mapping with the shared `ReadCategory`-style INI reader, separate from the
+/// Rust registry family in `ObjectCategory`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+#[repr(i32)]
+pub enum TechnoTypeCategory {
+    #[default]
+    Unknown = -1,
+    Soldier = 0,
+    Civilian = 1,
+    VipAgent = 2,
+    ReconVehicle = 3,
+    ArmoredFightingVehicle = 4,
+    InfantryFightingVehicle = 5,
+    LongRangeFireSupport = 6,
+    MiscSupportVehicle = 7,
+    TransportVehicle = 8,
+    AirCombatSupport = 9,
+    AirTransport = 10,
+}
+
+/// `Category_From_Name @0x00473980`, table at `0x0081B7C8`; native compares
+/// both the display label and the abbreviated token with case-insensitive
+/// `strcmpi`.
+const TECHNO_TYPE_CATEGORY_NAMES: [(&str, &str, TechnoTypeCategory); 11] = [
+    ("Soldier", "Soldier", TechnoTypeCategory::Soldier),
+    ("Civilian", "Civilian", TechnoTypeCategory::Civilian),
+    ("VIP/Agent", "VIP", TechnoTypeCategory::VipAgent),
+    ("Recon Vehicle", "Recon", TechnoTypeCategory::ReconVehicle),
+    (
+        "Armored Fighting Vehicle",
+        "AFV",
+        TechnoTypeCategory::ArmoredFightingVehicle,
+    ),
+    (
+        "Infantry Fighting Vehicle",
+        "IFV",
+        TechnoTypeCategory::InfantryFightingVehicle,
+    ),
+    (
+        "Indirect Fire Support",
+        "LRFS",
+        TechnoTypeCategory::LongRangeFireSupport,
+    ),
+    (
+        "Misc. Support Vehicle",
+        "Support",
+        TechnoTypeCategory::MiscSupportVehicle,
+    ),
+    (
+        "Transport Vehicle",
+        "Transport",
+        TechnoTypeCategory::TransportVehicle,
+    ),
+    (
+        "Air Combat Support",
+        "AirPower",
+        TechnoTypeCategory::AirCombatSupport,
+    ),
+    ("Air Transport", "AirLift", TechnoTypeCategory::AirTransport),
+];
+
 impl IniSection {
+    /// `INIClass::ReadCategory @0x004749E0`: ReadString[0x20] defaults from
+    /// the current integer's token, then Category_From_Name maps either name
+    /// column. Missing/empty therefore retains current; unknown text returns
+    /// -1. Called by `TechnoTypeClass::ReadINI @0x00712170`.
+    pub fn read_techno_type_category(&self, current: TechnoTypeCategory) -> TechnoTypeCategory {
+        self.read_string_with("Category", 0x20, current, |_, value| {
+            TECHNO_TYPE_CATEGORY_NAMES
+                .iter()
+                .find_map(|(display_name, token, category)| {
+                    (value.eq_ignore_ascii_case(display_name) || value.eq_ignore_ascii_case(token))
+                        .then_some(*category)
+                })
+                .unwrap_or(TechnoTypeCategory::Unknown)
+        })
+    }
+
     /// ReadPip4748A0: the default is a TABLE INDEX; the result is a frame.
     /// ReadString32 always runs, including missing/empty cache entries, then
     /// an11-entry case-insensitive scan returns1 for an unknown name. Returned
@@ -496,6 +574,25 @@ impl IniSection {
         Some(strtrim_ascii(truncate_native_bytes(raw, payload)))
     }
 
+    /// `ObjectTypeClass::ReadINI @ 0x005F92D0` reads AlphaImage into its
+    /// 25-byte field with the current text as default; missing/empty reads
+    /// retain it, while literals such as `NONE` remain ordinary names.
+    pub(crate) fn read_object_alpha_image(&self, current: &str) -> String {
+        self.read_string_with("AlphaImage", 0x19, current.to_owned(), |_, value| {
+            value.to_owned()
+        })
+    }
+
+    /// Ares 3.0 PCXFile reader100762C0: ReadString through the shared 2048-byte
+    /// buffer, then copy31 bytes into char[32] and lowercase. An absent/empty
+    /// read retains the previous filename (the projected read_name policy).
+    /// Original reader controls: tools/sidebar_oracle/pcx_cameos.json.
+    #[cfg(feature = "ares")]
+    pub(crate) fn read_ares_pcx_filename(&self, key: &str) -> Option<String> {
+        self.read_name(key, 0x800)
+            .map(|name| truncate_native_bytes(name, 0x1f).to_ascii_lowercase())
+    }
+
     /// [`Self::read_name`] for a name a type factory resolves: `None` also for
     /// `none` and `<none>`, which the factories answer null
     /// ([`is_native_none_type_name`]).
@@ -606,9 +703,23 @@ impl IniSection {
         capacity: usize,
         current: [i32; N],
     ) -> [i32; N] {
-        self.read_string_with(key, capacity, current, |mut out, value| {
+        self.read_int_fields_present(key, capacity, current)
+            .unwrap_or(current)
+    }
+
+    /// The same partial decimal scan, retaining ReadString's presence result.
+    /// Ares custom-foundation lists terminate on a missing/empty string, not
+    /// on a failed numeric conversion (which still contributes zeroes).
+    pub fn read_int_fields_present<const N: usize>(
+        &self,
+        key: &str,
+        capacity: usize,
+        current: [i32; N],
+    ) -> Option<[i32; N]> {
+        self.read_string_with(key, capacity, None, |retained, value| {
+            let mut out = retained.unwrap_or(current);
             scan_int_fields(value, &mut out);
-            out
+            Some(out)
         })
     }
 
@@ -774,20 +885,35 @@ impl IniSection {
         mut scan_locals: Option<&mut [i32; 3]>,
     ) -> [u8; 3] {
         self.fold_rules_values(key, default, |current, raw| {
-            let value = strtrim_ascii(truncate_native_bytes(raw, 63));
-            if value.is_empty() {
-                return current;
-            }
-            let retained = scan_locals.is_some();
-            let mut fresh = [0; 3];
-            let out = scan_locals.as_deref_mut().unwrap_or(&mut fresh);
-            let assigned = scan_int_fields(value, out);
-            if retained || assigned == out.len() {
-                out.map(|component| component as u8)
-            } else {
-                current
-            }
+            Self::read_color_rgb_raw(raw, current, scan_locals.as_deref_mut())
         })
+    }
+
+    /// One native ReadColorRGB @0x00474B50 input with the caller's current
+    /// color as its default. TerrainTypeClass defers this read until its
+    /// Image's SHP frame-0 header color has been bound.
+    pub(crate) fn read_color_rgb_value(raw: &str, default: [u8; 3]) -> [u8; 3] {
+        Self::read_color_rgb_raw(raw, default, None)
+    }
+
+    fn read_color_rgb_raw(
+        raw: &str,
+        current: [u8; 3],
+        mut scan_locals: Option<&mut [i32; 3]>,
+    ) -> [u8; 3] {
+        let value = strtrim_ascii(truncate_native_bytes(raw, 63));
+        if value.is_empty() {
+            return current;
+        }
+        let retained = scan_locals.is_some();
+        let mut fresh = [0; 3];
+        let out = scan_locals.as_deref_mut().unwrap_or(&mut fresh);
+        let assigned = scan_int_fields(value, out);
+        if retained || assigned == out.len() {
+            out.map(|component| component as u8)
+        } else {
+            current
+        }
     }
 
     /// ReadSpeed (P19): `read_int(-1)` sentinel; -1 -> default; else clamp 0..100,
@@ -872,11 +998,12 @@ impl IniSection {
     }
 
     /// `ReadINIBase64BinarySectionSourceOrder @ 0x00526FB0` (IsoMapPack5,
-    /// OverlayPack, OverlayDataPack, PreviewPack): every entry's value in
-    /// source order, each cut to 127 bytes and trimmed, joined for the Base64
-    /// decoder. Entry names are not parsed or sorted.
+    /// OverlayPack, OverlayDataPack, PreviewPack, Digest): each physical entry
+    /// name queries the shared value index, including duplicate occurrences.
+    /// Values are cut to 127 bytes and trimmed, then joined for Base64Pipe.
+    /// Entry names are not parsed or sorted.
     pub fn read_packed_text(&self) -> String {
-        self.keys()
+        self.physical_keys()
             .filter_map(|key| self.get(key))
             .map(|value| strtrim_ascii(truncate_native_bytes(value, 0x7F)))
             .collect()
@@ -1858,5 +1985,32 @@ mod tests {
             [0xA741, 0x41, 0x42]
         );
         assert_eq!(s.read_comma_hex_utf16("MISSING", &[1, 2, 0, 3], 8), [1, 2]);
+    }
+}
+
+#[cfg(all(test, feature = "ares"))]
+mod pcx_cameo_tests {
+    #[test]
+    fn filename_projection_matches_original_ares_reader_controls() {
+        let corpus: serde_json::Value = serde_json::from_str(crate::test_fixture::text(
+            "tools/sidebar_oracle/pcx_cameos.json",
+        ))
+        .unwrap();
+        for control in corpus["readers"].as_array().unwrap() {
+            let value = control["value"].as_str().unwrap_or("");
+            let ini = crate::rules::ini_parser::IniFile::from_str(&format!(
+                "[SYNTHETIC]\nDummy=1\nCameoPCX={value}\n"
+            ));
+            let section = ini.section("SYNTHETIC").unwrap();
+            let projected = section
+                .read_ares_pcx_filename("CameoPCX")
+                .unwrap_or_else(|| "prior.pcx".to_owned());
+            assert_eq!(
+                projected,
+                control["filename"].as_str().unwrap(),
+                "{}",
+                control["name"]
+            );
+        }
     }
 }

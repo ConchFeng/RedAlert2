@@ -118,15 +118,11 @@ trait StartupAudioProfileOperations {
 
 impl StartupAudioProfileOperations for crate::app::audio_runtime::AppAudioRuntime {
     fn set_sound_volume(&mut self, volume: f64) {
-        if let Some(player) = self.sfx_player.as_mut() {
-            player.set_sound_volume(volume);
-        }
+        crate::app::audio_runtime::AppAudioRuntime::set_sound_volume(self, volume);
     }
 
     fn set_voice_volume(&mut self, volume: f64) {
-        if let Some(player) = self.sfx_player.as_mut() {
-            player.set_voice_volume(volume);
-        }
+        crate::app::audio_runtime::AppAudioRuntime::set_voice_volume(self, volume);
     }
 
     fn set_score_volume(&mut self, volume: f32) {
@@ -526,6 +522,7 @@ impl App {
         let multiplayer_shell_runtime =
             crate::app::frontend::skirmish_session::MultiplayerShellRuntime::initialize(
                 frontend_seed.value,
+                &mut process_assets,
                 game_config
                     .as_ref()
                     .map(|config| config.paths.settings_dir()),
@@ -614,7 +611,7 @@ impl App {
             sfx_player,
             launcher_audio_available,
             theme_startup_suppressed: false,
-            movie_audio: Default::default(),
+            master_groups: Default::default(),
             output: shared_output,
         };
         if let Some(assets) = startup_asset_manager.as_ref() {
@@ -665,6 +662,7 @@ impl App {
                         0,
                     ),
                     chat: Default::default(),
+                    beacons: Default::default(),
                     in_game_menu: crate::ui::pause_menu::InGameMenuState::default(),
                     modal_latch: true,
                     pause_menu_has_saves: false,
@@ -682,6 +680,7 @@ impl App {
                     in_game_options: startup_in_game_options,
                     in_game_options_anchor: None,
                     combat_lights: Default::default(),
+                    screen_shake: Default::default(),
                     line_trails: Default::default(),
                     lasers: Default::default(),
                     talk_bubble: Default::default(),
@@ -700,6 +699,7 @@ impl App {
                     radar_content_insets: None,
                     has_radar: false,
                     selection_overlay: None,
+                    beacon_art: None,
                     shroud_buffer: None,
                     theater_name: "TEMPERATE".to_string(),
                     theater_ext: "tem".to_string(),
@@ -777,7 +777,6 @@ impl App {
                 skirmish_shell_state,
                 choose_map_last_mode_row: None,
                 multiplayer_shell_runtime,
-                skirmish_shell_last_painted_pressed_button: None,
                 skirmish_shell_chrome,
                 main_menu_shell_state: crate::ui::main_menu_shell::MainMenuShellState::default(),
                 single_player_shell_state:
@@ -847,6 +846,8 @@ impl App {
                 batch_renderer,
                 fps_overlay,
                 combat_light_renderer,
+                screen_presentation:
+                    crate::render::screen_presentation::ScreenPresentationPass::new(),
                 terrain_draw_renderer,
                 instance_pool: crate::render::batch::InstanceBufferPool::new(),
                 depth_view,

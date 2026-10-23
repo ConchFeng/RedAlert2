@@ -45,7 +45,8 @@ mod type_tech_levels;
 mod unit_repair_seek;
 pub(crate) use frame_channel::FrameChannel;
 pub use frame_effects::{
-    FrameEffects, LocalPlanningBoundary, NetworkCommandBoundary, NetworkCommandError, SoundBoundary,
+    FrameEffects, LocalPlanningBoundary, NetworkCommandBoundary, NetworkCommandError,
+    OutcomeWaitBoundary, SoundBoundary,
 };
 pub use network_commands::{
     NetworkCommandQueues, NetworkInterruption, NetworkQueueContext, NetworkQueueError,
@@ -116,6 +117,7 @@ pub(crate) use world_orders::CapturedInfantryType;
 pub use world_orders::EngineerBuildingAction;
 pub use world_orders::UnitRepairAction;
 pub use world_orders::{EntryBaseAction, EntryClickAction};
+mod fog_objects;
 mod projectile_collision;
 mod shroud_refresh;
 mod substrate;
@@ -152,6 +154,9 @@ pub(crate) mod unit_post;
 mod wall_autofill_oracle_tests;
 mod world_commands;
 mod world_hash;
+
+#[cfg(all(test, feature = "ares"))]
+mod custom_foundation_tests;
 mod world_orders;
 mod world_spawn;
 
@@ -331,6 +336,7 @@ pub(crate) struct MasterFrameOutput {
     admitted_commands: Vec<CommandEnvelope>,
     network_failure: Option<crate::sim::command_queue::ChecksumMismatch>,
     network_waiting: bool,
+    outcome_waiting: bool,
 }
 
 impl MasterFrameOutput {
@@ -352,10 +358,18 @@ struct NetworkFailureContinuation {
 // Explicit variants keep the continuation describable by the binary snapshot
 // schema. Its layout fingerprint rejects snapshots with the earlier shape.
 #[derive(serde::Serialize, serde::Deserialize)]
-enum NetworkFrameContinuation {
+enum FrameContinuation {
     Checksum(NetworkFailureContinuation),
     Interrupted(NetworkInterruptionContinuation),
     Waiting(NetworkWaitContinuation),
+    Outcome(HouseOutcomeContinuation),
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct HouseOutcomeContinuation {
+    cursor: house_defeat::HouseOutcomeCursor,
+    tick_ms: u32,
+    frame: FrameCompletion,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -383,12 +397,12 @@ struct FrameCompletion {
     bridge_state_changed: bool,
 }
 
-#[derive(Clone, Copy)]
-enum NetworkTailResult {
+enum FrameTailResult {
     Complete(bool),
     Checksum(crate::sim::command_queue::ChecksumMismatch),
     Interrupted(NetworkInterruption),
     Waiting(NetworkQueueContext),
+    OutcomeWait(house_defeat::HouseOutcomeCursor),
 }
 
 /// One authoritative frame plus the transient facts emitted while producing it.
@@ -400,6 +414,9 @@ enum NetworkTailResult {
 pub struct SimFrameOutput {
     /// Logic finished but Queue_AI is still waiting for transport/peer credit.
     pub network_waiting: bool,
+    /// House4F860F/4F8736 is waiting for the process-owned Vox drain.
+    /// No frame commit, later House visit or presentation frame ran yet.
+    pub outcome_waiting: bool,
     /// Post-Logic suspension at Execute_DoList64CC61. Earlier effects stand;
     /// acknowledge the client modal, then resume the remaining frame tail once.
     pub network_failure: Option<crate::sim::command_queue::ChecksumMismatch>,
@@ -418,6 +435,9 @@ pub struct SimFrameOutput {
     pub sound_events_delivered: usize,
     pub fire_events: Vec<SimFireEvent>,
     pub combat_lights: Vec<crate::sim::combat::CombatLightRequest>,
+    /// Ordered axis writes from Bullet DetonateAtCoord; presentation owns the
+    /// retained screen offset and applies these after Logic.
+    pub screen_shake_updates: Vec<crate::sim::combat::ScreenShakeUpdate>,
     pub lighting_events: Vec<crate::sim::light_sources::LightingEvent>,
     /// The retail sync checksum this frame's multiplayer `Queue_AI` computed
     /// for the native history ring; `None` on single-player routes and on
@@ -583,41 +603,53 @@ pub enum SimSoundEvent {
         sound_id: InternedId,
         world: crate::sim::anim_class::AnimWorldCoord,
     },
-    /// An entity was destroyed — play its DieSound=.
+    /// An entity was destroyed — play its VoiceDie=/DieSound= at its
+    /// Location (`0x0070213F..0x0070218B`, `0x007021A9..0x007021FB` copy
+    /// `[obj+0x9C..0xA4]` for `VocClass::PlayAt 0x007509E0`).
     EntityDied {
         die_sound_id: String,
-        rx: u16,
-        ry: u16,
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// An entity was crushed by a vehicle — play its CrushSound= (the squish).
     /// Normal crush teardown does not also enter the ordinary DieSound path.
     EntityCrushed {
         crush_sound_id: InternedId,
-        rx: u16,
-        ry: u16,
+        /// The CRUSHER's Location, read before the victim dies:
+        /// `UnitClass::Crush_Or_Prescatter_Cell @ 0x007416A0`
+        /// (`0x007418AA..0x007418DC`, `[EDI+0x9C..0xA4]`) and
+        /// `JumpjetLocomotionClass::State5_Crash @ 0x0054CA90`
+        /// (`0x0054CCDE..0x0054CD14`).
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// DeploySound on infantry stance entry, successful unit-to-building
     /// conversion, or a building's undeploy start (Selling's UndeploysInto
     /// arm plays the building type's own `DeploySound=`).
     EntityDeployed {
         deploy_sound_id: InternedId,
-        rx: u16,
-        ry: u16,
+        /// The deploying object's Location: Infantry Do_Action
+        /// (`0x0051D94F..0x0051D9CA`), `UpdateSimpleDeployState @ 0x00739AC0`
+        /// (`0x00739C86..0x00739CB9`), `UnitClass::Deploy @ 0x007393C0`
+        /// (`0x00739A21..0x00739A54`, the MCV's) and `Mission_Selling @
+        /// 0x00449C30` (`0x0044A9F9..0x0044AA38`, the building's north-west
+        /// cell centre, not its foundation centre).
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// An infantry entity entered the Undeploying phase — play its UndeploySound=.
     EntityUndeployed {
         undeploy_sound_id: InternedId,
-        rx: u16,
-        ry: u16,
+        /// The object's own Location: Infantry Do_Action
+        /// (`0x0051D998..0x0051D9CA`), `UnitClass::Undeploy @ 0x00739CD0`
+        /// (`0x00739E81..0x00739EB3`).
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// A transport placed an ejected passenger — `UnitClass::Mission_Unload @
     /// 0x0073D630` plays the transport type's `LeaveTransportSound=`
-    /// (`+0x568`) through `VocClass::PlayAtCoord` at the TRANSPORT's own
-    /// coordinate (`0x0073DC28`..`0x0073DC67`), once per placed passenger.
+    /// (`+0x568`) through `VocClass::PlayAtCoord @ 0x00750E20` at the
+    /// TRANSPORT's own Location after the passenger's Unlimbo
+    /// (`0x0073DC35`..`0x0073DC67`), once per placed passenger.
     LeaveTransport {
         sound_id: InternedId,
-        rx: u16,
-        ry: u16,
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// A building finished construction — play EVA "Construction complete".
     BuildingComplete { owner: InternedId },
@@ -652,13 +684,14 @@ pub enum SimSoundEvent {
     /// the local player's (`0x004FB2CC..0x004FB314`).
     BuildingPlaced { owner: InternedId },
     /// A chrono teleport happened — play the resolved warp sound at this position.
-    /// Sim emits two of these per warp: one at the source cell with the unit's
-    /// `ChronoOutSound=`, one at the destination cell with the unit's
-    /// `ChronoInSound=`.
+    /// Sim emits two of these per warp: one at the departure Location with the
+    /// unit's `ChronoOutSound=` (`0x0071960A..0x0071962C`, Chronosphere state
+    /// 2 `0x007198CE`), one at the arrival Location, after SetHeight(0) and
+    /// Mark(DOWN), with its `ChronoInSound=` (`0x007196EE..0x00719710`, state
+    /// 5 `0x00719A70`).
     ChronoTeleport {
         sound_id: InternedId,
-        rx: u16,
-        ry: u16,
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// `TechnoClass::StartUncloaking @ 0x007036C0` accepted an arg-zero
     /// state-1/2 transition and called positional `VocClass::PlayAt @
@@ -687,6 +720,10 @@ pub enum SimSoundEvent {
     /// exhausted-retry branch 0x0075B085..0x0075B0B0 requests ScoldSound this
     /// way. Evidence: `tools/spatial_oracle/foot_scold_latch.{py,json,md}`.
     VocCentered { sound_id: String },
+    /// The same centred `0x00750920` call with a raw SOUNDMD ordinal: team
+    /// script action 25 (`0x006E9901`). The process catalog resolves it;
+    /// -1 or an unknown ordinal plays nothing (`0x0075093B`).
+    VocCenteredIndex { index: i32 },
     /// `VocClass::PlayAt @ 0x007509E0` of a rules-named sound at an object's
     /// Location: the mind-control capture, release and overload sounds.
     /// `audible_to` names the houses a `HouseClass::IsHumanPlayer
@@ -723,8 +760,9 @@ pub enum SimSoundEvent {
     UnitPromoted {
         owner: InternedId,
         sound_id: Option<InternedId>,
-        rx: u16,
-        ry: u16,
+        /// The object's Location (`0x006FA092..0x006FA0BC`,
+        /// `0x006FA0FF..0x006FA12A`).
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// A building / harvester admitted a damage or first Temporal-head warning.
     /// For the local owner the app admits `radar` (type 3 base / type 4 miner) on its client
@@ -892,8 +930,10 @@ pub enum SimSoundEvent {
     SuperWeaponLaunched {
         owner: InternedId,
         sw_type: InternedId,
-        rx: u16,
-        ry: u16,
+        /// Where the positional cue plays, always over the target cell; each
+        /// launch case names its own coordinate. Cases with no positional
+        /// cue carry the target cell's centre at Z 0, which nothing reads.
+        world: crate::sim::anim_class::AnimWorldCoord,
     },
     /// A `CreateRadarEvent` with no local-player test and no sound, on every
     /// client: each admits it on its own radar. Type 13 from
@@ -945,27 +985,44 @@ pub enum SimSoundEvent {
         radar: crate::sim::radar::RadarEventRequest,
     },
     /// First-occupant SFX from rulesmd [AudioVisual] BuildingGarrisonedSound.
-    /// Positional cue gated on owner == local human.
-    BuildingGarrisonedSfx { owner: InternedId, rx: u16, ry: u16 },
+    /// Positional cue gated on owner == local human, at the occupant's
+    /// GetCoords (vt+0x48 on the infantryman, `0x005229C6..0x005229E0`).
+    BuildingGarrisonedSfx {
+        owner: InternedId,
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// Tank-bunker walls-up cue — emitted on install. App resolves to
-    /// [AudioVisual] BunkerWallsUpSound (retail "TankBunkerUp").
-    BunkerWallsUp { rx: u16, ry: u16 },
+    /// [AudioVisual] BunkerWallsUpSound (retail "TankBunkerUp"), at the
+    /// bunker's Location (`BuildingClass::UpdateBunker @ 0x00458E50` state 5,
+    /// `0x0045934A..0x0045936F`).
+    BunkerWallsUp {
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// Tank-bunker walls-down cue — emitted on normal exit / clear teardown.
-    /// App resolves to [AudioVisual] BunkerWallsDownSound (retail "TankBunkerDown").
-    BunkerWallsDown { rx: u16, ry: u16 },
+    /// App resolves to [AudioVisual] BunkerWallsDownSound (retail "TankBunkerDown"),
+    /// at the bunker's Location (`ClearBunker @ 0x00459470`,
+    /// `0x004594A2..0x004594C8`; `EmptyBunker @ 0x004595C0`,
+    /// `0x004595E7..0x0045960D`).
+    BunkerWallsDown {
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// A paratrooper left the paradrop plane (`AircraftClass::Drop_Payload`
     /// plays `[AudioVisual] ChuteSound=` at the plane's Location,
-    /// `0x00415E21`): the plane's cell.
-    ChuteSound { rx: u16, ry: u16 },
+    /// `0x00415E21`).
+    ChuteSound {
+        world: crate::sim::anim_class::AnimWorldCoord,
+    },
     /// An engineer entered a `BridgeRepairHut` and triggered bridge repair.
-    /// Played at the BUILDING's cell, NOT the engineer's. App layer plays the
+    /// Played at the hut BUILDING's Location, NOT the engineer's
+    /// (`InfantryClass::PerCellProcess`, `0x00519BCE..0x00519C02`, on the
+    /// building `Look_up_building_in_cell @ 0x0047C520` found at
+    /// `0x00519B20`). App layer plays the
     /// spatial `[BridgeRepaired]` sound for everyone in range, gated on
     /// `rules.bridge_rules.repair_sound.is_some()`. `radar` is present when
     /// native House50B6F0 passed; the EVA line then waits on the client's
     /// non-drawing type-14 radar event creation/dedup gate.
     BridgeRepaired {
-        rx: u16,
-        ry: u16,
+        world: crate::sim::anim_class::AnimWorldCoord,
         radar: Option<RadarEventRequest>,
     },
 }
@@ -1340,6 +1397,9 @@ pub struct Simulation {
     /// dedicated presentation handoff rather than fabricated world state.
     #[serde(skip)]
     pub(crate) combat_light_requests: FrameChannel<crate::sim::combat::CombatLightRequest>,
+    /// Ordered Bullet DetonateAtCoord screen-shake writes for this frame.
+    #[serde(skip)]
+    pub(crate) screen_shake_updates: FrameChannel<crate::sim::combat::ScreenShakeUpdate>,
     /// Persistent ordinary shots. This is authoritative save/hash state, not
     /// the render-side fire-event approximation.
     #[serde(default)]
@@ -1568,10 +1628,10 @@ pub struct Simulation {
     /// only gameplay authority and a restored snapshot starts a new receipt.
     #[serde(skip)]
     frame_command_admissions: Vec<CommandEnvelope>,
-    /// A synchronous CRC modal suspends MainTick after Logic/DoList. Preserve
-    /// its one remaining tail across snapshots; never replay the earlier work.
+    /// The one suspended frame cursor: a House Vox wait or post-Logic
+    /// network service. Restore and resume its suffix without replaying work.
     #[serde(default)]
-    network_frame_continuation: Option<NetworkFrameContinuation>,
+    frame_continuation: Option<FrameContinuation>,
     /// PlanMgr is the sole owner of shared nodes and per-actor plan tokens.
     planning: planning::PlanningState,
     /// Diagnostic playback supplies a batch already containing generated
@@ -2050,8 +2110,7 @@ impl Simulation {
                     if !object.can_be_occupied || passenger_ids.is_empty() {
                         return None;
                     }
-                    let (foundation_w, foundation_h) =
-                        crate::rules::foundation::foundation_dimensions(&object.foundation);
+                    let (foundation_w, foundation_h) = object.foundation.dimensions();
                     Some(
                         crate::sim::passenger::garrison_eject::DestroyedGarrisonBuilding {
                             building_id: stable_id,
@@ -2453,13 +2512,13 @@ impl Simulation {
         /// bridge layer's when its height test picks it), in its current order.
         fn current_order(
             occupancy: &crate::sim::occupancy::OccupancyGrid,
-            terrain_cells: &BTreeMap<(u16, u16), u64>,
+            terrain_objects: &crate::sim::terrain_object::TerrainObjectStore,
             rx: u16,
             ry: u16,
             layer: MovementLayer,
         ) -> Vec<CellObject> {
             occupancy
-                .cell_objects(rx, ry, layer, terrain_cells.get(&(rx, ry)).copied())
+                .cell_objects(rx, ry, layer, terrain_objects.members_at((rx, ry)))
                 .collect()
         }
 
@@ -2526,7 +2585,7 @@ impl Simulation {
 
                 let mut current = current_order(
                     &self.substrate.occupancy,
-                    self.terrain_objects.cell_index(),
+                    &self.terrain_objects,
                     rx,
                     ry,
                     layer,
@@ -2549,7 +2608,7 @@ impl Simulation {
                             if !eligible {
                                 let order = current_order(
                                     &self.substrate.occupancy,
-                                    self.terrain_objects.cell_index(),
+                                    &self.terrain_objects,
                                     rx,
                                     ry,
                                     layer,
@@ -2642,7 +2701,7 @@ impl Simulation {
                     // list link is gone and this walk terminates.
                     let order = current_order(
                         &self.substrate.occupancy,
-                        self.terrain_objects.cell_index(),
+                        &self.terrain_objects,
                         rx,
                         ry,
                         layer,
@@ -3174,6 +3233,7 @@ impl Simulation {
     pub fn reconstruct_cellclass_dummy_for_map_resize(&mut self) {
         self.effective_shared_cell_dummy()
             .reconstruct_for_map_resize();
+        self.trigger_runtime.reconstruct_dummy_for_map_resize();
         self.substrate
             .base_reservations
             .reconstruct_dummy_for_map_resize();
@@ -3464,6 +3524,11 @@ impl Simulation {
     /// ([`ScenarioSession::reset_campaign_mission_counter_on_shell_exit`]).
     pub fn reset_campaign_mission_counter_on_shell_exit(&mut self) {
         self.session.reset_campaign_mission_counter_on_shell_exit();
+    }
+
+    /// MapSelect5AE1FA/5AE0B8 publishes the selected stage before EvadeSave4C6180.
+    pub fn set_campaign_map_stage(&mut self, stage: u16) {
+        self.session.set_campaign_map_stage(stage);
     }
 
     /// The outgoing scene's live ambient Rules writes, returned once it stops
@@ -4256,6 +4321,7 @@ impl Simulation {
             lighting_sources: crate::sim::light_sources::LightingSources::default(),
             fire_events: FrameChannel::default(),
             combat_light_requests: FrameChannel::default(),
+            screen_shake_updates: FrameChannel::default(),
             projectiles: crate::sim::projectile::ProjectileStore::new(),
             waves: crate::sim::wave::WaveStore::new(),
             active_wave_links: BTreeMap::new(),
@@ -4309,7 +4375,7 @@ impl Simulation {
             local_commands: Default::default(),
             dispatch_reserved_slots: 0,
             frame_command_admissions: Vec::new(),
-            network_frame_continuation: None,
+            frame_continuation: None,
             planning: planning::PlanningState::default(),
             #[cfg(any(test, feature = "test-support"))]
             replaying_recorded_commands: false,
@@ -4646,16 +4712,16 @@ impl Simulation {
         &self,
         owner: InternedId,
     ) -> Option<crate::sim::house_state::HouseOutcomeState> {
-        self.houses
-            .get(&owner)?
-            .outcome()
-            .filter(|outcome| outcome.exit_ready)
+        if self.session.current_house() != Some(owner) || !self.houses.contains_key(&owner) {
+            return None;
+        }
+        self.session
+            .outcome_request()
+            .map(|kind| crate::sim::house_state::HouseOutcomeState { kind })
     }
 
     fn natural_outcome_exit_ready(&self) -> bool {
-        self.session
-            .current_house()
-            .is_some_and(|owner| self.ready_outcome_for_owner(owner).is_some())
+        self.session.outcome_request().is_some()
     }
 
     fn termination_frame_requested(&self) -> bool {
@@ -4919,7 +4985,13 @@ impl Simulation {
         // commits the sight reveal before this action returns.
         for (stable_id, _, reveal) in membership_updates {
             if reveal {
-                self.reveal_uncached_object_sight(stable_id, UninitContext::new(rules, None));
+                self.reveal_uncached_object_sight(
+                    stable_id,
+                    false,
+                    false,
+                    None,
+                    UninitContext::new(rules, None),
+                );
             }
         }
 
@@ -6042,6 +6114,8 @@ impl Simulation {
         if let Some(house) = self.houses.get_mut(&new_owner) {
             house.economy_mut().add_score(cost);
         }
+        #[cfg(feature = "phobos")]
+        self.phobos_tracking_change_owner(stable_id, new_owner);
         Self::update_house_tracking(
             &mut self.substrate,
             &mut self.houses,
@@ -6565,20 +6639,19 @@ impl Simulation {
         // serialized Terrain objects must overwrite that derived projection.
         // Clear every known source first so Limbo/Destroyed objects stay absent,
         // then replay only live objects through the shared occupation writer.
-        let terrain_objects: Vec<_> = self.terrain_objects.objects().values().cloned().collect();
-        for terrain in &terrain_objects {
+        for object in self.terrain_objects.objects().values() {
             crate::sim::terrain_object::unmark_terrain_occupation(
-                terrain,
+                object,
                 Some(&mut resolved_terrain),
             );
         }
-        for terrain in &terrain_objects {
-            if terrain.is_live() {
-                crate::sim::terrain_object::mark_terrain_occupation(
-                    terrain,
-                    Some(&mut resolved_terrain),
-                );
-            }
+        // RecalcZone483C80 selects the first Terrain in saved cell order.
+        // Replaying storage order would select the wrong surviving mask.
+        for &head in self.terrain_objects.cell_index().values() {
+            crate::sim::terrain_object::mark_terrain_occupation(
+                &self.terrain_objects.objects()[&head],
+                Some(&mut resolved_terrain),
+            );
         }
         self.resolved_terrain = Some(resolved_terrain);
         self.terrain_speed_config = terrain_speed_config;
@@ -6859,8 +6932,8 @@ impl Simulation {
     /// receipts publish their Recalc only. A destroyed terrain object follows
     /// `TerrainClass::Limbo` @ `0x0071C930`: Recalc (`0x0071CA2A`), then
     /// AssignOrphanedCellZone (`0x0071CA42`) and the local graph update
-    /// (`0x0071CA51`) while `g_MapEditorMode` is zero. Deaths are published
-    /// after the receiver batch, not inside each Limbo.
+    /// (`0x0071CA51`) outside the ScenarioInit scope. Production Terrain
+    /// Limbo publishes synchronously before the following receiver.
     fn finish_terrain_navigation_changes(
         &mut self,
         rules: &RuleSet,
@@ -6875,6 +6948,16 @@ impl Simulation {
             .iter()
             .chain(terrain_changed_cells)
             .copied()
+            // Dummy Recalc47D2B8 has no path publication or structure scan.
+            // Test allocation without performing the ordered lookup early.
+            .filter_map(|(x, y)| {
+                self.resolved_terrain.as_ref().map_or(Some((x, y)), |grid| {
+                    let index = grid.native_fixed_cell_index(x as i16, y as i16)?;
+                    let (x, y) = grid
+                        .native_cell_coord(crate::map::cell_index::NativeCellIdentity::Real(index));
+                    Some((x as u16, y as u16))
+                })
+            })
             .collect();
         let blocked = navigation::structure_blocked_among(
             &self.substrate.entities,
@@ -6885,10 +6968,59 @@ impl Simulation {
         self.publish_recalculated_cells_with_presence(rules, &overlay_cells, &blocked);
         // Each Limbo's AssignOrphaned sees later deaths' cells unpublished.
         for &cell in terrain_changed_cells {
-            self.publish_cell_and_assign_orphaned_zone(rules, cell, &blocked);
+            // TerrainLimbo71C9F9..71CA2A reaches this suffix even when
+            // already InLimbo. Its canonical lookup must stamp the shared
+            // Dummy, whose Recalc47D2B0 immediately returns (47D2B8).
+            // Resize565C10's allocation diamond excludes cell0, so the
+            // never-Unlimbo'd zero constructor has no real-cell Recalc work.
+            let recalc_cell = self
+                .resolved_terrain
+                .as_ref()
+                .map_or(Some(cell), |terrain| {
+                    match terrain.native_cell_identity((cell.0 as i16, cell.1 as i16)) {
+                        crate::map::cell_index::NativeCellIdentity::Real(index) => {
+                            let (x, y) = terrain.native_cell_coord(
+                                crate::map::cell_index::NativeCellIdentity::Real(index),
+                            );
+                            Some((x as u16, y as u16))
+                        }
+                        crate::map::cell_index::NativeCellIdentity::Dummy => None,
+                    }
+                });
+            let initializing = self.object_placement_scope_active();
+            if let Some(recalc_cell) = recalc_cell {
+                // Recalc71CA23 uses the allocated Cell receiver's coordinate.
+                // Zone/hierarchy71CA42/51 instead retain the packed Location;
+                // their own index/geometry is not the Map's fixed512 alias.
+                self.publish_recalculated_cells_with_presence(rules, &[recalc_cell], &blocked);
+            }
+            // 71CA2F..71CA60 gates zone/hierarchy only on ScenarioInit.
+            // A Map-Dummy can select a real retained zone record because
+            // 56D460 uses the separate Size-derived stride and clamp.
+            if !initializing
+                && let (Some(terrain), Some(path)) =
+                    (self.resolved_terrain.as_ref(), self.path_grid.as_deref())
+            {
+                repair_zone_after_recalc(
+                    &mut self.zone_grid,
+                    path,
+                    terrain,
+                    self.bridge_state.as_ref(),
+                    self.playfield_bounds,
+                    cell,
+                    ZoneRepairKind::AssignOrphaned,
+                );
+            }
+            // Zero's retained zone class7 returns at56D4E8..56D51B;
+            // hierarchy58456A..584571 independently rejects its playfield.
+            // Do not turn absent Dummy cache input into a global rebuild.
+            if !initializing {
+                // 71CA2F..71CA60 gates zone repair and radar6551C0 on
+                // ScenarioInit==0, independently of the InLimbo prefix.
+                self.dirty_cells.mark_radar([cell]);
+            }
         }
     }
-
     /// One Recalc'd cell's navigation publication, then
     /// AssignOrphanedCellZone (`0x0056D460`) and the local graph update
     /// (`0x00584550`): the per-cell tail `TerrainClass::Limbo` and
@@ -7290,10 +7422,13 @@ impl Simulation {
         executed_commands: &mut usize,
         spawned_entities: &mut bool,
         effects: FrameEffects<'_>,
-    ) -> Result<NetworkTailResult, FrameAdvanceError> {
-        #[cfg(any(test, feature = "test-support"))]
-        self.trace_master_frame_rung(MasterFrameTestRung::Houses);
-        self.reconcile_active_vision_structures(rules);
+        cursor: Option<house_defeat::HouseOutcomeCursor>,
+    ) -> Result<FrameTailResult, FrameAdvanceError> {
+        if cursor.is_none() {
+            #[cfg(any(test, feature = "test-support"))]
+            self.trace_master_frame_rung(MasterFrameTestRung::Houses);
+            self.reconcile_active_vision_structures(rules);
+        }
         // Factory/production work has already completed in Phase 7. This early
         // House update follows optional vision reconciliation and precedes both
         // defeat processing and strategic AI command generation. Native anger
@@ -7304,7 +7439,16 @@ impl Simulation {
         // which construction and the frame-end pending-delete drain move: a
         // death reaches the gate on the next frame. Each house's strategy tick
         // (`house_strategy.rs`) and building choice follow its own gate.
-        let generated = self.house_rung(rules, overlay_registry, self.session.tick() > 0, effects);
+        let generated = match self.house_rung(
+            rules,
+            overlay_registry,
+            self.session.tick() > 0,
+            effects,
+            cursor,
+        ) {
+            Ok(generated) => generated,
+            Err(cursor) => return Ok(FrameTailResult::OutcomeWait(cursor)),
+        };
         self.issue_generated_frame_commands(generated);
         #[cfg(any(test, feature = "test-support"))]
         if self.session.tick() > 0 {
@@ -7365,13 +7509,13 @@ impl Simulation {
         spawned_entities: &mut bool,
         effects: FrameEffects<'_>,
         context: Option<NetworkQueueContext>,
-    ) -> Result<NetworkTailResult, FrameAdvanceError> {
+    ) -> Result<FrameTailResult, FrameAdvanceError> {
         let pass = if let Some(context) = context {
             match effects.exchange_commands(context, &mut self.network_command_queues()) {
                 Ok(pass) => pass,
                 Err(NetworkCommandError::Interrupted(reason)) => {
                     commands.extend(std::mem::take(&mut self.frame_command_admissions));
-                    return Ok(NetworkTailResult::Interrupted(reason));
+                    return Ok(FrameTailResult::Interrupted(reason));
                 }
                 Err(error) => {
                     return Err(FrameAdvanceError::new(
@@ -7387,9 +7531,7 @@ impl Simulation {
         };
         if pass == Some(NetworkQueuePass::Waiting) {
             commands.extend(std::mem::take(&mut self.frame_command_admissions));
-            return Ok(NetworkTailResult::Waiting(
-                context.expect("network context"),
-            ));
+            return Ok(FrameTailResult::Waiting(context.expect("network context")));
         }
 
         // Queue_AI follows Logic, including Strip and House-generated events.
@@ -7430,7 +7572,7 @@ impl Simulation {
                 ));
             }
             Err((NetworkCommandError::Interrupted(reason), _, _)) => {
-                return Ok(NetworkTailResult::Interrupted(reason));
+                return Ok(FrameTailResult::Interrupted(reason));
             }
         };
         commands.extend(std::mem::take(&mut self.frame_command_admissions));
@@ -7441,11 +7583,11 @@ impl Simulation {
         if failure.is_some() {
             //64CCEB's modal precedes Queue_AI clearing GameActive648266.
             //No retirement, staged MegaMission execution or frame commit yet.
-            return Ok(NetworkTailResult::Checksum(
+            return Ok(FrameTailResult::Checksum(
                 failure.expect("checksum failure"),
             ));
         }
-        Ok(NetworkTailResult::Complete(self.commit_frame_tail(
+        Ok(FrameTailResult::Complete(self.commit_frame_tail(
             rules,
             overlay_registry,
             tick_ms,
@@ -7688,25 +7830,97 @@ impl Simulation {
         Ok(self.collect_frame_output(frame?, effects))
     }
 
+    /// HouseClass::Update4F860F/4F8736 has not yet published its request.
+    pub fn pending_outcome_wait(&self) -> Option<crate::sim::house_state::HouseOutcomeKind> {
+        match &self.frame_continuation {
+            Some(FrameContinuation::Outcome(pending)) => Some(pending.cursor.kind),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn validate_frame_continuation_for_restore(&self) -> Result<(), &'static str> {
+        if let Some(FrameContinuation::Outcome(pending)) = &self.frame_continuation {
+            let owner = self
+                .houses
+                .order()
+                .get(pending.cursor.index)
+                .ok_or("outcome cursor has no House")?;
+            let kind = self.houses.get(owner).and_then(|house| {
+                house.pending_outcome(
+                    self.session.binary_frame() as i32,
+                    self.session.game_mode_nonzero(),
+                )
+            });
+            if kind != Some(pending.cursor.kind) {
+                return Err("outcome cursor disagrees with the waiting House result");
+            }
+            if pending.frame.execute_tick != self.session.tick().saturating_add(1) {
+                return Err("outcome cursor disagrees with the suspended frame");
+            }
+        }
+        Ok(())
+    }
+
+    /// Resume the saved House head, then its suffix and remaining frame.
+    /// Earlier object/House visits and input admission are never repeated.
+    pub fn resume_outcome_wait(
+        &mut self,
+        rules: &RuleSet,
+        overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
+        effects: FrameEffects<'_>,
+    ) -> Result<SimFrameOutput, FrameAdvanceError> {
+        if self.pending_outcome_wait().is_none() {
+            return Err(FrameAdvanceError::new(
+                self.session.tick(),
+                self.session.binary_frame(),
+                0,
+                "no House outcome wait is pending".to_owned(),
+            ));
+        }
+        let Some(FrameContinuation::Outcome(mut pending)) = self.frame_continuation.take() else {
+            unreachable!("checked House outcome continuation")
+        };
+        let effects = effects.with_overlay_registry(overlay_registry);
+        let result = self.run_late_region(
+            &mut pending.frame.commands,
+            rules,
+            overlay_registry,
+            pending.tick_ms,
+            pending.frame.execute_tick,
+            &mut pending.frame.executed_commands,
+            &mut pending.frame.spawned_entities,
+            effects,
+            Some(pending.cursor),
+        )?;
+        let output = self.complete_or_suspend_frame(
+            pending.frame,
+            pending.tick_ms,
+            result,
+            rules,
+            overlay_registry,
+            #[cfg(feature = "telemetry")]
+            None,
+        );
+        self.unit_voice_visit_interest.clear();
+        Ok(self.collect_frame_output(output, effects))
+    }
+
     /// The modal is client-owned; this world-owned continuation identifies
     /// the suspended native frame without permitting another Logic pass.
     pub fn pending_network_failure(&self) -> Option<crate::sim::command_queue::ChecksumMismatch> {
-        match self.network_frame_continuation.as_ref() {
-            Some(NetworkFrameContinuation::Checksum(pending)) => Some(pending.failure),
+        match self.frame_continuation.as_ref() {
+            Some(FrameContinuation::Checksum(pending)) => Some(pending.failure),
             _ => None,
         }
     }
 
     pub fn pending_network_wait(&self) -> bool {
-        matches!(
-            self.network_frame_continuation,
-            Some(NetworkFrameContinuation::Waiting(_))
-        )
+        matches!(self.frame_continuation, Some(FrameContinuation::Waiting(_)))
     }
 
     pub fn pending_network_interruption(&self) -> Option<NetworkInterruption> {
-        match self.network_frame_continuation.as_ref() {
-            Some(NetworkFrameContinuation::Interrupted(pending)) => Some(pending.interruption),
+        match self.frame_continuation.as_ref() {
+            Some(FrameContinuation::Interrupted(pending)) => Some(pending.interruption),
             _ => None,
         }
     }
@@ -7714,16 +7928,13 @@ impl Simulation {
     /// The app's native wait timeout supplies the failure result; no second
     /// Logic pass or attempted command decode runs before its error modal.
     pub fn interrupt_network_wait(&mut self, interruption: NetworkInterruption) -> bool {
-        let Some(NetworkFrameContinuation::Waiting(_)) = self.network_frame_continuation.as_ref()
-        else {
+        let Some(FrameContinuation::Waiting(_)) = self.frame_continuation.as_ref() else {
             return false;
         };
-        let Some(NetworkFrameContinuation::Waiting(pending)) =
-            self.network_frame_continuation.take()
-        else {
+        let Some(FrameContinuation::Waiting(pending)) = self.frame_continuation.take() else {
             unreachable!("checked wait continuation")
         };
-        self.network_frame_continuation = Some(NetworkFrameContinuation::Interrupted(
+        self.frame_continuation = Some(FrameContinuation::Interrupted(
             NetworkInterruptionContinuation {
                 interruption,
                 tick_ms: pending.tick_ms,
@@ -7743,8 +7954,8 @@ impl Simulation {
         effects: FrameEffects<'_>,
     ) -> Result<SimFrameOutput, FrameAdvanceError> {
         if !matches!(
-            self.network_frame_continuation,
-            Some(NetworkFrameContinuation::Checksum(_) | NetworkFrameContinuation::Interrupted(_))
+            self.frame_continuation,
+            Some(FrameContinuation::Checksum(_) | FrameContinuation::Interrupted(_))
         ) {
             return Err(FrameAdvanceError::new(
                 self.session.tick(),
@@ -7753,11 +7964,9 @@ impl Simulation {
                 "no checksum modal frame is pending".to_owned(),
             ));
         }
-        let (tick_ms, frame) = match self.network_frame_continuation.take() {
-            Some(NetworkFrameContinuation::Checksum(pending)) => (pending.tick_ms, pending.frame),
-            Some(NetworkFrameContinuation::Interrupted(pending)) => {
-                (pending.tick_ms, pending.frame)
-            }
+        let (tick_ms, frame) = match self.frame_continuation.take() {
+            Some(FrameContinuation::Checksum(pending)) => (pending.tick_ms, pending.frame),
+            Some(FrameContinuation::Interrupted(pending)) => (pending.tick_ms, pending.frame),
             _ => unreachable!("checked fatal network continuation"),
         };
         Ok(self.finish_aborted_network_frame(frame, tick_ms, rules, overlay_registry, effects))
@@ -7779,9 +7988,7 @@ impl Simulation {
                 "no network wait frame is pending".to_owned(),
             ));
         }
-        let Some(NetworkFrameContinuation::Waiting(pending)) =
-            self.network_frame_continuation.take()
-        else {
+        let Some(FrameContinuation::Waiting(pending)) = self.frame_continuation.take() else {
             unreachable!("checked wait continuation")
         };
         Ok(self.finish_aborted_network_frame(
@@ -7840,9 +8047,7 @@ impl Simulation {
                 "no network wait frame is pending".to_owned(),
             ));
         }
-        let Some(NetworkFrameContinuation::Waiting(mut pending)) =
-            self.network_frame_continuation.take()
-        else {
+        let Some(FrameContinuation::Waiting(mut pending)) = self.frame_continuation.take() else {
             unreachable!("checked wait continuation")
         };
         let effects = effects.with_overlay_registry(overlay_registry);
@@ -7860,7 +8065,7 @@ impl Simulation {
         let result = match result {
             Ok(result) => result,
             Err(error) => {
-                self.network_frame_continuation = Some(NetworkFrameContinuation::Waiting(pending));
+                self.frame_continuation = Some(FrameContinuation::Waiting(pending));
                 return Err(error);
             }
         };
@@ -7933,9 +8138,18 @@ impl Simulation {
             admitted_commands,
             network_failure,
             network_waiting,
+            outcome_waiting,
         } = frame;
-        let lighting_events = self.lighting_sources.take_pending();
-        let trigger_effects = std::mem::take(&mut self.trigger_effects);
+        let lighting_events = if outcome_waiting {
+            Vec::new()
+        } else {
+            self.take_lighting_events()
+        };
+        let trigger_effects = if outcome_waiting {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.trigger_effects)
+        };
         // Preserve the established terminal-frame gate: these are committed
         // light-vector facts and the next admitted frame clears the producer
         // buffer before combat runs.
@@ -7944,16 +8158,41 @@ impl Simulation {
         } else {
             Vec::new()
         };
-        let lifecycle_outputs = self.lifecycle_outputs.take();
-        let multiplayer_checksum = self.frame_sync_checksum.take();
-        let overlay_updates = std::mem::take(&mut self.frame_overlay_updates);
-        let overlay_removals = std::mem::take(&mut self.frame_overlay_removals);
-        let fire_events = self.fire_events.take();
+        // Shake writes happen synchronously at the detonation prologue, before
+        // a possible later frame wait. They are already-observed process
+        // presentation effects, so hand them off even when Logic suspends.
+        let screen_shake_updates = self.screen_shake_updates.take();
+        let lifecycle_outputs = if outcome_waiting {
+            Vec::new()
+        } else {
+            self.lifecycle_outputs.take()
+        };
+        let multiplayer_checksum = if outcome_waiting {
+            None
+        } else {
+            self.frame_sync_checksum.take()
+        };
+        let overlay_updates = if outcome_waiting {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.frame_overlay_updates)
+        };
+        let overlay_removals = if outcome_waiting {
+            Vec::new()
+        } else {
+            std::mem::take(&mut self.frame_overlay_removals)
+        };
+        let fire_events = if outcome_waiting {
+            Vec::new()
+        } else {
+            self.fire_events.take()
+        };
         let sound_events = self.sound_events.take();
         let sound_events_delivered = effects.delivered_sound_events();
         assert!(sound_events_delivered <= sound_events.len());
         SimFrameOutput {
             network_waiting,
+            outcome_waiting,
             network_failure,
             admitted_commands,
             tick,
@@ -7965,6 +8204,7 @@ impl Simulation {
             sound_events_delivered,
             fire_events,
             combat_lights,
+            screen_shake_updates,
             lighting_events,
             multiplayer_checksum,
         }
@@ -7989,12 +8229,12 @@ impl Simulation {
         poll_triggers: bool,
         effects: FrameEffects<'_>,
     ) -> Result<MasterFrameOutput, FrameAdvanceError> {
-        if self.network_frame_continuation.is_some() {
+        if self.frame_continuation.is_some() {
             return Err(FrameAdvanceError::new(
                 self.session.tick(),
                 self.session.binary_frame(),
                 0,
-                "pending network frame must be resumed before another Logic visit".to_owned(),
+                "pending frame must be resumed before another Logic visit".to_owned(),
             ));
         }
         #[cfg(feature = "telemetry")]
@@ -8016,6 +8256,7 @@ impl Simulation {
         // A failed earlier frame never reached collection; drop its value.
         self.frame_sync_checksum = None;
         self.combat_light_requests.discard();
+        self.screen_shake_updates.discard();
         // The wrapping native frame counter is committed LATE (end of this fn,
         // beside self.session.tick) so every phase sees the same pre-increment
         // frame N. execute_tick stays here: command scheduling below filters on
@@ -8043,7 +8284,7 @@ impl Simulation {
         profile_phase!(COMMANDS_INGRESS);
 
         let mut commands = if lane == TickLane::Ordinary {
-            self.admit_frame_commands(commands, rules)
+            self.admit_frame_commands(commands, rules, effects)
         } else {
             Vec::new()
         };
@@ -8070,11 +8311,13 @@ impl Simulation {
         }
         profile_phase!(TRIGGERS);
 
+        self.tick_shroud_growth(UninitContext::new(rules, overlay_registry).with_effects(effects));
         // Logic55B29A/55B2AD: consume prior pending conceal at the signed
         // pre-increment native frame boundary, before ore, Teams and live objects.
         self.tick_pending_shroud_conceal(
             UninitContext::new(rules, overlay_registry).with_effects(effects),
         );
+        self.tick_fog_regrowth(UninitContext::new(rules, overlay_registry).with_effects(effects));
         profile_phase!(SHROUD);
 
         // Interleaved object-AI pass: each object's mission precedes its own
@@ -8124,7 +8367,7 @@ impl Simulation {
         profile_phase!(SUPERWEAPONS);
         self.radiation.tick_decay(
             self.session.binary_frame(),
-            &rules.radiation,
+            rules,
             self.resolved_terrain.as_ref(),
             &mut self.lighting_sources,
         );
@@ -8205,17 +8448,7 @@ impl Simulation {
         if let Some(overlay_registry) = overlay_registry {
             #[cfg(any(test, feature = "test-support"))]
             self.trace_master_frame_rung(MasterFrameTestRung::CrateRegen);
-            let normal_lighting = self
-                .session
-                .lighting()
-                .profile(crate::sim::scenario_session::ScenarioLightingProfile::Normal)
-                .into();
-            let regen = crate::sim::crates::tick_crate_regeneration(
-                self,
-                rules,
-                overlay_registry,
-                normal_lighting,
-            );
+            let regen = crate::sim::crates::tick_crate_regeneration(self, rules, overlay_registry);
             if regen.visible != 0 {
                 // Native Mark mutates live CellClass land/zone/bridge state
                 // synchronously. Rust's BridgeRuntimeState records are a
@@ -8268,6 +8501,7 @@ impl Simulation {
             &mut executed_commands,
             &mut spawned_entities,
             effects,
+            None,
         )?;
         profile_phase!(LATE_AI);
         bridge_state_changed |= self
@@ -8298,12 +8532,12 @@ impl Simulation {
         &mut self,
         frame: FrameCompletion,
         tick_ms: u32,
-        result: NetworkTailResult,
+        result: FrameTailResult,
         rules: &RuleSet,
         overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
         #[cfg(feature = "telemetry")] frame_clock: Option<crate::sim::frame_profile::FrameClock>,
     ) -> MasterFrameOutput {
-        let frame_committed = if let NetworkTailResult::Complete(committed) = result {
+        let frame_committed = if let FrameTailResult::Complete(committed) = result {
             committed
         } else {
             let tick = TickResult {
@@ -8317,43 +8551,52 @@ impl Simulation {
                 ownership_changed: frame.ownership_changed,
                 bridge_state_changed: frame.bridge_state_changed,
             };
-            let (network_failure, network_waiting) = match result {
-                NetworkTailResult::Checksum(failure) => {
-                    self.network_frame_continuation = Some(NetworkFrameContinuation::Checksum(
-                        NetworkFailureContinuation {
+            let (network_failure, network_waiting, outcome_waiting) = match result {
+                FrameTailResult::Checksum(failure) => {
+                    self.frame_continuation =
+                        Some(FrameContinuation::Checksum(NetworkFailureContinuation {
                             failure,
                             tick_ms,
                             frame,
-                        },
-                    ));
-                    (Some(failure), false)
+                        }));
+                    (Some(failure), false, false)
                 }
-                NetworkTailResult::Waiting(context) => {
-                    self.network_frame_continuation =
-                        Some(NetworkFrameContinuation::Waiting(NetworkWaitContinuation {
+                FrameTailResult::Waiting(context) => {
+                    self.frame_continuation =
+                        Some(FrameContinuation::Waiting(NetworkWaitContinuation {
                             context,
                             tick_ms,
                             frame,
                         }));
-                    (None, true)
+                    (None, true, false)
                 }
-                NetworkTailResult::Interrupted(interruption) => {
-                    self.network_frame_continuation = Some(NetworkFrameContinuation::Interrupted(
+                FrameTailResult::Interrupted(interruption) => {
+                    self.frame_continuation = Some(FrameContinuation::Interrupted(
                         NetworkInterruptionContinuation {
                             interruption,
                             tick_ms,
                             frame,
                         },
                     ));
-                    (None, false)
+                    (None, false, false)
                 }
-                NetworkTailResult::Complete(_) => unreachable!(),
+                FrameTailResult::OutcomeWait(cursor) => {
+                    self.frame_continuation =
+                        Some(FrameContinuation::Outcome(HouseOutcomeContinuation {
+                            cursor,
+                            tick_ms,
+                            frame,
+                        }));
+                    (None, false, true)
+                }
+                FrameTailResult::Complete(_) => unreachable!(),
             };
             return MasterFrameOutput {
                 tick,
                 admitted_commands: Vec::new(),
                 network_failure,
                 network_waiting,
+                outcome_waiting,
             };
         };
         self.finish_master_frame(
@@ -8469,6 +8712,7 @@ impl Simulation {
         MasterFrameOutput {
             network_failure: None,
             network_waiting: false,
+            outcome_waiting: false,
             admitted_commands: commands,
             tick: TickResult {
                 tick: self.session.tick(),

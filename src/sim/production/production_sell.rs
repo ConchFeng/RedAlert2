@@ -66,8 +66,6 @@ use crate::sim::mission::{MissionId, MissionType};
 use crate::sim::world::FrameEffects;
 use crate::sim::world::{SimSoundEvent, Simulation, UninitContext};
 
-use crate::rules::foundation::foundation_dimensions;
-
 #[cfg(test)]
 #[path = "pack_voice_tests.rs"]
 mod pack_voice_tests;
@@ -445,19 +443,26 @@ pub fn sell_stage_zero(
                 sound_id,
             });
         }
+        // `0x0044A9F9..0x0044AA38`: at the building's Location, its
+        // north-west cell centre (not the foundation centre).
         let sound = sim.substrate.entities.get(id).and_then(|entity| {
             let sound = sim
                 .object_type(entity.type_ref(), rules)?
                 .deploy_sound
                 .clone()?;
-            Some((sound, entity.position.rx(), entity.position.ry()))
+            Some((
+                sound,
+                crate::sim::movement::ground_pose::object_location(
+                    entity,
+                    sim.resolved_terrain.as_ref(),
+                ),
+            ))
         });
-        if let Some((sound, rx, ry)) = sound {
+        if let Some((sound, location)) = sound {
             let deploy_sound_id = sim.interner.intern(&sound);
             sim.sound_events.emit(SimSoundEvent::EntityDeployed {
                 deploy_sound_id,
-                rx,
-                ry,
+                world: location.into(),
             });
         }
         //44AA3D..44AA9F: only a different archived Cell with LandType5
@@ -660,7 +665,7 @@ fn sale_sounds(sim: &mut Simulation, rules: &RuleSet, id: u64) {
             Some((
                 entity.owner(),
                 entity.position,
-                undeploys(rules, object) && foundation_dimensions(&object.foundation) == (1, 1),
+                undeploys(rules, object) && object.foundation.dimensions() == (1, 1),
                 object.packup_sound.clone(),
             ))
         })

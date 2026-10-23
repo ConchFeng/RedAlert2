@@ -71,6 +71,7 @@ const CHECKPOINT_CAMPAIGN_SOV1_OPENING_RESTORE_UNLOCKED: &str =
     "campaign-sov1-opening-restore-unlocked";
 const CHECKPOINT_CAMPAIGN_ALL1_OPENING_LOAD_UNLOCKED: &str = "campaign-all1-opening-load-unlocked";
 const CHECKPOINT_CAMPAIGN_ALL1_OPENING_TICK_PREFIX: &str = "campaign-all1-opening-tick-";
+const CHECKPOINT_CAMPAIGN_SOV1_OPENING_TICK_PREFIX: &str = "campaign-sov1-opening-tick-";
 const CHECKPOINT_CAMPAIGN_BACK_RETURN: &str = "campaign-back-return";
 const CHECKPOINT_LOAD_SAVED_GAME_0XB7_STEADY: &str = "load-saved-game-0xb7-steady";
 const CHECKPOINT_LOAD_SAVED_GAME_0XB7_ENTRY_PREFIX: &str = "load-saved-game-0xb7-entry-tick-";
@@ -398,6 +399,30 @@ impl ShellCaptureCheckpoint {
                 tick,
             )));
         }
+        if let Some(tick) = value.strip_prefix(CHECKPOINT_CAMPAIGN_SOV1_OPENING_TICK_PREFIX) {
+            let tick: u64 = tick
+                .parse()
+                .context("campaign encounter tick is not an integer")?;
+            ensure!(
+                (1..=10000).contains(&tick),
+                "campaign encounter tick must be 1..=10000"
+            );
+            return Ok(Self::CampaignOpening(movies::OpeningTarget::SovietTick(
+                tick,
+            )));
+        }
+        if let Some(tick) = value.strip_prefix("campaign-sov1-navy-tick-") {
+            let tick: u64 = tick
+                .parse()
+                .context("campaign encounter tick is not an integer")?;
+            ensure!(
+                (1100..=10000).contains(&tick),
+                "campaign encounter tick must be 1100..=10000"
+            );
+            return Ok(Self::CampaignOpening(movies::OpeningTarget::SovietNavy(
+                tick,
+            )));
+        }
         if let Some(frame) = value.strip_prefix(CHECKPOINT_CREDITS_ROLL_FRAME_PREFIX) {
             let frame: u64 = frame
                 .parse()
@@ -606,6 +631,21 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_CAMPAIGN_ALL1_SAVED_VICTORY => {
                 Ok(Self::CampaignRestart(movies::RestartTarget::SavedVictory))
             }
+            "campaign-sov6-alternate-home-victory" => Ok(Self::CampaignRestart(
+                movies::RestartTarget::AlternateHomeVictory,
+            )),
+            "campaign-sov1-inherited-timer-victory" => Ok(Self::CampaignRestart(
+                movies::RestartTarget::InheritedTimerVictory,
+            )),
+            "campaign-mapselect-failure-prompt" => Ok(Self::CampaignRestart(
+                movies::RestartTarget::MapSelectFailurePrompt,
+            )),
+            "campaign-mapselect-failure-replayed" => Ok(Self::CampaignRestart(
+                movies::RestartTarget::MapSelectFailureReplayed,
+            )),
+            "campaign-mapselect-failure-escape" => Ok(Self::CampaignRestart(
+                movies::RestartTarget::MapSelectFailureEscape,
+            )),
             CHECKPOINT_CAMPAIGN_ALL1_SAVED_RESTART => Ok(Self::CampaignRestart(
                 movies::RestartTarget::SavedAbortRestarted,
             )),
@@ -638,6 +678,12 @@ impl ShellCaptureCheckpoint {
             }
             "campaign-sov1-opening-timer-expired" => {
                 Ok(Self::CampaignOpening(movies::OpeningTarget::TimerExpired))
+            }
+            "campaign-sov2-radar-alert" => {
+                Ok(Self::CampaignOpening(movies::OpeningTarget::RadarAlert))
+            }
+            "campaign-sov2-radar-restored" => {
+                Ok(Self::CampaignOpening(movies::OpeningTarget::RadarRestored))
             }
             CHECKPOINT_CAMPAIGN_SOV1_OPENING_RESTORE_UNLOCKED => Ok(Self::CampaignOpening(
                 movies::OpeningTarget::RestoreUnlocked,
@@ -761,6 +807,21 @@ impl ShellCaptureCheckpoint {
             Self::CampaignRestart(movies::RestartTarget::SavedVictory) => {
                 CHECKPOINT_CAMPAIGN_ALL1_SAVED_VICTORY
             }
+            Self::CampaignRestart(movies::RestartTarget::AlternateHomeVictory) => {
+                "campaign-sov6-alternate-home-victory"
+            }
+            Self::CampaignRestart(movies::RestartTarget::InheritedTimerVictory) => {
+                "campaign-sov1-inherited-timer-victory"
+            }
+            Self::CampaignRestart(movies::RestartTarget::MapSelectFailurePrompt) => {
+                "campaign-mapselect-failure-prompt"
+            }
+            Self::CampaignRestart(movies::RestartTarget::MapSelectFailureReplayed) => {
+                "campaign-mapselect-failure-replayed"
+            }
+            Self::CampaignRestart(movies::RestartTarget::MapSelectFailureEscape) => {
+                "campaign-mapselect-failure-escape"
+            }
             Self::CampaignRestart(movies::RestartTarget::SavedAbortRestarted) => {
                 CHECKPOINT_CAMPAIGN_ALL1_SAVED_RESTART
             }
@@ -797,11 +858,21 @@ impl ShellCaptureCheckpoint {
             Self::CampaignOpening(movies::OpeningTarget::AlliedTick(_)) => {
                 "campaign-all1-opening-tick"
             }
+            Self::CampaignOpening(movies::OpeningTarget::SovietTick(_)) => {
+                "campaign-sov1-opening-tick"
+            }
+            Self::CampaignOpening(movies::OpeningTarget::SovietNavy(_)) => {
+                "campaign-sov1-navy-tick"
+            }
             Self::CampaignOpening(movies::OpeningTarget::TimerRunning) => {
                 "campaign-sov1-opening-timer-running"
             }
             Self::CampaignOpening(movies::OpeningTarget::TimerExpired) => {
                 "campaign-sov1-opening-timer-expired"
+            }
+            Self::CampaignOpening(movies::OpeningTarget::RadarAlert) => "campaign-sov2-radar-alert",
+            Self::CampaignOpening(movies::OpeningTarget::RadarRestored) => {
+                "campaign-sov2-radar-restored"
             }
             Self::CampaignBackReturn => CHECKPOINT_CAMPAIGN_BACK_RETURN,
             Self::LoadSavedGame0xB7Steady => CHECKPOINT_LOAD_SAVED_GAME_0XB7_STEADY,
@@ -939,14 +1010,14 @@ impl ShellCaptureCheckpoint {
                 side,
                 target: movies::CampaignStartTarget::AbortReturn,
             },
-            Self::CampaignRestart(movies::RestartTarget::ObjectiveExpiry) => {
-                movies::MoviesTarget::CampaignStart {
-                    side: crate::ui::campaign_shell::CampaignSide::Soviet,
-                    target: movies::CampaignStartTarget::Restart(
-                        movies::RestartTarget::ObjectiveExpiry,
-                    ),
-                }
-            }
+            Self::CampaignRestart(
+                target @ (movies::RestartTarget::ObjectiveExpiry
+                | movies::RestartTarget::AlternateHomeVictory
+                | movies::RestartTarget::InheritedTimerVictory),
+            ) => movies::MoviesTarget::CampaignStart {
+                side: crate::ui::campaign_shell::CampaignSide::Soviet,
+                target: movies::CampaignStartTarget::Restart(target),
+            },
             Self::CampaignRestart(target) => movies::MoviesTarget::CampaignStart {
                 side: crate::ui::campaign_shell::CampaignSide::Allied,
                 target: movies::CampaignStartTarget::Restart(target),
@@ -1694,9 +1765,17 @@ impl ShellCaptureSession {
             .started_at
             .context("shell capture was not initialized")?;
         self.frames_seen = self.frames_seen.saturating_add(1);
+        // Campaign movies/menu frames precede the requested simulation tick.
+        // Keep that presentation overhead separate from the bounded play run.
+        let frame_limit = match self.request.checkpoint {
+            ShellCaptureCheckpoint::CampaignOpening(
+                movies::OpeningTarget::SovietTick(tick) | movies::OpeningTarget::SovietNavy(tick),
+            ) => MAX_CAPTURE_FRAMES + tick as u32,
+            _ => MAX_CAPTURE_FRAMES,
+        };
         ensure!(
-            self.frames_seen <= MAX_CAPTURE_FRAMES,
-            "shell capture exceeded {MAX_CAPTURE_FRAMES} frames"
+            self.frames_seen <= frame_limit,
+            "shell capture exceeded {frame_limit} frames"
         );
         ensure!(
             started_at.elapsed() <= self.timeout(),
@@ -2648,6 +2727,15 @@ mod tests {
                 },
             ),
             (
+                "campaign-sov6-alternate-home-victory",
+                movies::MoviesTarget::CampaignStart {
+                    side: Soviet,
+                    target: movies::CampaignStartTarget::Restart(
+                        movies::RestartTarget::AlternateHomeVictory,
+                    ),
+                },
+            ),
+            (
                 CHECKPOINT_CAMPAIGN_ALL1_ABORT_RETURN,
                 movies::MoviesTarget::CampaignStart {
                     side: Allied,
@@ -2793,6 +2881,16 @@ mod tests {
                 Soviet,
             ),
             (
+                "campaign-sov2-radar-alert",
+                movies::OpeningTarget::RadarAlert,
+                Soviet,
+            ),
+            (
+                "campaign-sov2-radar-restored",
+                movies::OpeningTarget::RadarRestored,
+                Soviet,
+            ),
+            (
                 CHECKPOINT_CAMPAIGN_SOV1_OPENING_RESTORE_UNLOCKED,
                 movies::OpeningTarget::RestoreUnlocked,
                 Soviet,
@@ -2840,6 +2938,37 @@ mod tests {
                 ShellCaptureCheckpoint::parse(&format!("campaign-all1-opening-tick-{value}"))
                     .is_err()
             );
+        }
+    }
+
+    #[test]
+    fn soviet_encounter_captures_select_the_real_campaign_and_bound_play_inputs() {
+        use crate::ui::campaign_shell::CampaignSide;
+        for (name, target) in [
+            (
+                "campaign-sov1-opening-tick-1500",
+                movies::OpeningTarget::SovietTick(1500),
+            ),
+            (
+                "campaign-sov1-navy-tick-6500",
+                movies::OpeningTarget::SovietNavy(6500),
+            ),
+        ] {
+            assert_eq!(
+                ShellCaptureCheckpoint::parse(name).unwrap().movies_target(),
+                Some(movies::MoviesTarget::CampaignStart {
+                    side: CampaignSide::Soviet,
+                    target: movies::CampaignStartTarget::Opening(target),
+                })
+            );
+        }
+        for invalid in [
+            "campaign-sov1-opening-tick-0",
+            "campaign-sov1-navy-tick-1099",
+            "campaign-sov1-navy-tick-10001",
+            "campaign-sov1-navy-tick-not-a-tick",
+        ] {
+            assert!(ShellCaptureCheckpoint::parse(invalid).is_err());
         }
     }
 

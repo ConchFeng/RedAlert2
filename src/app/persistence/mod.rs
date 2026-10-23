@@ -68,7 +68,7 @@ impl PersistenceState {
         true
     }
 
-    fn initial_campaign_save_pending(&self, campaign: bool) -> bool {
+    pub(crate) fn initial_campaign_save_pending(&self, campaign: bool) -> bool {
         campaign && !self.initial_campaign_save_attempted
     }
 
@@ -123,6 +123,8 @@ pub(crate) enum PreparedLoadError {
     Terrain(#[from] crate::map::resolved_terrain::SavedTerrainError),
     #[error(transparent)]
     LocalView(#[from] crate::sim::snapshot::saved_local_view::SavedLocalViewError),
+    #[error(transparent)]
+    RadarEvents(#[from] crate::render::radar::SavedRadarEventsError),
 }
 
 /// Fully validated, cache-rebuilt replacement state ready for one infallible commit.
@@ -130,6 +132,7 @@ pub(crate) struct PreparedLoad {
     simulation: Simulation,
     map_restore: SnapshotMapRestoreOutput,
     sinking_waterlines: Vec<(u64, i16)>,
+    anim_intensities: Vec<(u64, i32)>,
     tactical_view: Option<crate::sim::snapshot::SavedTacticalView>,
     sidebar_order: Option<crate::app::sidebar_projection::PreparedSidebarOrder>,
 }
@@ -138,6 +141,7 @@ pub(crate) struct PreparedLoad {
 pub(crate) struct CommittedLoadPresentation {
     pub(crate) occupied_overlays: Vec<crate::map::overlay::OverlayEntry>,
     pub(crate) sinking_waterlines: Vec<(u64, i16)>,
+    pub(crate) anim_intensities: Vec<(u64, i32)>,
     pub(crate) tactical_view: Option<crate::sim::snapshot::SavedTacticalView>,
     pub(crate) sidebar_order: Option<crate::app::sidebar_projection::PreparedSidebarOrder>,
 }
@@ -305,6 +309,8 @@ impl PreparedLoad {
         // do not infer +3CA from current height or from the sinking byte.
         let mut sinking_waterlines = snapshot.sinking_waterlines;
         sinking_waterlines.retain(|(id, _)| simulation.entities().contains(*id));
+        let mut anim_intensities = snapshot.anim_intensities;
+        anim_intensities.retain(|(id, _)| simulation.anim(*id).is_some());
         // MouseLoad5BDF70 preserves the four strip lists; no-init5BE9B0
         // resets their progress only. Hydration is fallible and borrows no
         // outgoing projection, so a rejected save cannot replace its order.
@@ -318,6 +324,7 @@ impl PreparedLoad {
             simulation,
             map_restore,
             sinking_waterlines,
+            anim_intensities,
             sidebar_order,
             tactical_view,
         })
@@ -347,6 +354,7 @@ impl PreparedLoad {
             CommittedLoadPresentation {
                 occupied_overlays: self.map_restore.occupied_overlays,
                 sinking_waterlines: self.sinking_waterlines,
+                anim_intensities: self.anim_intensities,
                 sidebar_order: self.sidebar_order,
                 tactical_view: self.tactical_view,
             },

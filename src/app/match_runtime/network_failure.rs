@@ -160,8 +160,9 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
     let (x, y) = state.match_state.input.cursor_px();
     if pressed {
         state.frontend.shell_controller.on_pointer_down(x, y, &feed);
+        // The box's owner-draw OK plays GUIMainButtonSound (0x0061376B).
         if state.frontend.shell_controller.pressed().is_some() {
-            App::play_skirmish_shell_generic_click_sound(state);
+            App::play_main_menu_button_sound(state);
         }
     } else {
         state

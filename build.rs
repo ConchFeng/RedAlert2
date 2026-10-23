@@ -20,7 +20,7 @@ fn main() {
 /// another host leaves them out.
 #[cfg(windows)]
 fn embed_windows_resources() {
-    // Rendered from .github/release/icon.svg by icon.sh beside it.
+    // Red Alert 2's own icon: the 32-bit images of retail game.exe's icon group.
     const ICON: &str = r".github\release\windows\vera20k.ico";
     println!("cargo::rerun-if-changed={ICON}");
     let mut resource = winresource::WindowsResource::new();

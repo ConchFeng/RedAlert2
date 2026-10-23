@@ -654,7 +654,10 @@ fn bfrt_unloads_one_per_dispatch_in_reverse_boarding_order_while_turning() {
         .sim
         .sound_events
         .iter()
-        .filter(|e| matches!(e, SimSoundEvent::LeaveTransport { rx: 20, ry: 20, .. }))
+        .filter(|e| {
+            matches!(e, SimSoundEvent::LeaveTransport { world, .. }
+                if world.to_cell_sub_z().0 == 20 && world.to_cell_sub_z().1 == 20)
+        })
         .count();
     assert!(leave_sounds >= 1, "LeaveTransportSound at the transport");
 

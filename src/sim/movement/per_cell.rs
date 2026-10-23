@@ -317,6 +317,10 @@ impl Simulation {
                 return;
             };
             let coord = position_world_coord(&crusher.position);
+            // `0x007418AA..0x007418DC`: the CrushSound plays at the
+            // crusher's Location `[EDI+0x9C..0xA4]`.
+            let crusher_location =
+                super::ground_pose::object_location(crusher, self.resolved_terrain.as_ref());
             let capability = super::bump_crush::CrushCapability::new(
                 crusher.mover_facts.regular_crusher(),
                 crusher.mover_facts.omni_crusher(),
@@ -337,7 +341,7 @@ impl Simulation {
             if let Some(entity) = self.substrate.entities.get(victim) {
                 super::bump_crush::emit_crush_kill_sounds_at(
                     entity,
-                    (i32::from(at.0), i32::from(at.1)),
+                    crusher_location,
                     rules,
                     &mut self.interner,
                     &mut self.sound_events,

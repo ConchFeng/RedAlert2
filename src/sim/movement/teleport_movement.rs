@@ -46,12 +46,16 @@ pub(crate) enum WarpSound {
 }
 
 impl crate::sim::world::Simulation {
-    /// One warp sound at the owner's cell: the type's
+    /// One warp sound at the owner's current Location: the type's
     /// ChronoOutSound/ChronoInSound (TechnoType+0x578/+0x574), else
-    /// `[AudioVisual]` (Rules+0x21C/+0x218), else silence.
+    /// `[AudioVisual]` (Rules+0x21C/+0x218), else silence. Out plays at the
+    /// departure point (`0x0071960A..0x0071962C`, state 2 `0x007198CE`), In at
+    /// the arrival point after SetHeight(0) and Mark(DOWN)
+    /// (`0x007196EE..0x00719710`, state 5 `0x00719A70`).
     pub(crate) fn teleport_warp_sound(
         interner: &mut StringInterner,
         substrate: &ObjectSubstrate,
+        terrain: Option<&ResolvedTerrainGrid>,
         sound_events: &mut FrameChannel<SimSoundEvent>,
         id: u64,
         sound: WarpSound,
@@ -60,7 +64,7 @@ impl crate::sim::world::Simulation {
         let Some(entity) = substrate.entities.get(id) else {
             return;
         };
-        let (rx, ry) = (entity.position.rx(), entity.position.ry());
+        let world = super::ground_pose::object_location(entity, terrain).into();
         let object = interner.object_type(entity.type_ref(), rules);
         let name = match sound {
             WarpSound::Out => object
@@ -72,11 +76,7 @@ impl crate::sim::world::Simulation {
         };
         if let Some(name) = name {
             let sound_id = interner.intern(&name);
-            sound_events.emit(crate::sim::world::SimSoundEvent::ChronoTeleport {
-                sound_id,
-                rx,
-                ry,
-            });
+            sound_events.emit(crate::sim::world::SimSoundEvent::ChronoTeleport { sound_id, world });
         }
     }
 

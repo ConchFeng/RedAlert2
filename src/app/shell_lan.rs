@@ -125,6 +125,7 @@ impl App {
     /// MainMenu52E418 and setup-return5DC624/5DC964 construct a fresh BB.
     /// The retained preference owner supplies the edit; admission stays empty.
     pub(crate) fn open_lan_lobby(state: &mut AppState) {
+        crate::app::shell_main_menu::clear_typed_codes_for_network_session(state);
         Self::prepare_multiplayer_settings(
             state,
             crate::app::shell_main_menu::MultiplayerSettingsContext::Shell,
@@ -406,12 +407,15 @@ pub(crate) fn dispatch(state: &mut AppState, action: LanLobbyAction) {
                 .push(LanServiceRequest::NameChanged(value.clone()));
             // Local discovery row is a projection. It is always first only
             // when looking at the Lobby sentinel, never a selected game's roster.
+            // 0x541's handler rebuilds the roster (0x005DAFE0), so a selected
+            // own row loses its selection with its old name.
             if runtime.lobby.game_list.selected == Some(0) {
-                if let Some(local) = runtime.lobby.players.first_mut() {
-                    local.name = value;
-                } else {
-                    runtime.lobby.players.push(local_lobby_row(&value));
+                let mut players = runtime.lobby.players.clone();
+                match players.first_mut() {
+                    Some(local) => local.name = value,
+                    None => players.push(local_lobby_row(&value)),
                 }
+                runtime.lobby.replace_players(players);
             }
         }
         LanLobbyAction::SendChat(message) => {
@@ -746,6 +750,30 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
                 if let Some(action) = join {
                     dispatch(state, action);
                 }
+                App::play_launcher_options_cue(state, LauncherCue::GenericClick);
+            }
+        } else if control == Some(PLAYERS) {
+            let geometry =
+                lobby
+                    .player_list
+                    .geometry(layout.players, lobby.players.len(), layout.page.scale);
+            // A double-click's second press only notifies LBN_DBLCLK
+            // (0x0061A904..0x0061A945), which this dialog ignores.
+            // RESIDUAL: native also focuses the list (SetFocus, 0x0061A9CB),
+            // which would stop chat typing; VERA keeps chat focus, as for the
+            // games list.
+            let double = crate::ui::shell::list::is_double_click(
+                &mut lobby.player_list.last_press,
+                Instant::now(),
+                x,
+                y,
+                crate::ui::shell::saved_file_input::host_double_click_limits(),
+            );
+            if !double
+                && let Some(row) =
+                    geometry.row_at(lobby.players.len(), lobby.player_list.top_index, x, y)
+                && lobby.select_player(row)
+            {
                 App::play_launcher_options_cue(state, LauncherCue::GenericClick);
             }
         } else if matches!(control, Some(OBSERVER_IMAGE | OBSERVER_TOGGLE)) {

@@ -4,6 +4,61 @@ use super::*;
 use crate::util::save_codec;
 
 #[test]
+fn checked_digest_removal_preserves_the_sorted_duplicate_section_order() {
+    // ReadCCFile47425B sorts the section index through ReadUUBlock526FB0;
+    // Clear47427D/RemoveKey52B2B0 compacts that sorted array without sorting
+    // its survivors again. Base64_Decode42FF14 emits a byte even for "A".
+    let text = concat!(
+        "[Map]\nTheater=NEWURBAN\n",
+        "[IsoMapPack5]\n1=AAAA\n",
+        "[Basic]\nName=Digest history\n",
+        "[Triggers]\nROOT=First\n",
+        "[Events]\nROOT=1,13,0,5\n",
+        "[Actions]\nROOT=1,67,0,0,0,0,0,0,A\n",
+        "[Tags]\nROOT_TAG=0,Announce victory,ROOT\n",
+        "[Triggers]\nROOT=Second\n",
+        "[Digest]\n1=A\n",
+    );
+    let mut checked = IniFile::from_str(text);
+    assert_eq!(checked.section_count(), 9);
+    assert_eq!(
+        checked
+            .section_or_empty("Triggers")
+            .read_string("ROOT", "", 32),
+        "Second"
+    );
+
+    checked.remove_digest_for_checked_load();
+
+    assert!(checked.section("Digest").is_none());
+    assert_eq!(checked.section_count(), 8);
+    assert_eq!(
+        checked
+            .section_or_empty("Triggers")
+            .read_string("ROOT", "", 32),
+        "Second"
+    );
+    let fresh = IniFile::from_str(text.strip_suffix("[Digest]\n1=A\n").unwrap());
+    assert_eq!(
+        fresh
+            .section_or_empty("Triggers")
+            .read_string("ROOT", "", 32),
+        "First"
+    );
+}
+
+#[test]
+fn packed_reader_visits_duplicate_physical_keys_through_the_value_index() {
+    // ReadUUBlock526FB0 uses the physical entry count at52708C and walks
+    // each physical key at5270C5, then resolves its value at527108.
+    let ini = IniFile::from_str("[PreviewPack]\nROOT=QQ==\nROOT=Qg==\nSHOW=Qw==\n");
+    assert_eq!(
+        ini.section_or_empty("PreviewPack").read_packed_text(),
+        "Qg==Qg==Qw=="
+    );
+}
+
+#[test]
 fn saved_standalone_reader_body_rejects_inconsistent_indexes() {
     let ini = IniFile::from_str("[E1]\nCost=100\nStrength=125\n");
     let section = ini.section("E1").unwrap();
@@ -178,11 +233,37 @@ fn omitted_fixture_key_preserves_source_order_case_and_reader_defaults() {
 }
 
 #[test]
-fn duplicate_key_compatibility_lookup_keeps_first_definition() {
-    let ini = IniFile::from_str("[General]\nBuildSpeed=.7\nBuildSpeed=.58\n");
+fn fresh_duplicate_lookup_keeps_physical_bytes_and_projection_copy_separate() {
+    // FindEntryByNames526B10 -> signed CRC qsort52B6A0 and midpoint52B6D0.
+    // The original physical ROOT/ROOT/SHOW control selects the second ROOT;
+    // SaveToPipe526470 still writes both original values, in physical order.
+    let ini = IniFile::from_str("[Triggers]\nROOT=First\nROOT=Second\nSHOW=Show\n");
+    let section = ini.section("Triggers").unwrap();
+    assert_eq!(section.read_string("ROOT", "", 32), "Second");
     assert_eq!(
-        ini.section("General").unwrap().get("BuildSpeed"),
-        Some(".7")
+        ini.save_to_pipe(None),
+        b"[Triggers]\r\nROOT=First\r\nROOT=Second\r\nSHOW=Show\r\n"
+    );
+
+    // Include copies remain the existing compatibility policy; an ordered
+    // Rules pass instead projects the value the physical native reader saw.
+    let mut included = IniFile::empty();
+    included.merge(&ini);
+    assert_eq!(
+        included
+            .section("Triggers")
+            .unwrap()
+            .read_string("ROOT", "", 32),
+        "First"
+    );
+    let mut projected = IniFile::empty();
+    projected.merge_rules_projection(&ini);
+    assert_eq!(
+        projected
+            .section("Triggers")
+            .unwrap()
+            .read_string("ROOT", "", 32),
+        "Second"
     );
 }
 

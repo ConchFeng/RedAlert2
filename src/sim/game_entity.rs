@@ -32,6 +32,8 @@ use crate::sim::radio::Contacts;
 use crate::sim::superweapon::invulnerability::InvulnerabilityState;
 use crate::sim::world::ObjectLifecycle;
 
+#[cfg(feature = "ares")]
+mod attach_effect;
 mod distributed_fire;
 mod emp;
 mod foot_air;
@@ -109,6 +111,10 @@ pub struct GameEntity {
     /// constructor remains zero and only the feature-gated EMP producer writes it.
     #[serde(default)]
     emp: emp::EmpState,
+    /// Ares builtin attachments: ordered instance vector, owned by attach_effect.
+    #[cfg(feature = "ares")]
+    #[serde(default)]
+    attach_effects: attach_effect::AttachEffects,
     /// Low word of the one raw Scenario RNG draw performed by the active-retail
     /// `TechnoClass` constructor (`0x006F3254`, stored at native `+0x3C8`).
     /// Later report-selection consumers read this persistent value; placement
@@ -223,6 +229,10 @@ pub struct GameEntity {
     /// sets the once-counted latch when it adds House+0x2F4.
     #[serde(default)]
     house_tracking_latches: crate::sim::house_tracking::InfantryTrackingLatches,
+    /// Phobos placement history, written only by the house-tracking owner.
+    #[cfg(feature = "phobos")]
+    #[serde(default)]
+    pub(crate) phobos_placement: crate::sim::house_tracking::PhobosPlacement,
     /// The raw signed type `Sight=`, a [`SightFacts`] that
     /// `sim::vision` owns.
     ///
@@ -1570,12 +1580,16 @@ impl GameEntity {
             cached_spatial_threat: Default::default(),
             tracking_facts: Default::default(),
             house_tracking_latches: Default::default(),
+            #[cfg(feature = "phobos")]
+            phobos_placement: Default::default(),
             #[cfg(feature = "debug-tools")]
             debug_log: None,
             stable_id,
             native_unique_id,
             native_cloak_displacement: crate::util::native_x87::NativeF32Bits::POSITIVE_ZERO,
             emp: Default::default(),
+            #[cfg(feature = "ares")]
+            attach_effects: Default::default(),
             techno_ctor_random_word,
             secret_lab_fallback: None,
             stage: crate::sim::stage::StageClass::constructed(construction_frame as i32),

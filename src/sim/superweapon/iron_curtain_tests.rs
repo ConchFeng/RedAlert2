@@ -442,9 +442,11 @@ fn the_launch_matches_native() {
                 SimSoundEvent::SuperWeaponLaunched {
                     owner: by,
                     sw_type: kind,
-                    rx,
-                    ry,
-                } if *by == owner && *kind == sw_type && (*rx, *ry) == cell => {
+                    world,
+                } if *by == owner
+                    && *kind == sw_type
+                    && (world.to_cell_sub_z().0, world.to_cell_sub_z().1) == cell =>
+                {
                     Some("eva EVA_IronCurtainActivated".to_string())
                 }
                 SimSoundEvent::RadarEvent { radar } => Some(format!(
@@ -780,6 +782,13 @@ fn retail_iron_curtain_through_production_frames() {
     assert_eq!(rules.bridge_warheads.c4_name, "Super");
     let (rules, mut sim, _) = world_with(rules, 64, &[]);
     let russians = sim.interner.intern("Russians");
+    // The Russians click as a human player: the DoList runs only human or
+    // PlayerControl Houses' events (0x0064C4FB..0x0064C50D), and SPECIAL_PLACE
+    // fires the sender House's own Super (0x004C78D6).
+    sim.houses
+        .get_mut(&russians)
+        .unwrap()
+        .set_is_human_for_test(true);
     let rhino = sim
         .spawn_object_at_height("HTNK", "Russians", 40, 40, 0, 0, &rules)
         .unwrap();
@@ -803,10 +812,11 @@ fn retail_iron_curtain_through_production_frames() {
     assert!(matches!(
         launch.as_slice(),
         [
-            SimSoundEvent::SuperWeaponLaunched { owner, sw_type: kind, rx: 40, ry: 40 },
+            SimSoundEvent::SuperWeaponLaunched { owner, sw_type: kind, world },
             SimSoundEvent::RadarEvent { radar },
         ] if *owner == russians
             && *kind == sw_type
+            && (world.to_cell_sub_z().0, world.to_cell_sub_z().1) == (40, 40)
             && radar.event_type == crate::sim::radar::RadarEventType::ImpactSilent
             && (radar.rx, radar.ry) == (40, 40)
     ));

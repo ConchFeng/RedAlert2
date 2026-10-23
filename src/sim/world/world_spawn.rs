@@ -19,7 +19,6 @@ use super::{
 };
 use crate::map::entities::{EntityCategory, MapEntity};
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::foundation::foundation_dimensions;
 use crate::rules::object_type::{Ability, ObjectCategory, ObjectType};
 use crate::rules::overlay_types::OverlayTypeRegistry;
 use crate::rules::ruleset::RuleSet;
@@ -394,7 +393,9 @@ impl Simulation {
         // PostMapInit68691C clears that context for starting-unit callbacks,
         // which use the separate runtime spawn path. This projection retains
         // the same admission context through all constructor/Unlimbo callbacks.
-        self.with_object_placement_scope(|sim| {
+        #[cfg(feature = "phobos")]
+        self.begin_phobos_map_objects();
+        let result = self.with_object_placement_scope(|sim| {
             let mut count: u32 = 0;
 
             for (entity_index, map_ent) in entities.iter().enumerate() {
@@ -643,7 +644,10 @@ impl Simulation {
 
             log::info!("Spawned {} entities", count);
             Ok(count)
-        })
+        });
+        #[cfg(feature = "phobos")]
+        self.finish_phobos_map_objects();
+        result
     }
 
     fn map_entity_owner_before_constructor(
@@ -1496,8 +1500,7 @@ impl Simulation {
             return None;
         }
         //458A92 reads Object5F5B90 -> Type45EC20's sentinel list once.
-        let foundation =
-            crate::rules::foundation::foundation_cell_offsets(building.type_facts.foundation());
+        let foundation = building.type_facts.foundation().cell_offsets();
         let origin = (
             crate::util::lepton::lepton_to_cell_packed(coord.x),
             crate::util::lepton::lepton_to_cell_packed(coord.y),
@@ -1861,6 +1864,14 @@ impl Simulation {
         ge.kill_record.reset_constructed();
 
         substrate.entities.insert(ge);
+        // Phobos TechnoExt::InitializeState, hook 0x006F42F7: every Foot
+        // requests the owner's existing tech-tree tail for Aux/NegTechnos.
+        #[cfg(feature = "phobos")]
+        if let Some(entity) = substrate.entities.get(stable_id)
+            && entity.category().is_foot()
+        {
+            houses.request_house_tech_tree_recheck(entity.owner());
+        }
         // The class constructors and InitFromType call Add_Tracking.
         Self::update_house_tracking(
             substrate,
@@ -2361,11 +2372,21 @@ impl Simulation {
                 // Native rounds FacingClass::Current, including wrap at 0xff80.
                 entity.body_facing_dir(self.session.binary_frame()),
                 yard_obj.construction_yard,
+                // The MCV's Location for `0x00739A21..0x00739A54`, read now:
+                // VERA uninits the MCV before that cue.
                 rules
                     .object(type_str)
                     .and_then(|obj| obj.deploy_sound.clone())
                     .filter(|sound| !sound.is_empty())
-                    .map(|sound| (sound, entity.position.rx(), entity.position.ry())),
+                    .map(|sound| {
+                        (
+                            sound,
+                            crate::sim::movement::ground_pose::object_location(
+                                entity,
+                                self.resolved_terrain.as_ref(),
+                            ),
+                        )
+                    }),
                 rules
                     .object(type_str)
                     .is_some_and(|obj| obj.resource_gatherer),
@@ -2728,12 +2749,11 @@ impl Simulation {
         // Unlimbo succeeded. This accompanies build-up; it is not a sound on
         // the turn request or an animation-completion cue. Stock MCVs use
         // PlaceBuilding -> uplace (RULESMD.INI / SOUNDMD.INI).
-        if let Some((sound, rx, ry)) = deploy_cue {
+        if let Some((sound, location)) = deploy_cue {
             let deploy_sound_id = self.interner.intern(&sound);
             self.sound_events.emit(SimSoundEvent::EntityDeployed {
                 deploy_sound_id,
-                rx,
-                ry,
+                world: location.into(),
             });
         }
 
@@ -2782,8 +2802,9 @@ impl Simulation {
     /// (`0x0044A146..0x0044A167`). The building's UnInit comes last. Not
     /// carried over: its Group (`+0x214`, `0x0044A04C`; VERA's control groups
     /// live in the app), AttachedTag (`+0x34`, `0x0044A0B4`) and looping sound
-    /// handles (`+0x4DC..+0x4F4`); a refused Unlimbo does not refund the
-    /// building's value (`0x0044A16B`).
+    /// handles (`+0x4DC..+0x4F4`). A refused Unit Unlimbo refunds the cached
+    /// building value to its current owner and retains the limbo constructor
+    /// (`0x0044A16B..0x0044A176`).
     pub(crate) fn finish_undeploy(
         &mut self,
         sid: u64,
@@ -2855,6 +2876,9 @@ impl Simulation {
             return;
         };
         let (new_sid, position) = self.store_with_constructor_managers(unit, rules, frame_effects);
+        // Selling449E74/449E80 caches the building's refund before its Limbo
+        // and the new Unit's Unlimbo. Those callbacks may change the owner.
+        let failed_unlimbo_refund = production::techno_refund(self, rules, sid);
         let targeters: Vec<u64> = self
             .substrate
             .entities
@@ -2886,7 +2910,18 @@ impl Simulation {
             outcome,
             RevealOutcome::Revealed { .. } | RevealOutcome::Consumed
         ) {
-            self.discard_constructed_limbo(new_sid, rules, frame_effects);
+            //44A16B..44A176 pays the cached signed amount to the live owner.
+            //The following tail never deletes the new Unit: its existing
+            //limbo identity/Tracking remain, including ShortGame's BaseUnit count.
+            if let Some(refund) = failed_unlimbo_refund
+                && let Some(owner) = self
+                    .substrate
+                    .entities
+                    .get(sid)
+                    .map(|entity| entity.owner())
+            {
+                crate::sim::credit_income::add_credits(&mut self.houses, owner, refund);
+            }
             self.uninit_with_context(
                 sid,
                 super::UninitContext::new(rules, overlay_registry).with_effects(frame_effects),
@@ -3029,9 +3064,9 @@ impl crate::sim::world::ObjectSubstrate {
 pub(super) fn deploy_origin_from_unit_cell(
     unit_rx: u16,
     unit_ry: u16,
-    foundation: &str,
+    foundation: &crate::rules::foundation::Foundation,
 ) -> (i16, i16) {
-    let (width, height) = foundation_dimensions(foundation);
+    let (width, height) = foundation.dimensions();
     let (x, y) = (unit_rx as i16, unit_ry as i16);
     if width > 2 || height > 2 {
         (x.wrapping_sub(1), y.wrapping_sub(1))
@@ -3056,8 +3091,12 @@ pub(super) fn deploy_origin_from_unit_cell(
 /// produced the wrong inverse.
 ///
 /// Verified against gamemd 2026-08-05.
-fn undeploy_unit_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16, u16) {
-    let (width, height) = foundation_dimensions(foundation);
+fn undeploy_unit_cell(
+    origin_rx: u16,
+    origin_ry: u16,
+    foundation: &crate::rules::foundation::Foundation,
+) -> (u16, u16) {
+    let (width, height) = foundation.dimensions();
     if width > 2 || height > 2 {
         (origin_rx.saturating_add(1), origin_ry.saturating_add(1))
     } else {
@@ -3068,3 +3107,7 @@ fn undeploy_unit_cell(origin_rx: u16, origin_ry: u16, foundation: &str) -> (u16,
 #[cfg(test)]
 #[path = "world_spawn/tests.rs"]
 mod techno_constructor_tests;
+
+#[cfg(test)]
+#[path = "failed_yard_repack_tests.rs"]
+mod failed_yard_repack_tests;

@@ -459,8 +459,40 @@ fn receive(state: &mut AppState, incoming: GlobalMessage, now: u32) -> anyhow::R
         }
         return Ok(());
     }
+    if incoming.payload.len() == crate::net::lan_messages::ingame::BEACON_LEN
+        && matches!(incoming.payload.first(), Some(0x20 | 0x21))
+    {
+        //48D7AA..48D7EF: no source or session check precedes the manager.
+        let message = crate::net::lan_messages::ingame::BeaconMessage::decode(&incoming.payload)?;
+        if state.match_state.live_network.is_some() && state.match_state.sim_runtime.is_some() {
+            super::match_runtime::beacons::receive(state, message.record());
+        }
+        return Ok(());
+    }
     let message = LanMessage::decode(&incoming.payload)?;
     if state.match_state.live_network.is_some() {
+        if message.kind() == LanMessageKind::Departure {
+            //ProcessGlobalPackets48D81A uses the active private endpoint;
+            //the packet name is irrelevant. This is not a synchronized EXIT.
+            let matched = &mut state.match_state;
+            let destroyed = if let (Some(live), Some(runtime)) =
+                (matched.live_network.as_mut(), matched.sim_runtime.as_mut())
+            {
+                super::match_runtime::network_match::receive_departure(
+                    &mut matched.session,
+                    &mut runtime.simulation,
+                    live,
+                    &mut matched.network_wait,
+                    incoming.source,
+                )
+            } else {
+                None
+            };
+            if let Some(destroyed) = destroyed {
+                super::match_runtime::network_match::post_connection_line(state, destroyed);
+            }
+            return Ok(());
+        }
         if let Some(chat) = message.in_game_chat_fields() {
             super::input::chat::receive_packet(
                 state,
@@ -1371,6 +1403,19 @@ fn drain_match_requests(state: &mut AppState) {
                     LanMessage::in_game_taunt(&local_name(state), color as u32, &game_name, byte)
                 {
                     send_sources(state, message.as_bytes(), recipients);
+                }
+            }
+            NetworkLoadingRequest::Beacon(record) => {
+                if let Ok(message) = crate::net::lan_messages::ingame::BeaconMessage::new(
+                    &local_name(state),
+                    record,
+                ) {
+                    let peers: Vec<_> =
+                        super::match_runtime::network_match::nodes(&state.match_state.session)
+                            .into_iter()
+                            .skip(1)
+                            .collect();
+                    send_sources(state, message.as_bytes(), peers);
                 }
             }
             // The co-op round service retains these until its packet family

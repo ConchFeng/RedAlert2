@@ -11,7 +11,7 @@
 //! screen to a shell dialog, (re)starts/advances the wave on entry edges, plays
 //! the slide-in start cue, and dispatches the per-frame shell repaint while the
 //! wave is live. The slide-in start cue is `GUIMoveInSound` (stock `MenuSlideIn`);
-//! the stock-empty end cue (`ShellButtonSlideSound`) stays silent.
+//! the end cue `ShellButtonSlideSound` is empty in stock rules.
 
 use std::time::{Duration, Instant};
 
@@ -943,8 +943,7 @@ pub(crate) fn poll_main_menu_first_paint_before_acquire(
             let generation = wave
                 .presented_generation()
                 .expect("presented poll has generation");
-            // Active-retail stock leaves ShellButtonSlideSound empty, but the
-            // completion hook remains a named lifecycle edge.
+            // The slide-in's end cue precedes its SHOW completion (`0x00607F59`).
             crate::app::App::play_shell_slide_completion_sound(state);
             let title = crate::app::frontend::main_menu_shell_render::main_menu_title_text(state)
                 .into_owned();
@@ -1152,6 +1151,10 @@ pub(crate) fn render_shell_first_paint_slide(
     }
 
     let completion = ShellLifecycleReducer::from_state(state).finish_completed_wave(kind);
+    // The slide-in's end cue precedes its SHOW completion (`0x00607F59`).
+    if completion.is_some() {
+        crate::app::App::play_shell_slide_completion_sound(state);
+    }
     match completion {
         // `0x102`'s SHOW completion: its own statics start, or repaint when
         // the dialog shows again after Choose Map.

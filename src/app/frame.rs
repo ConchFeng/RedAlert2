@@ -31,6 +31,61 @@ const MAIN_MENU_SHELL_PRELUDE: &[ShellFramePreludeStep] = &[
 pub(super) struct RuntimeServiceResult {
     pub(super) quit_requested: bool,
     pub(super) main_tick_admitted: bool,
+    /// Offset selected for this service's draw: normal Input result, the
+    /// paused render-before-Input snapshot, or the last presented freeze value.
+    pub(super) screen_shake_offset: Option<[i32; 2]>,
+}
+
+/// The composition's full-height battlefield/command-bar region. Native
+/// UpdatePrimarySurface @0x004F4780 copies the composite into primary pixels
+/// and keeps the sidebar surface fixed; it shifts the complete vertical span,
+/// including the command bar beneath the tactical viewport.
+fn shake_central_rect(state: &AppState, target: &wgpu::Texture) -> [u32; 4] {
+    let source_height = state.render_height();
+    let sidebar_frame = state.sidebar_frame();
+    let central_source_width = sidebar_frame.column().0;
+
+    if let Some(geometry) = state
+        .renderer
+        .upscale_pass
+        .as_ref()
+        .map(|pass| pass.geometry())
+    {
+        let (frame_width, frame_height) = geometry.frame_size();
+        let central_width = central_source_width
+            .saturating_mul(geometry.percent)
+            .saturating_div(100);
+        [
+            geometry.origin.0,
+            geometry.origin.1,
+            central_width.min(frame_width),
+            frame_height.min(target.height().saturating_sub(geometry.origin.1)),
+        ]
+    } else {
+        [
+            0,
+            0,
+            central_source_width.min(target.width()),
+            source_height.min(target.height()),
+        ]
+    }
+}
+
+fn apply_screen_shake(
+    state: &mut AppState,
+    encoder: &mut wgpu::CommandEncoder,
+    target: &wgpu::Texture,
+    offset_px: [i32; 2],
+) {
+    let central_rect = shake_central_rect(state, target);
+    let device = &state.renderer.gpu.device;
+    state.renderer.screen_presentation.apply_offset_px(
+        device,
+        encoder,
+        target,
+        central_rect,
+        offset_px,
+    );
 }
 
 impl App {
@@ -46,6 +101,40 @@ impl App {
         simulation_allowed: bool,
     ) -> RuntimeServiceResult {
         let mut main_tick_admitted = false;
+        // GScreen Input reads the current native frame parity but does not
+        // advance it. Hidden background service still owns Input while the
+        // match runs; the focus-freeze sleep path and shell do not.
+        let network_wait_pending = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .is_some_and(|rt| rt.simulation.pending_network_wait());
+        let in_game = state.frontend.screen == GameScreen::InGame;
+        // Wait_For_Players still enters GScreen Input at 0x006485B7 and
+        // 0x00649827; repeated services read the same binary-frame parity.
+        let input_is_active = in_game
+            && (!state.platform.focus_freeze_active()
+                || Self::house_outcome_wait_pending(state)
+                || network_wait_pending);
+        let input_frame = input_is_active.then(|| {
+            state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| rt.simulation.session().binary_frame())
+        });
+        let screen_shake_offset = if in_game {
+            let paused_render_path = state.match_state.match_presentation.in_game_menu.is_open();
+            Some(
+                state
+                    .match_state
+                    .match_presentation
+                    .screen_shake
+                    .service_offset_snapshot(input_frame.flatten(), paused_render_path),
+            )
+        } else {
+            None
+        };
         #[cfg(feature = "telemetry-dashboard")]
         crate::app::telemetry_capture::synchronize_observer(state);
         #[cfg(feature = "debug-tools")]
@@ -68,7 +157,7 @@ impl App {
                 // independent restart/EXIT/outcome priority after the modal.
                 Self::consume_scenario_restart_request(state);
                 Self::consume_executed_abort_exit(state, scenario_now_ms);
-                crate::app::match_runtime::sim_tick::drive_local_player_outcome_voice_wait(
+                crate::app::match_runtime::sim_tick::drive_local_player_outcome_exit(
                     state,
                     scenario_now_ms,
                 );
@@ -86,6 +175,30 @@ impl App {
             }
             return RuntimeServiceResult {
                 main_tick_admitted,
+                screen_shake_offset,
+                ..Default::default()
+            };
+        }
+        if Self::house_outcome_wait_pending(state) {
+            // The native House wait services Network_ServiceLoop/audio before
+            // continuing this same House. Keep that service live while later
+            // House callbacks and MainTick's termination router remain held.
+            crate::app::match_runtime::sim_tick::pump_audio_service(state, scenario_now_ms);
+            main_tick_admitted = sim_tick::advance_in_game_runtime(state, scenario_now_ms, false);
+            if !Self::house_outcome_wait_pending(state)
+                && !crate::app::match_runtime::network_failure::pending(state)
+            {
+                Self::consume_scenario_restart_request(state);
+                Self::consume_executed_abort_exit(state, scenario_now_ms);
+                crate::app::match_runtime::sim_tick::drive_local_player_outcome_exit(
+                    state,
+                    scenario_now_ms,
+                );
+                Self::drive_scenario_exit(state, scenario_now_ms);
+            }
+            return RuntimeServiceResult {
+                main_tick_admitted,
+                screen_shake_offset,
                 ..Default::default()
             };
         }
@@ -93,7 +206,7 @@ impl App {
         // Main_Game's router55CFD0 takes it before EXIT.
         Self::consume_scenario_restart_request(state);
         Self::consume_executed_abort_exit(state, scenario_now_ms);
-        crate::app::match_runtime::sim_tick::drive_local_player_outcome_voice_wait(
+        crate::app::match_runtime::sim_tick::drive_local_player_outcome_exit(
             state,
             scenario_now_ms,
         );
@@ -103,48 +216,62 @@ impl App {
         // sequence before either another sim frame or the destination screen.
         Self::drive_scenario_exit(state, scenario_now_ms);
 
-        // Drive the graceful quit cascade (started on Exit-confirm OK). Compute the
-        // voice poll before borrowing the cascade mutably to avoid aliasing.
+        // Drive the graceful quit wait (started on Exit-confirm OK). It
+        // (`0x0052E79C..0x0052E7E4`) holds while Theme `Still_Playing` and then
+        // `VoxClass::PumpAndCheckActive @ 0x007529E0` both answer yes.
         if state.frontend.quit_cascade.is_some() {
             let now = Instant::now();
-            let voices_active = state
-                .audio
-                .sfx_player
-                .as_ref()
-                .is_some_and(|sfx| sfx.voices_active());
-            let tick = state
+            let waiting = state.audio.theme_still_playing()
+                && match (
+                    &mut state.audio.sfx_player,
+                    state.process_assets.manager(),
+                    state.process_assets.audio_catalog(),
+                ) {
+                    (Some(sfx), Some(assets), Some(catalog)) => {
+                        sfx.pump_and_check_voices(catalog.eva(), assets, catalog.index())
+                    }
+                    _ => false,
+                };
+            let finished = state
                 .frontend
                 .quit_cascade
-                .as_mut()
+                .as_ref()
                 .expect("cascade present")
-                .tick(now, voices_active);
-            if let Some(volume) = tick.music_volume {
-                // Quit's bounded transient fade must also reach Theme. The
-                // pre-fade preference has already been persisted.
-                state.audio.set_score_volume(volume as f32);
-            }
-            if tick.stop_music {
+                .finished(now, waiting);
+            if finished {
+                // `Stop(0)` (`0x0052E7EC`) finds nothing active after the
+                // `Stop(1)` that began the wait; the exit ends any fade tail.
                 state.audio.stop_theme();
-            }
-            if tick.finished {
                 state.frontend.quit_cascade = None;
                 event_loop.exit();
                 return RuntimeServiceResult {
                     quit_requested: true,
                     main_tick_admitted,
+                    screen_shake_offset,
                 };
             }
         }
 
         // The audio service pass. gamemd drives `AudioSystem::Pump @
         // 0x00406F70` from `Network_ServiceLoop @ 0x0048D080`, which the main
-        // tick, the frame throttler, the modal dialog pump, the shell dialog
-        // loop and the loading screens all reach — so the sound arbiter, the
-        // EVA queue and `ThemeClass::AI` keep being serviced on the main menu,
-        // behind a pause or an open menu, and while the window is not the
-        // foreground. It therefore sits here, outside every screen and
-        // simulation gate, and carries its own `> 33 ms` rate limit.
-        crate::app::match_runtime::sim_tick::pump_audio_service(state, scenario_now_ms);
+        // tick, the network modes' frame throttler (`Main::ThrottleFrame @
+        // 0x0055E160` skips it in `g_GameMode` 0 and 5), the modal dialog
+        // pump, the shell dialog loop and the loading screens all reach — so
+        // the sound arbiter, the EVA queue and `ThemeClass::AI` keep being
+        // serviced on the main menu, behind a pause or an open menu. It
+        // therefore sits here, outside every screen and simulation gate, and
+        // carries its own `> 33 ms` rate limit. Offline, the running match
+        // pumps inside Main_Tick instead, and a parked window not at all;
+        // this pass then keeps only the outputs.
+        let main_tick_pumps_audio = crate::app::match_runtime::sim_tick::main_tick_owns_audio_pump(
+            state,
+            simulation_allowed,
+        );
+        if main_tick_pumps_audio {
+            crate::app::match_runtime::sim_tick::service_audio_outputs(state, scenario_now_ms);
+        } else {
+            crate::app::match_runtime::sim_tick::pump_audio_service(state, scenario_now_ms);
+        }
         crate::app::radar_movie::service(state, scenario_now_ms);
 
         // Deactivated windows do not simulate when `pause_on_focus_loss` is
@@ -186,25 +313,27 @@ impl App {
                 Self::return_to_main_menu(state);
                 return RuntimeServiceResult {
                     main_tick_admitted,
+                    screen_shake_offset,
                     ..Default::default()
                 };
             }
-            main_tick_admitted = sim_tick::advance_in_game_runtime(state, now_ms);
-            if crate::app::match_runtime::network_failure::pending(state) {
+            main_tick_admitted =
+                sim_tick::advance_in_game_runtime(state, now_ms, main_tick_pumps_audio);
+            if Self::house_outcome_wait_pending(state)
+                || crate::app::match_runtime::network_failure::pending(state)
+            {
                 return RuntimeServiceResult {
                     main_tick_admitted,
+                    screen_shake_offset,
                     ..Default::default()
                 };
             }
             // EventClass EXIT is dispatched at the simulation tail. Consume
             // its terminal edge before any outcome route can claim teardown.
             Self::consume_executed_abort_exit(state, now_ms);
-            // The SavourDelay expiry is decided in the late house rung of this
-            // exact frame. Anchor its 0x78-bucket wall wait to the same observed
-            // wall time instead of delaying it to the next render pass.
-            crate::app::match_runtime::sim_tick::drive_local_player_outcome_voice_wait(
-                state, now_ms,
-            );
+            // The House's own Vox wait has finished before its result request.
+            // Route the retained request after all remaining frame callbacks.
+            crate::app::match_runtime::sim_tick::drive_local_player_outcome_exit(state, now_ms);
             Self::drive_scenario_exit(state, now_ms);
         }
         #[cfg(feature = "telemetry-dashboard")]
@@ -212,6 +341,7 @@ impl App {
         RuntimeServiceResult {
             quit_requested: false,
             main_tick_admitted,
+            screen_shake_offset,
         }
     }
 
@@ -219,7 +349,8 @@ impl App {
     /// in-game and the configured focus freeze is not holding the world; a
     /// tactical capture never reaches the hidden service loop.
     pub(super) fn match_runs_while_hidden(state: &AppState) -> bool {
-        state.frontend.screen == GameScreen::InGame && !state.platform.focus_freeze_active()
+        state.frontend.screen == GameScreen::InGame
+            && (Self::house_outcome_wait_pending(state) || !state.platform.focus_freeze_active())
     }
 
     /// The one owner of the window's own cursor after the startup splash, set
@@ -339,6 +470,16 @@ impl App {
             tactical_capture.is_none() && !shell_capture_owns_simulation,
         );
         if runtime_pass.quit_requested {
+            return Ok(());
+        }
+        if Self::house_outcome_wait_pending(state)
+            || (state.frontend.screen == GameScreen::InGame
+                && state.match_state.scenario_exit.is_some()
+                && Self::local_outcome_exit_ready(state))
+        {
+            // House4F860B/4F8732 and outcome exits685670/685DC0 service
+            // audio/network without drawing Tactical again. Keep the surface
+            // presented before Won was cleared or later House flags changed.
             return Ok(());
         }
         // Native polls timed pause before Logic, then Manage55DDA5 afterwards.
@@ -805,6 +946,14 @@ impl App {
             &mut encoder,
             &output.texture,
         );
+        if state.frontend.screen == GameScreen::InGame
+            && let Some(offset_px) = runtime_pass.screen_shake_offset
+        {
+            // Native RenderFrame_main finishes composing overlays and its
+            // software cursor before Screen__UpdatePrimarySurface moves the
+            // central primary-client rectangle.
+            apply_screen_shake(state, &mut encoder, &output.texture, offset_px);
+        }
         Self::show_os_cursor_only_without_game_cursor(state, game_render_output.is_some());
 
         let entry_sequence_identity = match shell_capture.as_deref_mut() {
@@ -854,6 +1003,7 @@ impl App {
         };
         let retail_screenshot_current_frame =
             std::mem::take(&mut state.match_state.input.retail_screenshot_requested);
+        let screenshot_central_rect = shake_central_rect(state, &output.texture);
         let pending_retail_screenshot = state
             .renderer
             .retail_screenshot_frame_cache
@@ -865,6 +1015,8 @@ impl App {
                 state.renderer.gpu.config.width,
                 state.renderer.gpu.config.height,
                 state.renderer.upscale_pass.as_ref(),
+                &mut state.renderer.screen_presentation,
+                screenshot_central_rect,
             )?;
         let capture_timeout = if capture_current_frame {
             Some(if shell_capture_current_frame {
@@ -894,7 +1046,20 @@ impl App {
         state
             .renderer
             .retail_screenshot_frame_cache
-            .commit_presented();
+            .commit_presented(if state.frontend.screen == GameScreen::InGame {
+                runtime_pass.screen_shake_offset.unwrap_or([0, 0])
+            } else {
+                [0, 0]
+            });
+        state
+            .match_state
+            .match_presentation
+            .screen_shake
+            .record_presented(if state.frontend.screen == GameScreen::InGame {
+                runtime_pass.screen_shake_offset.unwrap_or([0, 0])
+            } else {
+                [0, 0]
+            });
         // A family renderer that drew a timer-driven 0x71C frame this pass
         // advances it now that the frame reached the screen.
         state.frontend.shell_monitor.commit_presented();
