@@ -15,6 +15,10 @@ GPU_TITLE_ID = "0100f52556456000"
 CLIENT_TITLE_ID = "0100f52556458000"
 
 
+def icon_path(root: Path, sdk: Path, artifact: str) -> Path:
+    return root / "icon.jpg" if artifact == "vera20k-client" else sdk / "libnx/default_icon.jpg"
+
+
 def file_sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as source:
@@ -130,7 +134,7 @@ def package(root: Path, sdk: Path, elf: Path, nacp: Path, *,
     subprocess.run([str(sdk / "tools/bin/npdmtool"), str(npdm_source),
                     str(exefs / "main.npdm")], check=True)
     shutil.copyfile(nacp, control / "control.nacp")
-    shutil.copyfile(sdk / "libnx/default_icon.jpg", control / "icon_AmericanEnglish.dat")
+    shutil.copyfile(icon_path(root, sdk, artifact), control / "icon_AmericanEnglish.dat")
     packer = Path(os.environ.get("HACBREWPACK", root.parents[3] / "toolchains/switch/hacbrewpack/hacbrewpack"))
     arguments = [str(packer), "-k", str(keys.resolve()), "--titleid", title_id,
                  "--exefsdir", str(exefs), "--controldir", str(control), "--nologo",

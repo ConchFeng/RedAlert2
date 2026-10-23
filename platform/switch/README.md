@@ -33,6 +33,9 @@ python3 build.py --client
 随构建生成的 NRO 留作诊断，当前客户端启动要求 NSP 的账号上下文。
 窗口后端来源与当前手柄映射见 [winit-horizon/UPSTREAM.md](winit-horizon/UPSTREAM.md)。
 
+完整客户端的 NSP 主机菜单图标和 NRO 图标统一使用 `icon.jpg`，来自用户提供的
+VERA20K Rust 标志，已转为 256×256 RGB JPEG。下次构建会自动使用该图标。
+
 ## 把游戏资源一起打入 NSP
 
 完整客户端链接构建默认把本机资源目录打入 Program RomFS，`--check` 只检查编译。

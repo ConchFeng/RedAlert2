@@ -8,7 +8,7 @@ import re
 import struct
 import subprocess
 import sys
-from nsp import CLIENT_TITLE_ID, GPU_TITLE_ID, TITLE_ID, package
+from nsp import CLIENT_TITLE_ID, GPU_TITLE_ID, TITLE_ID, icon_path, package
 
 ROOT = Path(__file__).resolve().parent
 WORKSPACE = ROOT.parents[3]
@@ -254,7 +254,7 @@ def main():
     if args.client:
         configure_client_savedata(nacp, title_id)
     run(sdk / "tools/bin/elf2nro", elf, dist / f"{artifact}.nro", f"--nacp={nacp}",
-        f"--icon={sdk}/libnx/default_icon.jpg")
+        f"--icon={icon_path(ROOT, sdk, artifact)}")
     if args.nsp:
         package(
             ROOT,
