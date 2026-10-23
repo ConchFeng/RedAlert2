@@ -7,6 +7,7 @@
   "is_64_bit": true,
   "address_space_type": 1,
   "is_retail": true,
+  "process_category": 0,
   "filesystem_access": {
     "permissions": "0xFFFFFFFFFFFFFFFF"
   },
@@ -25,15 +26,7 @@
     }
   },
   "service_access": [
-    "hid",
-    "hid:0",
-    "hid:1",
-    "hid:2",
-    "hid:3",
-    "vi:*",
-    "nvdrv",
-    "nvdrv:a",
-    "nvdrv:s"
+    "*"
   ],
   "kernel_capabilities": [
     {

@@ -112,6 +112,11 @@ def package(root: Path, sdk: Path, elf: Path, nacp: Path, *,
         metadata["name"] = "VeraGpuProbe"
     elif artifact == "vera20k-client":
         metadata["name"] = "Vera20k"
+        # The installed application goes through libnx's normal applet,
+        # account, filesystem, audio and graphics initialization. A narrow
+        # service list aborts in __appInit before rust_main runs.
+        if "*" not in metadata.get("service_access", []):
+            raise SystemExit("Client NSP requires wildcard service access")
     npdm_source = work / "npdm.json"
     npdm_source.write_text(json.dumps(metadata, indent=2) + "\n")
     subprocess.run([str(sdk / "tools/bin/npdmtool"), str(npdm_source),
