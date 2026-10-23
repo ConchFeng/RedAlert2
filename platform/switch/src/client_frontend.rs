@@ -9,6 +9,9 @@ const DIRECTORY: &str = "sdmc:/switch/vera20k";
 unsafe extern "C" fn platform_fps_log(message: *const std::ffi::c_char) {
     let message = unsafe { std::ffi::CStr::from_ptr(message) };
     log::info!(target: "switch::fps", "{}", message.to_string_lossy());
+    // These lines are deduplicated and rare, and they are what a crashed run is
+    // diagnosed from. Publish them instead of leaving them in the log buffer.
+    log::logger().flush();
 }
 
 unsafe extern "C" {
@@ -36,6 +39,10 @@ fn run() -> Result<()> {
     );
     let romfs_mounted = unsafe { platform_romfs_init() };
     let result = run_mounted(romfs_mounted);
+    // The file logger buffers. Publish its tail before the save unmount and the
+    // SD commit, so an error return that skips winit's exiting hook still leaves
+    // the run's log on the card.
+    log::logger().flush();
     // App::run has returned and dropped its file handles before the final commit.
     let commit = commit_user_save();
     if romfs_mounted {

@@ -11,7 +11,7 @@
 
 use std::backtrace::Backtrace;
 use std::fs::{self, File, OpenOptions};
-use std::io::{self, Write};
+use std::io::{self, BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -20,6 +20,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use log::{LevelFilter, Log, Metadata, Record};
 
 static EXCEPTION_DUMP_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// Buffered bytes before a log line reaches the SD card. 32 KiB is a few
+/// hundred lines, which keeps card writes rare without hiding much of the tail
+/// if the process is killed without running its exit path.
+const LOG_BUFFER_BYTES: usize = 32 * 1024;
 
 #[cfg(feature = "telemetry")]
 #[path = "logging_telemetry.rs"]
@@ -46,7 +51,10 @@ pub fn init_file_logger(name: &str) -> io::Result<PathBuf> {
 
     // Suppress wgpu_hal's per-frame "Suboptimal present" warnings which
     // flood the log (~100K+ lines per session on AMD Vulkan).
-    install("info,wgpu_hal=error", Destination::File(Mutex::new(file)))
+    install(
+        "info,wgpu_hal=error",
+        Destination::File(Mutex::new(BufWriter::with_capacity(LOG_BUFFER_BYTES, file))),
+    )
         .map_err(|error| io::Error::other(error.to_string()))?;
 
     Ok(log_path)
@@ -72,7 +80,10 @@ fn install(default_filter: &str, destination: Destination) -> Result<(), log::Se
 
 enum Destination {
     Stderr,
-    File(Mutex<File>),
+    /// Buffered: an SD-card write per log line costs far more than formatting
+    /// it, and a campaign can emit several lines a second. Warnings and errors
+    /// flush immediately so a crash still leaves its cause on the card.
+    File(Mutex<BufWriter<File>>),
 }
 
 struct Logger {
@@ -104,10 +115,13 @@ impl Log for Logger {
             record.target()
         );
         // A failed log write has nowhere to be reported.
+        let flush_now = record.level() <= log::Level::Warn;
         let _ = match &self.destination {
             Destination::Stderr => io::stderr().lock().write_all(line.as_bytes()),
             Destination::File(file) => match file.lock() {
-                Ok(mut file) => file.write_all(line.as_bytes()),
+                Ok(mut file) => file
+                    .write_all(line.as_bytes())
+                    .and_then(|()| if flush_now { file.flush() } else { Ok(()) }),
                 Err(_) => Ok(()),
             },
         };
@@ -238,6 +252,9 @@ pub fn install_panic_hook(log_path: Option<&Path>) {
 
         // Capture while the panic stack is still live.
         let backtrace = Backtrace::force_capture();
+        // Publish the buffered tail before opening the same file for the dump,
+        // so the last lines before the panic are not overwritten or reordered.
+        log::logger().flush();
 
         if let Some(log_path) = &log_path
             && let Ok(mut file) = OpenOptions::new().append(true).open(log_path)
@@ -367,5 +384,63 @@ mod tests {
             claim_exception_dump(&active).is_some(),
             "a later independent handler entry must replace except.txt"
         );
+    }
+
+    #[test]
+    fn file_logger_buffers_info_and_flushes_warnings() {
+        use std::fs::OpenOptions;
+        use std::io::BufWriter;
+        use std::sync::Mutex;
+
+        use log::{Log, Record};
+
+        let path = std::env::temp_dir().join(format!(
+            "vera20k-logging-{}-{:?}.log",
+            std::process::id(),
+            std::thread::current().id()
+        ));
+        let _ = std::fs::remove_file(&path);
+        let file = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&path)
+            .expect("create log file");
+        let logger = super::Logger {
+            filter: Filter::parse("info"),
+            destination: super::Destination::File(Mutex::new(BufWriter::with_capacity(
+                super::LOG_BUFFER_BYTES,
+                file,
+            ))),
+        };
+        // `format_args!` with only literal interpolations is 'static, so the
+        // record can borrow it directly.
+        let info = Record::builder()
+            .args(format_args!("buffered"))
+            .level(log::Level::Info)
+            .target("test")
+            .build();
+        let warn = Record::builder()
+            .args(format_args!("published"))
+            .level(log::Level::Warn)
+            .target("test")
+            .build();
+
+        Log::log(&logger, &info);
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read log"),
+            "",
+            "an info line stays in the buffer"
+        );
+        Log::flush(&logger);
+        assert!(std::fs::read_to_string(&path).expect("read log").contains("buffered"));
+
+        Log::log(&logger, &warn);
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read log")
+                .contains("published"),
+            "a warning reaches the card before the process can die"
+        );
+        let _ = std::fs::remove_file(&path);
     }
 }
