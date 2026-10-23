@@ -173,6 +173,14 @@ pub enum MediaArchiveMode {
     CdWildcard,
 }
 
+/// Progress through the ordered startup archive and asset initialization
+/// stages. `fraction` advances only after real mount or catalog work.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct AssetStartupProgress {
+    pub fraction: f32,
+    pub stage: &'static str,
+}
+
 impl MediaArchiveMode {
     /// Stock digital YR uses media index 2, selecting the `03` archive family.
     /// Tools and capture callers select this explicitly; asset loading never
@@ -415,6 +423,27 @@ impl AssetManager {
 
     /// Load the core runtime archive stack for one native media-selection mode.
     pub fn new(ra2_dir: &Path, media_mode: MediaArchiveMode) -> Result<Self, AssetError> {
+        Self::new_with_progress(ra2_dir, media_mode, |_| {})
+    }
+
+    /// Load the core runtime archive stack and report completed construction
+    /// stages. Progress reflects archive probes, mounts, and catalog work; it
+    /// does not introduce waits or alter registration order.
+    pub fn new_with_progress(
+        ra2_dir: &Path,
+        media_mode: MediaArchiveMode,
+        mut on_progress: impl FnMut(AssetStartupProgress),
+    ) -> Result<Self, AssetError> {
+        const STAGE_COUNT: f32 = 12.0;
+        let report = |on_progress: &mut dyn FnMut(AssetStartupProgress),
+                      stage_index: f32,
+                      stage_fraction: f32,
+                      stage: &'static str| {
+            on_progress(AssetStartupProgress {
+                fraction: ((stage_index + stage_fraction) / STAGE_COUNT).clamp(0.0, 1.0),
+                stage,
+            });
+        };
         let mut manager = Self {
             archives: Vec::new(),
             archive_catalog: Vec::new(),
@@ -429,23 +458,36 @@ impl AssetManager {
             active_sidebar_archives: Vec::new(),
             ra2_dir: ra2_dir.to_path_buf(),
         };
+        report(&mut on_progress, 0.0, 1.0, "Loose files");
 
         // WinMain registers the YR language archive before the RA2 fallback.
         manager.mount_named_archive("langmd.mix", false)?;
         manager.mount_named_archive("language.mix", false)?;
+        report(&mut on_progress, 1.0, 1.0, "Language archives");
 
         // Init_Base_Mix_Files probes all expansion slots in descending order.
-        for index in (0..=99).rev() {
+        for (completed, index) in (0..=99).rev().enumerate() {
             manager.mount_named_archive(&format!("expandmd{index:02}.mix"), false)?;
+            if (completed + 1) % 10 == 0 && completed + 1 < 100 {
+                report(
+                    &mut on_progress,
+                    2.0,
+                    (completed + 1) as f32 / 100.0,
+                    "Expansion archives",
+                );
+            }
         }
+        report(&mut on_progress, 2.0, 1.0, "Expansion archives");
 
         for name in MASTER_ARCHIVES {
             manager.mount_named_archive(name, true)?;
         }
+        report(&mut on_progress, 3.0, 1.0, "Master archives");
 
         for name in ["cachemd.mix", "cache.mix", "localmd.mix", "local.mix"] {
             manager.mount_named_archive(name, true)?;
         }
+        report(&mut on_progress, 4.0, 1.0, "Cache and local archives");
 
         // AudioSystem__Init uses exactly one archive: the MD archive when
         // present, otherwise the base archive.
@@ -454,6 +496,7 @@ impl AssetManager {
         }
 
         manager.select_audio_pair();
+        report(&mut on_progress, 5.0, 1.0, "Audio archive");
 
         // Init_Mix_Files constructs only these named core archives. Optional
         // constructors are allowed to fail exactly where retail does not gate
@@ -466,9 +509,12 @@ impl AssetManager {
         manager.mount_named_archive("conquer.mix", true)?;
         manager.mount_named_archive("cameomd.mix", true)?;
         manager.mount_named_archive("cameo.mix", true)?;
+        report(&mut on_progress, 6.0, 1.0, "Core archives");
 
         manager.mount_native_map_media(media_mode)?;
+        report(&mut on_progress, 7.0, 1.0, "Map media");
         manager.mount_named_archive("multimd.mix", true)?;
+        report(&mut on_progress, 8.0, 1.0, "Multiplayer archive");
         manager.mount_named_archive("thememd.mix", false)?;
         // VERA presentation extension: native YR mounts THEME.MIX only when
         // THEMEMD.MIX is absent. Keep MD first, then make original RA2 music
@@ -476,12 +522,15 @@ impl AssetManager {
         // Preserve this user-requested parity exception during future parity
         // work unless the user explicitly asks to change the music catalog.
         manager.mount_named_archive("theme.mix", false)?;
+        report(&mut on_progress, 9.0, 1.0, "Theme archives");
         manager.mount_native_movie_media(media_mode)?;
+        report(&mut on_progress, 10.0, 1.0, "Movie media");
 
         // Loose YRO archives are deliberately absent here. Retail registers
         // each one during SessionClass scenario enumeration, immediately
         // before opening its embedded PKT, and retains that registered object.
         manager.catalog_named_nested_archives();
+        report(&mut on_progress, 11.0, 1.0, "Nested archive catalog");
         log::info!(
             "Retail archive search order ({} registered archives, first match wins):",
             manager.archives.len()
@@ -1672,6 +1721,31 @@ mod tests {
         std::fs::write(dir.path().join("Ra2.mix"), b"").unwrap();
         assert!(holds_master_archives(dir.path()));
         assert!(!holds_master_archives(&dir.path().join("missing")));
+    }
+
+    #[test]
+    fn startup_progress_preserves_archive_order_and_advances_on_completed_stages() {
+        let dir = audio_test_install("startup-progress");
+        let regular = AssetManager::new(dir.path(), MediaArchiveMode::STOCK_DIGITAL).unwrap();
+        let mut updates = Vec::new();
+        let observed = AssetManager::new_with_progress(
+            dir.path(),
+            MediaArchiveMode::STOCK_DIGITAL,
+            |progress| updates.push(progress),
+        )
+        .unwrap();
+
+        assert_eq!(
+            observed.registered_archive_names(),
+            regular.registered_archive_names()
+        );
+        assert_eq!(updates.last().unwrap().stage, "Nested archive catalog");
+        assert_eq!(updates.last().unwrap().fraction, 1.0);
+        assert!(
+            updates
+                .windows(2)
+                .all(|pair| { pair[0].fraction < pair[1].fraction })
+        );
     }
 
     #[test]

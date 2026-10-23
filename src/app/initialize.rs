@@ -7,6 +7,25 @@ use anyhow::Context;
 use crate::app::frontend::startup_options::{RetailStartupOptions, ScreenSize};
 use crate::app::persistence::options_profile::{RetailOptionsLoad, RetailOptionsProfile};
 
+#[cfg(target_os = "horizon")]
+fn present_startup_progress(
+    progress: Option<&crate::app::frontend::startup_progress::StartupProgressPresentation>,
+    gpu: &GpuContext,
+    batch: &BatchRenderer,
+    presenter: &crate::render::shell_surface_present::ShellSurfacePresenter,
+    depth: &wgpu::TextureView,
+    fraction: f32,
+) {
+    let Some(progress) = progress else {
+        return;
+    };
+    match progress.render_and_present(gpu, batch, presenter, depth, fraction) {
+        Ok(true) => {}
+        Ok(false) => log::debug!("Startup progress present deferred: no surface frame"),
+        Err(err) => log::warn!("Could not present startup progress: {err:#}"),
+    }
+}
+
 use super::{
     ActiveEventLoop, App, AppState, Arc, AssetManager, BTreeMap, BasicSection, BatchRenderer,
     BitFont, GameConfig, GameScreen, GpuContext, HashMap, HouseRoster, Instant, MusicPlayer,
@@ -269,6 +288,29 @@ impl App {
         }
         let gpu: GpuContext = GpuContext::new(window.clone())?;
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
+        #[cfg(target_os = "horizon")]
+        let depth_view: wgpu::TextureView = gpu.create_depth_texture();
+        #[cfg(target_os = "horizon")]
+        let shell_surface_presenter =
+            crate::render::shell_surface_present::ShellSurfacePresenter::new(&gpu)?;
+        #[cfg(target_os = "horizon")]
+        let startup_progress = if capture_dimensions.is_none() {
+            let progress = crate::app::frontend::startup_progress::StartupProgressPresentation::new(
+                &gpu,
+                &batch_renderer,
+            );
+            present_startup_progress(
+                Some(&progress),
+                &gpu,
+                &batch_renderer,
+                &shell_surface_presenter,
+                &depth_view,
+                0.0,
+            );
+            Some(progress)
+        } else {
+            None
+        };
         let status_screen_fill = batch_renderer.create_texture(&gpu, &[255; 4], 1, 1);
         let status_card_glow =
             crate::app::frontend::status_screen::build_button_glow(&gpu, &batch_renderer);
@@ -283,9 +325,20 @@ impl App {
         let mut bit_font = BitFont::fallback_5x7(&gpu.device, &gpu.queue, &batch_renderer);
         let fps_overlay =
             crate::app::diagnostics::fps_overlay::FpsOverlay::new(&gpu, &batch_renderer);
+        #[cfg(not(target_os = "horizon"))]
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
+        #[cfg(not(target_os = "horizon"))]
         let shell_surface_presenter =
             crate::render::shell_surface_present::ShellSurfacePresenter::new(&gpu)?;
+        #[cfg(target_os = "horizon")]
+        present_startup_progress(
+            startup_progress.as_ref(),
+            &gpu,
+            &batch_renderer,
+            &shell_surface_presenter,
+            &depth_view,
+            0.05,
+        );
         let input_delay_ticks: u64 = game_config
             .as_ref()
             .map(|cfg| u64::from(cfg.gameplay.input_delay_ticks))
@@ -295,12 +348,43 @@ impl App {
         let ui_scale = 1.0;
         let sidebar_layout_spec = SidebarChromeLayoutSpec::stock();
         let mut startup_asset_manager = game_config.as_ref().and_then(|config| {
-            startup_asset_or_error(
-                AssetManager::new(&config.paths.ra2_dir, startup_options.media_archive_mode)
+            #[cfg(target_os = "horizon")]
+            let archive_result = AssetManager::new_with_progress(
+                &config.paths.ra2_dir,
+                startup_options.media_archive_mode,
+                |progress| {
+                    present_startup_progress(
+                        startup_progress.as_ref(),
+                        &gpu,
+                        &batch_renderer,
+                        &shell_surface_presenter,
+                        &depth_view,
+                        0.05 + progress.fraction * 0.80,
+                    );
+                },
+            );
+            #[cfg(not(target_os = "horizon"))]
+            let archive_result =
+                AssetManager::new(&config.paths.ra2_dir, startup_options.media_archive_mode);
+
+            let assets = startup_asset_or_error(
+                archive_result
                     .and_then(|assets| assets.with_ini_roots(&config.ini))
                     .context("Could not load the game archives"),
                 &mut main_menu_shell_error,
-            )
+            );
+            #[cfg(target_os = "horizon")]
+            if assets.is_some() {
+                present_startup_progress(
+                    startup_progress.as_ref(),
+                    &gpu,
+                    &batch_renderer,
+                    &shell_surface_presenter,
+                    &depth_view,
+                    0.89,
+                );
+            }
+            assets
         });
         // Native process startup seeds Scenario before the MPModes loader. The
         // Cooperative factory reached by that loader then advances this cursor
@@ -328,6 +412,15 @@ impl App {
                 &mut main_menu_shell_error,
             )
         });
+        #[cfg(target_os = "horizon")]
+        present_startup_progress(
+            startup_progress.as_ref(),
+            &gpu,
+            &batch_renderer,
+            &shell_surface_presenter,
+            &depth_view,
+            0.92,
+        );
         let startup_fnt = startup_asset_manager.as_ref().and_then(|assets| {
             assets.get_ref("GAME.FNT").and_then(|data| {
                 crate::assets::fnt_file::FntFile::from_bytes(data)
@@ -335,6 +428,15 @@ impl App {
                     .ok()
             })
         });
+        #[cfg(target_os = "horizon")]
+        present_startup_progress(
+            startup_progress.as_ref(),
+            &gpu,
+            &batch_renderer,
+            &shell_surface_presenter,
+            &depth_view,
+            0.95,
+        );
         if let Some(fnt) = startup_fnt.as_ref() {
             bit_font = BitFont::from_fnt(&gpu.device, &gpu.queue, &batch_renderer, fnt);
         }
@@ -372,6 +474,15 @@ impl App {
         } else {
             None
         };
+        #[cfg(target_os = "horizon")]
+        present_startup_progress(
+            startup_progress.as_ref(),
+            &gpu,
+            &batch_renderer,
+            &shell_surface_presenter,
+            &depth_view,
+            1.0,
+        );
         if let Some(splash) = startup_splash.as_mut() {
             // Surface acquisition can be transient before the first event-loop
             // redraw. A splash that did not reach the screen stays unarmed for

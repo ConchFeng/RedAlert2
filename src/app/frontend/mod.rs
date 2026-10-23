@@ -22,6 +22,8 @@ pub(crate) mod skirmish_session;
 pub(crate) mod skirmish_shell_render;
 pub mod startup_options;
 pub(super) mod startup_splash;
+#[cfg(target_os = "horizon")]
+pub(super) mod startup_progress;
 pub(crate) mod state;
 pub(crate) mod status_screen;
 pub(crate) mod wol_welcome_render;
