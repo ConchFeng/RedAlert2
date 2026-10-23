@@ -483,7 +483,17 @@ pub(crate) fn build_presentation_manifest(
     // Without a loaded theater nothing renders, so no entity atlas is built.
     let palette = theater_unit_palette;
     let unit_atlas: Option<UnitAtlas> = if palette.is_some() {
-        unit_atlas::build_unit_atlas(
+        // A computer's teams only enter the world when it creates one, so the
+        // starting entities never name the types its roster recruits. Bake
+        // them now: a mid-match growth page costs the player a visible freeze.
+        let authored = rules.map(|rules| {
+            unit_atlas::UnitAtlasDemand::of_authored_teams(
+                sim.team_script_vm(),
+                rules,
+                sim.interner(),
+            )
+        });
+        unit_atlas::build_unit_atlas_with_demand(
             &gpu.device,
             &gpu.queue,
             batch,
@@ -492,6 +502,7 @@ pub(crate) fn build_presentation_manifest(
             rules,
             None, // initial build — no existing cache
             Some(sim.interner()),
+            authored,
         )
     } else {
         None

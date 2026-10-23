@@ -325,6 +325,20 @@ impl TeamScriptVm {
         &self.task_force_order
     }
 
+    /// Every member type the authored TaskForces ask to recruit, in
+    /// registration order with duplicates kept.
+    ///
+    /// A computer's teams only reach the world when it creates one mid-match,
+    /// so the scenario's own entities never name these types. Presentation
+    /// owners read this to prepare for them at load instead of when the first
+    /// member appears.
+    pub fn authored_task_force_members(&self) -> impl Iterator<Item = TeamMemberTypeIdentity> + '_ {
+        self.task_force_order
+            .iter()
+            .filter_map(|id| self.task_forces.get(id))
+            .flat_map(|definition| definition.entries.iter().map(|entry| entry.member_type))
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn task_force(&self, id: InternedId) -> Option<&TeamTaskForceDefinition> {
         self.task_forces.get(&id)

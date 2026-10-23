@@ -274,11 +274,65 @@ pub struct UnitAtlas {
 /// (every slope) or as aircraft (flat only), and building voxel turrets. A
 /// model's sprite keys depend on nothing else, so this is what coverage and
 /// refreshes are decided on.
-#[derive(Debug, Default)]
+#[derive(Debug, Default, PartialEq, Eq)]
 pub struct UnitAtlasDemand {
     ground: BTreeSet<String>,
     air: BTreeSet<String>,
     turrets: BTreeSet<String>,
+}
+
+impl UnitAtlasDemand {
+    /// The voxel models a scenario's computer teams are authored to recruit.
+    ///
+    /// A team only reaches the world when its House creates it mid-match, so
+    /// the scenario's starting entities never name these types and the atlas
+    /// holds nothing for them until the first member appears. Feeding the
+    /// roster in at load buys one bigger load-time bake instead of the
+    /// several-hundred-millisecond freezes a campaign otherwise pays every
+    /// time the computer sends out a type it had not yet drawn.
+    pub fn of_authored_teams(
+        teams: &crate::sim::team_script_vm::TeamScriptVm,
+        rules: &RuleSet,
+        interner: &crate::sim::intern::StringInterner,
+    ) -> Self {
+        use crate::rules::object_type::ObjectCategory;
+        let mut demand = Self::default();
+        for member in teams.authored_task_force_members() {
+            let Some(type_id) = interner.try_resolve(member.id) else {
+                continue;
+            };
+            let Some(object) = rules.object(type_id) else {
+                continue;
+            };
+            // The spawner's own voxel admission: the art row decides, and only
+            // vehicles and aircraft default to a voxel model.
+            if rules
+                .art()
+                .resolve_metadata_entry(type_id, &object.image)
+                .map(|entry| entry.voxel)
+                .unwrap_or(matches!(
+                    object.category,
+                    ObjectCategory::Vehicle | ObjectCategory::Aircraft
+                ))
+            {
+                demand.insert_voxel(type_id, matches!(object.category, ObjectCategory::Aircraft));
+            } else if object.turret_anim_is_voxel && object.turret_anim.is_some() {
+                demand.turrets.insert(type_id.to_string());
+            }
+        }
+        demand
+    }
+
+    /// One authored member's voxel body: an aircraft model for an aircraft
+    /// type, a ground model (every slope) otherwise.
+    fn insert_voxel(&mut self, type_id: &str, is_air: bool) {
+        let set = if is_air {
+            &mut self.air
+        } else {
+            &mut self.ground
+        };
+        set.insert(type_id.to_string());
+    }
 }
 
 /// One voxel model an object draws with.
@@ -963,12 +1017,50 @@ pub fn build_unit_atlas(
     existing: Option<UnitAtlas>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<UnitAtlas> {
+    build_unit_atlas_with_demand(
+        device,
+        queue,
+        batch,
+        entities,
+        asset_manager,
+        rules,
+        existing,
+        interner,
+        None,
+    )
+}
+
+/// [`build_unit_atlas`] with voxel models the world does not yet contain.
+///
+/// A map load passes the scenario's authored team roster here so the computer
+/// cannot stall the match later with a type nothing has drawn yet.
+pub fn build_unit_atlas_with_demand(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    batch: &BatchRenderer,
+    entities: &crate::sim::entity_store::EntityStore,
+    asset_manager: &AssetManager,
+    rules: Option<&RuleSet>,
+    existing: Option<UnitAtlas>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+    authored: Option<UnitAtlasDemand>,
+) -> Option<UnitAtlas> {
     let started = Instant::now();
     // Step 1: the voxel models the atlas has not collected yet — every one at
     // map load — and the keys they draw with. For turret units, separate
     // Body/Turret/Barrel entries per facing; for the rest a single Composite
     // entry per facing. Multi-frame HVA units get entries for each frame.
-    let demand = UnitAtlasDemand::of_world(entities, rules, interner);
+    let mut demand = UnitAtlasDemand::of_world(entities, rules, interner);
+    if let Some(authored) = authored {
+        let world_models = demand.len();
+        demand.extend(authored);
+        if demand.len() != world_models {
+            log::info!(
+                "Unit atlas preloads {} authored team model(s) the world does not hold",
+                demand.len() - world_models,
+            );
+        }
+    }
     let missing = match &existing {
         Some(atlas) => demand.without(&atlas.covered),
         None => demand,

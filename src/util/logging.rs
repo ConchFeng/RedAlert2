@@ -55,7 +55,7 @@ pub fn init_file_logger(name: &str) -> io::Result<PathBuf> {
         "info,wgpu_hal=error",
         Destination::File(Mutex::new(BufWriter::with_capacity(LOG_BUFFER_BYTES, file))),
     )
-        .map_err(|error| io::Error::other(error.to_string()))?;
+    .map_err(|error| io::Error::other(error.to_string()))?;
 
     Ok(log_path)
 }
@@ -432,7 +432,11 @@ mod tests {
             "an info line stays in the buffer"
         );
         Log::flush(&logger);
-        assert!(std::fs::read_to_string(&path).expect("read log").contains("buffered"));
+        assert!(
+            std::fs::read_to_string(&path)
+                .expect("read log")
+                .contains("buffered")
+        );
 
         Log::log(&logger, &warn);
         assert!(

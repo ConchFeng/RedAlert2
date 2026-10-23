@@ -405,6 +405,34 @@ mod tests {
     }
 
     #[test]
+    fn twenty_five_hz_presents_still_run_sixty_logic_frames() {
+        // Horizon can present at 25 Hz while the match must keep its 60 Hz
+        // Logic clock. Each present services its own admission and then drains
+        // up to four owed frames, as render_frame does after presenting.
+        let mut pacer = LocalFramePacer::new();
+        let mut logic_frames = 0;
+        for present in 0..25 {
+            let now_ms = present * 40;
+            if pacer.should_admit(now_ms, 1, false) {
+                pacer.record_admitted_frame(now_ms, 1);
+                logic_frames += 1;
+            }
+            for _ in 0..4 {
+                if !pacer.should_admit(now_ms, 1, false) {
+                    break;
+                }
+                pacer.record_admitted_frame(now_ms, 1);
+                logic_frames += 1;
+            }
+        }
+
+        assert_eq!(
+            logic_frames, 61,
+            "one simulated second at 25 fps must run the 61 frames due from buckets 0..=60"
+        );
+    }
+
+    #[test]
     fn scenario_elapsed_clock_excludes_explicit_modal_time() {
         let mut clock = ScenarioElapsedClock::new();
         clock.start(10 << 4);

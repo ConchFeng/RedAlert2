@@ -954,3 +954,103 @@ fn kirov_direct_matrix_requires_hva_and_wraps_its_native_frame() {
         "the explicit debris no-HVA caller still uses the same raster owner"
     );
 }
+
+/// The atlas preloads the models a scenario's computer teams are authored to
+/// recruit, so a team arriving mid-match finds its sprites already resident.
+#[test]
+fn authored_team_rosters_admit_only_the_models_they_recruit() {
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::object_type::ObjectCategory;
+    use crate::rules::ruleset::RuleSet;
+    use crate::rules::team_ai_ini::TeamAiDefinitionSource;
+    use crate::sim::intern::StringInterner;
+    use crate::sim::team_script_vm::{
+        TeamMemberTypeIdentity, TeamScriptVm, TeamTaskForceDefinition, TeamTaskForceEntry,
+    };
+
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[VehicleTypes]
+0=TANK
+[AircraftTypes]
+0=HYD
+[InfantryTypes]
+0=E1
+[BuildingTypes]
+0=NAPOWR
+1=NATNT
+
+[NAPOWR]
+[NATNT]
+TurretAnimIsVoxel=yes
+TurretAnim=NTNTBARL
+",
+    ))
+    .expect("team roster rules should parse");
+
+    // The closure owns the interner while the roster is written, so the
+    // assertions below can read it back.
+    let (interner, teams) = {
+        let mut interner = StringInterner::new();
+        let mut member = |name: &str, category| TeamMemberTypeIdentity {
+            category,
+            id: interner.intern(name),
+        };
+        let mut teams = TeamScriptVm::default();
+        for (id, entries) in [
+            (
+                "Roster",
+                vec![
+                    member("TANK", ObjectCategory::Vehicle),
+                    member("HYD", ObjectCategory::Aircraft),
+                    member("E1", ObjectCategory::Infantry),
+                    member("NAPOWR", ObjectCategory::Building),
+                    member("NATNT", ObjectCategory::Building),
+                    // A name the rules never registered contributes no model.
+                    member("MISSING", ObjectCategory::Vehicle),
+                ],
+            ),
+            ("Duplicated", vec![member("TANK", ObjectCategory::Vehicle)]),
+        ] {
+            let task_force_id = interner.intern(id);
+            teams.register_task_force(TeamTaskForceDefinition {
+                id: task_force_id,
+                group: -1,
+                entries: entries
+                    .into_iter()
+                    .map(|member_type| TeamTaskForceEntry {
+                        member_type,
+                        count: 1,
+                    })
+                    .collect(),
+                source: TeamAiDefinitionSource::Scenario,
+            });
+        }
+        (interner, teams)
+    };
+
+    let demand = UnitAtlasDemand::of_authored_teams(&teams, &rules, &interner);
+    assert!(demand.contains(VoxelModel::Ground("TANK")));
+    assert!(demand.contains(VoxelModel::Air("HYD")));
+    assert!(
+        demand.contains(VoxelModel::Turret("NATNT")),
+        "an authored voxel-turret building preloads its gun model"
+    );
+    assert!(
+        !demand.contains(VoxelModel::Ground("E1")),
+        "infantry draws SHP sprites, not a voxel model"
+    );
+    assert!(
+        !demand.contains(VoxelModel::Ground("NAPOWR")),
+        "a type with no voxel body and no voxel turret adds nothing"
+    );
+    assert!(
+        !demand.contains(VoxelModel::Ground("MISSING")),
+        "an unresolvable team member cannot request a model"
+    );
+    assert_eq!(
+        demand,
+        UnitAtlasDemand::of_authored_teams(&teams, &rules, &interner),
+        "the roster's duplicate rows collapse into one model"
+    );
+}
