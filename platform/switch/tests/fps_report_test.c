@@ -7,6 +7,7 @@ static u8 shared_page[PAGE_BYTES];
 static u64 test_tick = 1;
 static unsigned create_calls, start_calls, ended_sessions, reserved_bytes;
 static u64 reserve_offset;
+static bool report_session_limit;
 static bool fail_create;
 
 u64 armGetSystemTick(void) { return test_tick; }
@@ -14,11 +15,32 @@ u64 armGetSystemTickFreq(void) { return 30000; }
 void platform_fps_log(const char *message) { assert(message && *message); }
 Result svcConnectToNamedPort(Handle *handle, const char *name) {
     assert(strcmp(name, "SaltySD") == 0);
+    if (report_session_limit) {
+        *handle = 0;
+        // MAKERESULT(Module_Kernel, KernelError_OutOfResource).
+        return 132u << 9 | 1u;
+    }
     *handle = 1;
     return 0;
 }
 Result svcCloseHandle(Handle handle) { assert(handle == 1); return 0; }
 void svcSleepThread(int64_t ns) { (void)ns; assert(false); }
+Result svcGetInfo(u64 *value, int kind, Handle handle, u64 ignored) {
+    (void)handle; (void)ignored;
+    assert(kind == InfoType_ResourceLimit);
+    *value = 7;
+    return 0;
+}
+Result svcGetResourceLimitCurrentValue(s64 *value, Handle handle, int resource) {
+    assert(handle == 7 && resource == LimitableResource_Sessions);
+    *value = 64;
+    return 0;
+}
+Result svcGetResourceLimitLimitValue(s64 *value, Handle handle, int resource) {
+    assert(handle == 7 && resource == LimitableResource_Sessions);
+    *value = 64;
+    return 0;
+}
 void shmemLoadRemote(SharedMemory *memory, Handle handle, size_t bytes, int permission) {
     assert(handle == 2 && bytes == PAGE_BYTES && permission == Perm_Rw);
     memory->address = NULL;
@@ -59,7 +81,12 @@ Result test_dispatch(Service *service, u32 command, const void *in, size_t size,
 
 int main(int argc, char **argv) {
     assert(argc == 2);
-    if (strcmp(argv[1], "retry") == 0) {
+    if (strcmp(argv[1], "start") == 0) {
+        platform_fps_start();
+        assert(create_calls == 1 && start_calls == 1);
+        platform_report_present(1280, 720);
+        assert(create_calls == 1);
+    } else if (strcmp(argv[1], "retry") == 0) {
         fail_create = true;
         platform_report_present(1280, 720);
         assert(create_calls == 1 && start_calls == 0);
@@ -70,6 +97,21 @@ int main(int argc, char **argv) {
         test_tick += armGetSystemTickFreq();
         platform_report_present(1280, 720);
         assert(create_calls == 2 && start_calls == 1);
+    } else if (strcmp(argv[1], "session-limit") == 0) {
+        report_session_limit = true;
+        FpsPrefix *candidate = connect_page();
+        assert(candidate == NULL && ended_sessions == 0);
+    } else if (strcmp(argv[1], "stale-magic") == 0) {
+        // A build before 750b6698 wrote its block at the raw server offset,
+        // which is 0 when no injected core reserved the metadata word first.
+        // Status Monitor scans from 0, so that block must not survive.
+        const u32 stale_magic = FPS_MAGIC;
+        memcpy(shared_page, &stale_magic, sizeof(stale_magic));
+        reserve_offset = 0;
+        FpsPrefix *candidate = connect_page();
+        assert(candidate == (FpsPrefix *)(shared_page + METADATA_BYTES));
+        assert(*(const u32 *)shared_page == 0);
+        assert(ended_sessions == 1);
     } else {
         assert(strcmp(argv[1], "publish") == 0 || strcmp(argv[1], "publish-offset") == 0);
         reserve_offset = strcmp(argv[1], "publish-offset") == 0 ? 4 : 0;

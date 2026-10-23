@@ -39,6 +39,9 @@ static u32 observed_tick;
 static unsigned window_frames, tick_index;
 static bool observing, external_writer, logged_report;
 
+static Result start_connector(void);
+static void connector_main(void *unused);
+
 extern void platform_fps_log(const char *message);
 
 static void fps_log(const char *format, ...) {
@@ -55,6 +58,29 @@ static void connection_failure(const char *stage, Result result) {
     static Result last_result;
     if (stage != last_stage || result != last_result) {
         fps_log("%s failed: 0x%x; retrying in 5 seconds", stage, result);
+        // Kernel description 132 is LimitReached: this process has no session
+        // slot left for the SaltySD port. Report the counts so a real device
+        // log can distinguish that from a missing or busy sysmodule.
+        if (strcmp(stage, "connect SaltySD") == 0 && R_MODULE(result) == Module_Kernel &&
+            R_DESCRIPTION(result) == KernelError_OutOfResource) {
+            u64 limit_handle = 0;
+            s64 current = -1, maximum = -1;
+            Result info = svcGetInfo(&limit_handle, InfoType_ResourceLimit, CUR_PROCESS_HANDLE, 0);
+            Result counts = R_FAILED(info)
+                ? info
+                : svcGetResourceLimitCurrentValue(&current, (Handle)limit_handle,
+                    LimitableResource_Sessions);
+            if (R_SUCCEEDED(counts)) {
+                counts = svcGetResourceLimitLimitValue(&maximum, (Handle)limit_handle,
+                    LimitableResource_Sessions);
+            }
+            if (R_SUCCEEDED(counts)) {
+                fps_log("process sessions at limit: %lld/%lld; connect result 0x%x",
+                    (long long)current, (long long)maximum, result);
+            } else {
+                fps_log("process sessions at limit but counts unavailable: 0x%x", counts);
+            }
+        }
         last_stage = stage;
         last_result = result;
     }
@@ -87,6 +113,17 @@ static FpsPrefix *connect_page(void) {
     }
     u8 *base = shmemGetAddr(&memory);
     if (base) {
+        // Builds before 750b6698 wrote their block at the raw server offset,
+        // which is 0 when no injected core reserved the metadata word first.
+        // Status Monitor scans from offset 0 and binds the first magic it
+        // finds, so clear that stale block before reserving the fixed layout.
+        u32 stale;
+        memcpy(&stale, base, sizeof(stale));
+        if (stale == FPS_MAGIC) {
+            const u32 cleared = 0;
+            memcpy(base, &cleared, sizeof(cleared));
+            fps_log("cleared stale FPS block at offset 0");
+        }
         for (size_t offset = METADATA_BYTES; offset + sizeof(FpsPrefix) <= PAGE_BYTES; offset += 4) {
             u32 magic;
             memcpy(&magic, base + offset, sizeof(magic));
@@ -116,13 +153,30 @@ static FpsPrefix *connect_page(void) {
         }
     }
     // SaltyNX closes command 0's session without replying (0xf601 is expected).
-    serviceDispatch(&service, 0, .in_send_pid = true);
+    // Command 0 sets the server's should_terminate flag, so send it only for a
+    // session that actually produced a block; a failing retry just closes the
+    // port instead of tearing down the accept loop every 5 seconds.
+    if (candidate) serviceDispatch(&service, 0, .in_send_pid = true);
     svcCloseHandle(port);
     if (candidate) {
         fps_log("shared page mapped: offset=0x%zx, %s block",
             (size_t)((u8 *)candidate - base), candidate_reused ? "existing" : "new");
     }
     return candidate;
+}
+
+static Result start_connector(void) {
+    Result result = threadCreate(&connector, connector_main, NULL, NULL, 0x8000, 0x2c, -2);
+    if (R_SUCCEEDED(result)) {
+        result = threadStart(&connector);
+        if (R_FAILED(result)) threadClose(&connector);
+    }
+    connector_started = R_SUCCEEDED(result);
+    if (R_FAILED(result)) {
+        retry_thread_at = armGetSystemTick() + 5 * armGetSystemTickFreq();
+        fps_log("background connector failed to start: 0x%x; retrying in 5 seconds", result);
+    }
+    return result;
 }
 
 static void connector_main(void *unused) {
@@ -134,6 +188,15 @@ static void connector_main(void *unused) {
         }
         svcSleepThread(5000000000LL);
     }
+}
+
+// Start before the GPU is created: NVK, the applet and audio each own kernel
+// sessions, and SaltySD needs a free slot in this process's session limit.
+// Rust calls this right after installing the file logger.
+void platform_fps_start(void) {
+    if (connector_started) return;
+    fps_log("starting shared FPS reporter before GPU initialization");
+    start_connector();
 }
 
 // Called on the render thread after each successful wgpu present, including
@@ -151,16 +214,7 @@ void platform_report_present(u32 width, u32 height) {
     }
     if (!connector_started && now >= retry_thread_at) {
         fps_log("starting shared FPS reporter (%ux%u)", width, height);
-        Result result = threadCreate(&connector, connector_main, NULL, NULL, 0x8000, 0x2c, -2);
-        if (R_SUCCEEDED(result)) {
-            result = threadStart(&connector);
-            if (R_FAILED(result)) threadClose(&connector);
-        }
-        connector_started = R_SUCCEEDED(result);
-        if (R_FAILED(result)) {
-            retry_thread_at = now + 5 * frequency;
-            fps_log("background connector failed: 0x%x; retrying in 5 seconds", result);
-        }
+        start_connector();
     }
     if (!block) {
         block = atomic_load_explicit(&published, memory_order_acquire);

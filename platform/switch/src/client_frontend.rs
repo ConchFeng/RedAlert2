@@ -12,6 +12,7 @@ unsafe extern "C" fn platform_fps_log(message: *const std::ffi::c_char) {
 }
 
 unsafe extern "C" {
+    fn platform_fps_start();
     fn platform_console_init();
     fn platform_applet_type() -> i32;
     fn platform_mount_user_save() -> u32;
@@ -51,6 +52,9 @@ fn run_mounted(romfs_mounted: bool) -> Result<()> {
     let log_path =
         vera20k::util::logging::init_file_logger("client").context("initialize client log")?;
     vera20k::util::logging::install_panic_hook(Some(&log_path));
+    // GPU, applet and audio initialization consume kernel sessions. Connect to
+    // the optional SaltyNX reporter before them so its port gets a free slot.
+    unsafe { platform_fps_start() };
     log::info!("Starting shared VERA20k client on Horizon");
     log::info!("romfs_mounted={romfs_mounted}");
     vera20k::app::App::default().run()

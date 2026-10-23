@@ -14,6 +14,7 @@ typedef struct { void *address; } SharedMemory;
 typedef struct { Handle session; } Service;
 typedef struct { int unused; } Thread;
 typedef void (*ThreadFunc)(void *);
+typedef int64_t s64;
 typedef struct {
     bool in_send_pid;
     int out_handle_attrs[8];
@@ -24,12 +25,22 @@ typedef struct {
 #define INVALID_HANDLE 0
 #define Perm_Rw 3
 #define SfOutHandleAttr_HipcCopy 1
+#define CUR_PROCESS_HANDLE 0xFFFF8001u
+#define Module_Kernel 1
+#define KernelError_OutOfResource 132
+#define InfoType_ResourceLimit 9
+#define LimitableResource_Sessions 4
+#define R_MODULE(result) ((result) & 0x1FF)
+#define R_DESCRIPTION(result) (((result) >> 9) & 0x1FFF)
 #define R_FAILED(result) ((result) != 0)
 #define R_SUCCEEDED(result) ((result) == 0)
 
 Result svcConnectToNamedPort(Handle *, const char *);
 Result svcCloseHandle(Handle);
 void svcSleepThread(int64_t);
+Result svcGetInfo(u64 *, int, Handle, u64);
+Result svcGetResourceLimitCurrentValue(s64 *, Handle, int);
+Result svcGetResourceLimitLimitValue(s64 *, Handle, int);
 void shmemLoadRemote(SharedMemory *, Handle, size_t, int);
 Result shmemMap(SharedMemory *);
 Result shmemClose(SharedMemory *);
