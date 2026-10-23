@@ -305,6 +305,14 @@ pub(crate) struct ThemeAllowContext {
 pub(crate) struct ThemeRuntime {
     catalog_loaded: bool,
     entries: Vec<ThemeEntry>,
+    /// Physical failures, shared by logical entries with the same Sound stem.
+    /// Like the once-loaded catalog, these belong to this process's Theme:
+    /// AssetManager mounts THEMEMD.MIX/THEME.MIX at construction and snapshots
+    /// loose files on first read; scenario leases do not replace those sources.
+    /// Reloading the installation/catalog must construct a fresh ThemeRuntime.
+    /// Keep availability/Next_Song unchanged: failed Play still advances slots
+    /// and Main RNG on every AI poll. Only physical preparation is memoized.
+    failed_tracks: Vec<String>,
     slots: ThemeSlots,
     /// Signed +0x0C gate; derived from Options' stored f32, independent of
     /// the physical stream's separate gain. Ctor72096F initializes 255.
@@ -325,6 +333,7 @@ impl Default for ThemeRuntime {
         Self {
             catalog_loaded: false,
             entries: Vec::new(),
+            failed_tracks: Vec::new(),
             slots: ThemeSlots::default(),
             score_volume: 255,
             global_repeat: false,
@@ -965,13 +974,33 @@ impl ThemeRuntime {
         if index >= 0 && self.score_volume > 0 {
             self.slots.retained = index;
             if physical.stream_exists() {
-                let stem = self.entry(index).map(|entry| entry.sound.clone());
-                match stem.as_deref().and_then(prepare) {
+                let track = self.entry(index).and_then(|entry| {
+                    if self
+                        .failed_tracks
+                        .iter()
+                        .any(|stem| stem.eq_ignore_ascii_case(&entry.sound))
+                    {
+                        None
+                    } else {
+                        prepare(&entry.sound)
+                    }
+                });
+                match track {
                     Some(prepared) => {
                         action.start = Some(prepared);
                         self.slots.active = index;
                     }
                     None => {
+                        let failed_stem = self.entry(index).and_then(|entry| {
+                            (!self
+                                .failed_tracks
+                                .iter()
+                                .any(|stem| stem.eq_ignore_ascii_case(&entry.sound)))
+                            .then(|| entry.sound.clone())
+                        });
+                        if let Some(stem) = failed_stem {
+                            self.failed_tracks.push(stem);
+                        }
                         // PlayFile's failure is ignored natively (active :=
                         // index while nothing streams); Rust leaves active -1
                         // so AI's next poll consumes pending the same way.
@@ -1146,6 +1175,127 @@ mod tests {
 
     fn no_draw(_low: i32, _high: i32) -> i32 {
         panic!("this Theme path must not draw Main")
+    }
+
+    #[test]
+    fn cached_failures_preserve_retry_slots_and_shared_rng_continuation() {
+        for shuffle in [false, true] {
+            let mut cached = stock_runtime();
+            let mut uncached = stock_runtime();
+            cached.set_score_options(false, shuffle);
+            uncached.set_score_options(false, shuffle);
+            cached.slots.pending = 0; // Missing repeating INTRO/Drok.
+            uncached.slots.pending = 0;
+            let mut cached_main = SimRng::new(17);
+            let mut uncached_main = SimRng::new(17);
+            let mut attempts = Vec::new();
+            for _ in 0..64 {
+                let action = cached.ai(
+                    gates(true),
+                    MusicOutputState::Idle,
+                    &mut |stem| {
+                        attempts.push(stem.to_owned());
+                        None
+                    },
+                    &mut |low, high| cached_main.next_range_i32_inclusive(low, high),
+                );
+                // Reference the original physical retry behavior while using
+                // the same production slot/selection code.
+                uncached.failed_tracks.clear();
+                let reference = uncached.ai(
+                    gates(true),
+                    MusicOutputState::Idle,
+                    &mut |_| None,
+                    &mut |low, high| uncached_main.next_range_i32_inclusive(low, high),
+                );
+                assert!(action.start.is_none() && reference.start.is_none());
+                assert_eq!(action.stop_output, reference.stop_output);
+                assert_eq!(action.fade_out, reference.fade_out);
+                assert_eq!(cached.slots(), uncached.slots());
+                assert_eq!(cached.slots.pending, THEME_AUTO);
+                assert_eq!(
+                    cached_main.native_state_hex(),
+                    uncached_main.native_state_hex()
+                );
+            }
+            assert_eq!(attempts.iter().filter(|stem| *stem == "Drok").count(), 1);
+            assert!(attempts.len() < 64);
+            assert_eq!(cached_main.next_u32(), uncached_main.next_u32());
+            // Alias and repeated explicit requests must use the same failure.
+            cached.play_song(6, gates(true), MusicOutputState::Idle, &mut |_| {
+                panic!("Drok alias must not prepare again")
+            });
+        }
+    }
+
+    #[test]
+    fn physical_failures_are_theme_local_and_successful_tracks_are_not_cached() {
+        let dir =
+            crate::assets::asset_manager::test_support::TestDirectory::new("theme-negative-cache");
+        std::fs::write(dir.path().join("Drok.wav"), b"invalid WAV").unwrap();
+        let assets = AssetManager::from_loose_root_for_test(dir.path());
+        let mut theme = stock_runtime();
+        let mut attempts = 0;
+        // Exercise real resolution/decoding: invalid Drok and missing Bully.
+        for _ in 0..3 {
+            for index in [0, 2, 6] {
+                let action =
+                    theme.play_song(index, gates(true), MusicOutputState::Idle, &mut |stem| {
+                        attempts += 1;
+                        prepare_track(stem, &assets)
+                    });
+                assert!(action.start.is_none());
+            }
+        }
+        assert_eq!(attempts, 2);
+
+        // A new installation/catalog lifetime gets a new Theme owner. A PCM
+        // source remains reusable; volume/device gates must not poison it.
+        let valid_dir =
+            crate::assets::asset_manager::test_support::TestDirectory::new("theme-valid-cache");
+        let mut wav = b"RIFF".to_vec();
+        wav.extend(40u32.to_le_bytes());
+        wav.extend(b"WAVEfmt ");
+        wav.extend(16u32.to_le_bytes());
+        for value in [1u16, 1] {
+            wav.extend(value.to_le_bytes());
+        }
+        wav.extend(22_050u32.to_le_bytes());
+        wav.extend(44_100u32.to_le_bytes());
+        for value in [2u16, 16] {
+            wav.extend(value.to_le_bytes());
+        }
+        wav.extend(b"data");
+        wav.extend(4u32.to_le_bytes());
+        wav.extend([0u8; 4]);
+        std::fs::write(valid_dir.path().join("Drok.wav"), wav).unwrap();
+        let valid_assets = AssetManager::from_loose_root_for_test(valid_dir.path());
+        let mut fresh = stock_runtime();
+        for (gates, physical, volume) in [
+            (gates(false), MusicOutputState::Idle, 255),
+            (gates(true), MusicOutputState::Unavailable, 255),
+            (gates(true), MusicOutputState::Idle, 0),
+        ] {
+            fresh.set_volume(volume);
+            fresh.play_song(0, gates, physical, &mut |_| {
+                panic!("closed audio gate must not prepare")
+            });
+        }
+        fresh.set_volume(127);
+        let mut successful_attempts = 0;
+        for _ in 0..2 {
+            let action = fresh.play_song(0, gates(true), MusicOutputState::Idle, &mut |stem| {
+                successful_attempts += 1;
+                prepare_track(stem, &valid_assets)
+            });
+            let track = action.start.unwrap();
+            assert_eq!(track.stem, "Drok");
+            assert_eq!(track.sample_rate, 22_050);
+            assert_eq!(track.collect::<Vec<_>>(), vec![0.0; 4]);
+            assert_eq!(fresh.score_volume, 127);
+        }
+        assert_eq!(successful_attempts, 2);
+        assert!(fresh.failed_tracks.is_empty());
     }
 
     #[test]
