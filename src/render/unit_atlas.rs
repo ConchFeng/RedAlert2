@@ -1041,7 +1041,8 @@ pub fn build_unit_atlas(
         // One model at a time, its poses spread over the cores. Each worker
         // takes whole poses, so a pose's parts still share one render, and
         // results are merged back in key order.
-        let workers = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let workers = crate::util::parallel::worker_count();
+        log::info!("Unit atlas rasterizing with {workers} worker thread(s)");
         for type_keys in new_keys.chunk_by(|a, b| a.type_id == b.type_id) {
             let type_id = type_keys[0].type_id.as_str();
             let Some(model) = UnitModel::load(asset_manager, type_id, rules) else {

@@ -32,6 +32,7 @@ pub(crate) mod native_random;
 pub mod native_string;
 pub mod native_trig;
 pub mod native_x87;
+pub mod parallel;
 pub mod pixel_conversion;
 pub mod read_helpers;
 pub mod rect;

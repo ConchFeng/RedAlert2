@@ -55,9 +55,26 @@ fn run_mounted(romfs_mounted: bool) -> Result<()> {
     // GPU, applet and audio initialization consume kernel sessions. Connect to
     // the optional SaltyNX reporter before them so its port gets a free slot.
     unsafe { platform_fps_start() };
+    install_worker_pool();
     log::info!("Starting shared VERA20k client on Horizon");
     log::info!("romfs_mounted={romfs_mounted}");
     vera20k::app::App::default().run()
+}
+
+/// Size rayon's global pool from the process core mask.
+///
+/// Rayon asks `available_parallelism`, which Horizon answers with
+/// `Unsupported`, so every `sim::parallel` map — path batching, the entity
+/// scans — would otherwise run on a single thread despite three usable cores.
+fn install_worker_pool() {
+    let workers = vera20k::util::parallel::worker_count();
+    match rayon::ThreadPoolBuilder::new()
+        .num_threads(workers)
+        .build_global()
+    {
+        Ok(()) => log::info!("Global worker pool: {workers} thread(s)"),
+        Err(err) => log::warn!("Global worker pool unavailable: {err}"),
+    }
 }
 
 fn commit_user_save() -> Result<()> {
