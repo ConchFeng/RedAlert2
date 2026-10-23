@@ -36,7 +36,7 @@ fn repeated_redraws_cannot_multiply_offline_scroll_steps() {
                 let decision = decide_runtime_pass(ordinary_pass(mode, admitted));
                 if decision.run_sim {
                     frames += 1;
-                    pacer.record_admitted_frame(now_ms);
+                    pacer.record_admitted_frame(now_ms, game_speed);
                 }
                 camera_steps += usize::from(decision.scroll_input);
             }

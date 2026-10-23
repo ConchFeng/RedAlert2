@@ -419,6 +419,9 @@ impl App {
             shell_capture.is_none() || tactical_capture.is_none(),
             "shell and tactical capture cannot share a render"
         );
+        // Captures own their own simulation stepping; the rendered match must
+        // not advance behind them.
+        let catch_up_allowed = shell_capture.is_none() && tactical_capture.is_none();
         #[cfg(feature = "telemetry-dashboard")]
         crate::app::telemetry_capture::synchronize_observer(state);
         if let Some(session) = tactical_capture.as_deref_mut() {
@@ -1155,8 +1158,45 @@ impl App {
         crate::app::loading::pump::after_loading_frame_presented(state);
         #[cfg(feature = "telemetry-dashboard")]
         crate::app::telemetry_capture::publish_if_due(state);
+        if catch_up_allowed {
+            Self::catch_up_match_runtime(state, event_loop);
+        }
 
         Ok(())
+    }
+
+    /// Spend the time a blocking present took on the gameplay frames the pacer
+    /// still owes.
+    ///
+    /// Retail admits one Logic pass per present, which is indistinguishable at
+    /// 60 Hz. Horizon presents at 30 Hz or slower, so keeping that rule would
+    /// run the match at half speed: scenario time, animations and fire rates
+    /// all stretch. The pacing anchor advances one window per admitted frame,
+    /// so this loop drains the backlog and stops as soon as the sim is current.
+    /// The cap keeps a stalled GPU from spending the whole pass on catch-up.
+    fn catch_up_match_runtime(state: &mut AppState, event_loop: &ActiveEventLoop) {
+        const MAX_CATCH_UP_FRAMES: usize = 4;
+        if state.frontend.screen != GameScreen::InGame {
+            return;
+        }
+        for _ in 0..MAX_CATCH_UP_FRAMES {
+            let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
+            let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
+            // An untimed scenario is unpaced by design; it needs no backlog.
+            if game_speed == 0 || state.frontend.screen != GameScreen::InGame {
+                return;
+            }
+            if !state.platform.frame_pacer.should_admit(
+                now_ms,
+                game_speed,
+                state.match_state.paused(),
+            ) {
+                return;
+            }
+            if Self::service_match_runtime(state, event_loop, true).quit_requested {
+                return;
+            }
+        }
     }
 }
 

@@ -737,7 +737,8 @@ pub(crate) fn advance_in_game_runtime_exact_step(
 
     advance_in_game_runtime_mode(state, RuntimeAdvanceMode::ExactOneStep, admitted, false);
     let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
-    state.platform.frame_pacer.reanchor(now_ms);
+    let game_speed = current_game_speed(state);
+    state.platform.frame_pacer.reanchor(now_ms, game_speed);
 
     let (tick_after, binary_frame_after) = state
         .match_state
@@ -772,6 +773,27 @@ fn validate_exact_step_receipt(receipt: ExactStepReceipt) -> Result<(), ExactSte
     Ok(())
 }
 
+/// The scenario's authored game speed, used by both the pacer consult and the
+/// admission record so the two always agree on the pacing window.
+pub(crate) fn current_game_speed(state: &AppState) -> u8 {
+    state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|rt| &rt.simulation)
+        .map_or_else(
+            || {
+                state
+                    .match_state
+                    .match_presentation
+                    .in_game_options
+                    .game_speed
+                    .min(6) as u8
+            },
+            |sim| sim.session().game_options().game_speed.clamp(0, 6) as u8,
+        )
+}
+
 fn advance_in_game_runtime_mode(
     state: &mut AppState,
     mode: RuntimeAdvanceMode,
@@ -797,24 +819,9 @@ fn advance_in_game_runtime_mode(
     crate::app::input::commands::reconcile_paid_super_weapon_cursor(state);
     let frame_stepping = matches!(mode, RuntimeAdvanceMode::WallClock { .. })
         && state.diag.debug_frame_step_requested;
+    let game_speed = current_game_speed(state);
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
-            let game_speed = state
-                .match_state
-                .sim_runtime
-                .as_ref()
-                .map(|rt| &rt.simulation)
-                .map_or_else(
-                    || {
-                        state
-                            .match_state
-                            .match_presentation
-                            .in_game_options
-                            .game_speed
-                            .min(6) as u8
-                    },
-                    |sim| sim.session().game_options().game_speed.clamp(0, 6) as u8,
-                );
             // Pure timing consult; pause/menu blocking belongs to the decision.
             state
                 .platform
@@ -853,7 +860,10 @@ fn advance_in_game_runtime_mode(
             pump_audio_service(state, wall_ms);
         }
         super::scenario_pause::apply_service(state, ScenarioServiceInput::StepChronoScreen);
-        state.platform.frame_pacer.record_admitted_frame(wall_ms);
+        state
+            .platform
+            .frame_pacer
+            .record_admitted_frame(wall_ms, game_speed);
     }
     let resume_wait = state
         .match_state
@@ -886,7 +896,7 @@ fn advance_in_game_runtime_mode(
     if frame_stepping {
         state.diag.debug_frame_step_requested = false;
         if let RuntimeAdvanceMode::WallClock { now_ms } = mode {
-            state.platform.frame_pacer.reanchor(now_ms);
+            state.platform.frame_pacer.reanchor(now_ms, game_speed);
         }
     }
 
@@ -956,7 +966,10 @@ fn advance_in_game_runtime_mode(
             let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
                 unreachable!("only wall-clock admission records the frame pacer");
             };
-            state.platform.frame_pacer.record_admitted_frame(now_ms);
+            state
+                .platform
+                .frame_pacer
+                .record_admitted_frame(now_ms, game_speed);
         }
     } else if let Some(request) = mouse_scroll {
         crate::app::input::camera::commit_camera_scroll(state, request);

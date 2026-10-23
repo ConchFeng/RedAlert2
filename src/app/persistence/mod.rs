@@ -865,7 +865,7 @@ mod tests {
 
             let startup = startup_authority(LOAD_FIXTURE_SEED);
             let mut frame_pacer = LocalFramePacer::new();
-            frame_pacer.record_admitted_frame(32);
+            frame_pacer.record_admitted_frame(32, 1);
             let mut lighting_grid = CellLightGrid::new();
             lighting_grid.set_compat_tint((3, 4), [0.25, 0.5, 0.75]);
 

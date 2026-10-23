@@ -317,7 +317,8 @@ impl TacticalCaptureSession {
         state.match_state.input.cursor_x = capture.post_load_cursor.x as f32;
         state.match_state.input.cursor_y = capture.post_load_cursor.y as f32;
         let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
-        state.platform.frame_pacer.reanchor(now_ms);
+        let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
+        state.platform.frame_pacer.reanchor(now_ms, game_speed);
         self.begin_accepted_loading(state)?;
         self.failure_stage = "loading".to_owned();
         Ok(())

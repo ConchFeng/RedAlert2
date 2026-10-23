@@ -3108,7 +3108,8 @@ impl TacticalCaptureSession {
         state.match_state.input.cursor_x = 0.0;
         state.match_state.input.cursor_y = 0.0;
         let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
-        state.platform.frame_pacer.reanchor(now_ms);
+        let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
+        state.platform.frame_pacer.reanchor(now_ms, game_speed);
         Ok(())
     }
 

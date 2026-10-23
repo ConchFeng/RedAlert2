@@ -64,7 +64,14 @@ pub(crate) fn wall_clock_ms() -> u64 {
 
 #[derive(Debug, Default)]
 pub(crate) struct LocalFramePacer {
+    /// Start bucket of the last admitted frame. Presentation interpolation and
+    /// diagnostics read this, so it always holds a real admission time.
     last_frame_start_bucket: Option<u32>,
+    /// Earliest bucket at which the next frame may run. Distinct from the
+    /// interpolation origin: a present that took several pacing windows leaves
+    /// this behind the wall clock, and the owed frames are admitted without
+    /// stretching game time.
+    next_admit_bucket: Option<u32>,
 }
 
 /// App-owned elapsed-time clock used by the end-of-match score dialog.
@@ -210,6 +217,7 @@ impl LocalFramePacer {
     pub(crate) const fn new() -> Self {
         Self {
             last_frame_start_bucket: None,
+            next_admit_bucket: None,
         }
     }
 
@@ -236,30 +244,49 @@ impl LocalFramePacer {
         if game_speed == 0 {
             return true;
         }
-        let Some(last_bucket) = self.last_frame_start_bucket else {
+        let Some(next_bucket) = self.next_admit_bucket else {
             return true;
         };
-        let required_buckets =
-            u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
-        let elapsed = frame_bucket(now_ms).wrapping_sub(last_bucket) as i32;
-        elapsed >= required_buckets as i32
+        frame_bucket(now_ms).wrapping_sub(next_bucket) as i32 >= 0
     }
 
-    pub(crate) fn record_admitted_frame(&mut self, frame_start_ms: u64) {
-        self.last_frame_start_bucket = Some(frame_bucket(frame_start_ms));
+    /// Record one admitted frame.
+    ///
+    /// When the previous admission is more than one pacing window back — a
+    /// present that blocked in the compositor, a synchronous atlas rebuild —
+    /// advance the anchor by exactly one window instead of snapping it to
+    /// `frame_start_ms`. The next request then admits the frame that window
+    /// still owes, so a slow present rate costs smoothness and never stretches
+    /// game time. Retail ties one Logic pass to one present, which is
+    /// indistinguishable at 60 Hz; below that it runs the match in slow motion.
+    pub(crate) fn record_admitted_frame(&mut self, frame_start_ms: u64, game_speed: u8) {
+        let now_bucket = frame_bucket(frame_start_ms);
+        let required = u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
+        self.last_frame_start_bucket = Some(now_bucket);
+        self.next_admit_bucket = Some(match self.next_admit_bucket {
+            // One admission consumes exactly one window, so the debt left by a
+            // slow present is paid off by later passes instead of being folded
+            // into a single anchor jump.
+            Some(next) if now_bucket.wrapping_sub(next) as i32 >= 0 => next.wrapping_add(required),
+            _ => now_bucket.wrapping_add(required),
+        });
     }
 
     /// Forget the prior pacing window so the next unpaused frame runs now.
     pub(crate) fn reset_for_immediate_frame(&mut self) {
         self.last_frame_start_bucket = None;
+        self.next_admit_bucket = None;
     }
 
     /// Suppress another automatic frame until one full pacing window passes.
     ///
     /// This is for explicit single-step/capture work. Normal match entry and
     /// modal resume use `reset_for_immediate_frame`.
-    pub(crate) fn reanchor(&mut self, now_ms: u64) {
-        self.last_frame_start_bucket = Some(frame_bucket(now_ms));
+    pub(crate) fn reanchor(&mut self, now_ms: u64, game_speed: u8) {
+        let now_bucket = frame_bucket(now_ms);
+        let required = u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
+        self.last_frame_start_bucket = Some(now_bucket);
+        self.next_admit_bucket = Some(now_bucket.wrapping_add(required));
     }
 
     #[cfg(test)]
@@ -267,14 +294,8 @@ impl LocalFramePacer {
         if game_speed == 0 {
             return None;
         }
-        let last_bucket = self.last_frame_start_bucket?;
-        let required_buckets =
-            u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
-        Some(
-            u64::from(last_bucket)
-                .saturating_add(u64::from(required_buckets))
-                .saturating_mul(FRAME_BUCKET_MS),
-        )
+        let next_bucket = self.next_admit_bucket?;
+        Some(u64::from(next_bucket) * FRAME_BUCKET_MS)
     }
 }
 
@@ -295,10 +316,10 @@ mod tests {
     fn render_interpolation_phase_uses_pacing_bucket_and_wraps_with_uptime() {
         let mut pacer = LocalFramePacer::new();
         assert_eq!(pacer.interpolation_elapsed_ms(0), None);
-        pacer.record_admitted_frame(31);
+        pacer.record_admitted_frame(31, 1);
         assert_eq!(pacer.interpolation_elapsed_ms(31), Some(15));
         assert_eq!(pacer.interpolation_elapsed_ms(47), Some(31));
-        pacer.record_admitted_frame(u64::from(u32::MAX - 7));
+        pacer.record_admitted_frame(u64::from(u32::MAX - 7), 1);
         assert_eq!(pacer.interpolation_elapsed_ms(8), Some(24));
     }
     #[test]
@@ -346,7 +367,7 @@ mod tests {
     fn timed_speeds_require_the_exact_bucket_distance() {
         for speed in MIN_TIMED_GAME_SPEED..=MAX_TIMED_GAME_SPEED {
             let mut pacer = LocalFramePacer::new();
-            pacer.record_admitted_frame(32);
+            pacer.record_admitted_frame(32, speed);
             let deadline = 32 + u64::from(speed) * FRAME_BUCKET_MS;
             assert!(!pacer.should_admit(deadline - 1, speed, false));
             assert!(pacer.should_admit(deadline, speed, false));
@@ -357,9 +378,30 @@ mod tests {
     #[test]
     fn native_signed_bucket_subtraction_stalls_at_uptime_rollover() {
         let mut pacer = LocalFramePacer::new();
-        pacer.record_admitted_frame(u64::from(u32::MAX - 7));
+        pacer.record_admitted_frame(u64::from(u32::MAX - 7), 1);
 
         assert!(!pacer.should_admit(u64::from(u32::MAX) + 1, 1, false));
+    }
+
+    #[test]
+    fn a_slow_present_owes_frames_instead_of_stretching_game_time() {
+        // 30 Hz presents: every admission lands two buckets after the previous
+        // one, so the pacer must hand out the second frame rather than move
+        // the anchor forward by two windows at once.
+        let mut pacer = LocalFramePacer::new();
+        pacer.record_admitted_frame(0, 1);
+        assert!(pacer.should_admit(33, 1, false));
+        pacer.record_admitted_frame(33, 1);
+        assert!(
+            pacer.should_admit(33, 1, false),
+            "the window the present consumed is still owed"
+        );
+        pacer.record_admitted_frame(33, 1);
+        assert!(!pacer.should_admit(33, 1, false));
+        // One admission consumes exactly one window, so a long stall leaves a
+        // finite backlog instead of one huge jump.
+        pacer.record_admitted_frame(97, 1);
+        assert_eq!(pacer.next_deadline_ms(1), Some(64));
     }
 
     #[test]
