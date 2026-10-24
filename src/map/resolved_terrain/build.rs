@@ -1228,20 +1228,31 @@ pub(super) fn load_native_tmp_draw_heights(
     let (Some(theater), Some(assets)) = (theater, assets) else {
         return HashMap::new();
     };
+    const WARNING_SAMPLE_LIMIT: usize = 8;
     let mut heights = HashMap::new();
+    let mut missing_filenames = 0;
+    let mut missing_assets = 0;
+    let mut invalid_headers = 0;
+    let mut warning_samples = Vec::with_capacity(WARNING_SAMPLE_LIMIT);
     for id in 0..theater.lookup.len() {
         let Ok(id) = u16::try_from(id) else {
             break;
         };
         let Some(name) = theater.lookup.filename(i32::from(id)) else {
-            log::warn!("TMP draw dimensions unavailable: tile {id} has no registered filename");
+            missing_filenames += 1;
+            if warning_samples.len() < WARNING_SAMPLE_LIMIT {
+                warning_samples.push(format!("tile {id}: no registered filename"));
+            }
             continue;
         };
-        let Some(bytes) = assets.get(name) else {
-            log::warn!("TMP draw dimensions unavailable: tile {id} asset {name} is missing");
+        let Some(bytes) = assets.get_ref(name) else {
+            missing_assets += 1;
+            if warning_samples.len() < WARNING_SAMPLE_LIMIT {
+                warning_samples.push(format!("tile {id}: missing {name}"));
+            }
             continue;
         };
-        match TmpFile::pristine_header_fields_from_bytes(&bytes) {
+        match TmpFile::pristine_header_fields_from_bytes(bytes) {
             Ok(rows) => {
                 heights.insert(
                     id,
@@ -1251,8 +1262,22 @@ pub(super) fn load_native_tmp_draw_heights(
                     },
                 );
             }
-            Err(error) => log::warn!("TMP draw dimensions unavailable for {name}: {error}"),
+            Err(error) => {
+                invalid_headers += 1;
+                if warning_samples.len() < WARNING_SAMPLE_LIMIT {
+                    warning_samples.push(format!("{name}: invalid header ({error})"));
+                }
+            }
         }
+    }
+    let unavailable = missing_filenames + missing_assets + invalid_headers;
+    if unavailable != 0 {
+        log::warn!(
+            "TMP draw dimensions unavailable for {unavailable} tile entries \
+             (no filename={missing_filenames}, missing asset={missing_assets}, \
+             invalid header={invalid_headers}); samples: {}",
+            warning_samples.join("; ")
+        );
     }
     heights
 }

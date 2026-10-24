@@ -135,7 +135,13 @@ impl FpsOverlay {
             );
             frame.logged_first_frame = true;
         }
-        let view = destination.create_view(&wgpu::TextureViewDescriptor::default());
+        // Horizon may expose a linear swapchain texture while the shared
+        // drawing pipelines target its compatible sRGB view.
+        let view = destination.create_view(&wgpu::TextureViewDescriptor {
+            label: Some("FPS overlay sRGB surface view"),
+            format: Some(gpu.surface_format),
+            ..Default::default()
+        });
         let mut pass = encoder.begin_render_pass(&wgpu::RenderPassDescriptor {
             label: Some("Window FPS"),
             color_attachments: &[Some(wgpu::RenderPassColorAttachment {

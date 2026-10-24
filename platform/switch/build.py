@@ -15,6 +15,7 @@ WORKSPACE = ROOT.parents[3]
 TOOLCHAIN = "nightly-2026-10-04"
 UPSTREAM_COMMIT = "3eac779b232ee47cd0eb957676c64386ac7b0f1d"
 DEFAULT_CLIENT_ASSETS = ROOT / "target/emulator/master-xdg-data/eden/sdmc/game"
+CLIENT_VERSION = "0.0.1 beta"
 
 
 def configure_client_savedata(nacp: Path, title_id: str):
@@ -249,7 +250,8 @@ def main():
     nacp = work / f"{artifact}.nacp"
     title = "VERA20k" if args.client else "VERA20k GPU Probe" if args.gpu else "VERA20k Core Probe"
     title_id = CLIENT_TITLE_ID if args.client else GPU_TITLE_ID if args.gpu else TITLE_ID
-    run(sdk / "tools/bin/nacptool", "--create", title, "Homebrew", "0.1.0", nacp,
+    version = CLIENT_VERSION if args.client else "0.1.0"
+    run(sdk / "tools/bin/nacptool", "--create", title, "Homebrew", version, nacp,
         f"--titleid={title_id}")
     if args.client:
         configure_client_savedata(nacp, title_id)
