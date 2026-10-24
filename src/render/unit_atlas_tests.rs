@@ -1054,3 +1054,146 @@ TurretAnim=NTNTBARL
         "the roster's duplicate rows collapse into one model"
     );
 }
+
+/// The load-time preload also admits what each participating House can build
+/// from its own country's roster, so the first harvester or defense structure
+/// a match produces does not open a growth page mid-game.
+#[test]
+fn participating_country_rosters_admit_only_buildable_voxel_models() {
+    use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
+    use crate::sim::house_state::HouseState;
+    use crate::sim::houses::Houses;
+    use crate::sim::intern::StringInterner;
+
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "\
+[Countries]
+0=AMER
+1=RUS
+2=CIV
+[AMER]
+ParentCountry=AMER
+[RUS]
+ParentCountry=RUS
+[CIV]
+ParentCountry=CIV
+[VehicleTypes]
+0=GRIZ
+1=APOC
+2=FORBID
+3=GATED
+4=NEUTRALUNIT
+5=CIVCAR
+[AircraftTypes]
+0=ORCA
+[InfantryTypes]
+0=E1
+[BuildingTypes]
+0=NATURRET
+1=NAPOWR
+
+[GRIZ]
+Owner=AMER
+[APOC]
+Owner=RUS
+[FORBID]
+Owner=AMER
+ForbiddenHouses=AMER
+[GATED]
+Owner=AMER
+RequiredHouses=RUS
+[NEUTRALUNIT]
+Owner=CIV
+DoubleOwned=yes
+[CIVCAR]
+Owner=CIV
+[ORCA]
+Owner=AMER
+[E1]
+Owner=AMER
+[NATURRET]
+Owner=AMER
+TurretAnimIsVoxel=yes
+TurretAnim=NTURRET
+[NAPOWR]
+Owner=AMER
+",
+    ))
+    .expect("country roster rules should parse");
+
+    let mut interner = StringInterner::new();
+    let amer = interner.intern("AMER");
+    let rus = interner.intern("RUS");
+    let civ = interner.intern("CIV");
+    let mut houses = Houses::default();
+    houses.register(HouseState::new(
+        interner.intern("Player"),
+        0,
+        Some(amer),
+        true,
+        0,
+        10,
+    ));
+    houses.register(HouseState::new(
+        interner.intern("Computer1"),
+        1,
+        Some(rus),
+        false,
+        0,
+        10,
+    ));
+    houses.register(HouseState::new(
+        interner.intern("Neutral"),
+        2,
+        Some(civ),
+        false,
+        0,
+        10,
+    ));
+    houses
+        .get_mut(&interner.intern("Neutral"))
+        .expect("passive house registered")
+        .make_multiplay_passive();
+
+    let skirmish = UnitAtlasDemand::of_participating_houses(&houses, &rules, &interner, true);
+    assert!(skirmish.contains(VoxelModel::Ground("GRIZ")));
+    assert!(skirmish.contains(VoxelModel::Ground("APOC")));
+    assert!(
+        skirmish.contains(VoxelModel::Air("ORCA")),
+        "an aircraft joins the air set"
+    );
+    assert!(
+        skirmish.contains(VoxelModel::Turret("NATURRET")),
+        "a building without a voxel body still preloads its voxel gun"
+    );
+    assert!(
+        skirmish.contains(VoxelModel::Ground("NEUTRALUNIT")),
+        "DoubleOwned belongs to every house in a multiplayer match"
+    );
+    assert!(
+        !skirmish.contains(VoxelModel::Ground("FORBID")),
+        "ForbiddenHouses removes the type from the only country that owns it"
+    );
+    assert!(
+        !skirmish.contains(VoxelModel::Ground("GATED")),
+        "RequiredHouses names a country that cannot own the type"
+    );
+    assert!(
+        !skirmish.contains(VoxelModel::Ground("CIVCAR")),
+        "a passive House sits the match out"
+    );
+    assert!(
+        !skirmish.contains(VoxelModel::Ground("E1")),
+        "infantry draws SHP sprites, not a voxel model"
+    );
+    assert!(
+        !skirmish.contains(VoxelModel::Ground("NAPOWR")),
+        "a type with no voxel body and no voxel turret adds nothing"
+    );
+    let campaign = UnitAtlasDemand::of_participating_houses(&houses, &rules, &interner, false);
+    assert!(
+        !campaign.contains(VoxelModel::Ground("NEUTRALUNIT")),
+        "DoubleOwned is a multiplayer-only override"
+    );
+}

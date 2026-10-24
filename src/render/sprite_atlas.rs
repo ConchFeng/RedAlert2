@@ -1004,7 +1004,7 @@ pub fn atlas_covers_world(
 /// non-voxel object in its owner's colour, and every building a unit can
 /// deploy into in every house colour. Every sprite key an object needs
 /// derives from one of these pairs, so the atlas records coverage per pair.
-fn object_pairs<'a>(
+pub(crate) fn object_pairs<'a>(
     entities: &'a crate::sim::entity_store::EntityStore,
     house_colors: &'a HouseColorMap,
     extra_building_types: &'a [&'a str],
@@ -1751,6 +1751,58 @@ pub fn build_sprite_atlas(
     existing: Option<SpriteAtlas>,
     interner: Option<&crate::sim::intern::StringInterner>,
 ) -> Option<SpriteAtlas> {
+    build_sprite_atlas_with_pairs(
+        device,
+        queue,
+        batch,
+        entities,
+        asset_manager,
+        palette,
+        theater_ext,
+        theater_name,
+        rules,
+        art,
+        house_colors,
+        extra_building_types,
+        &[],
+        anim_remap_keys,
+        cell_drawer_type_ids,
+        additional_keys,
+        cell_palette,
+        existing,
+        interner,
+    )
+}
+
+/// [`build_sprite_atlas`] plus explicit `(type, house colour)` pairs.
+///
+/// `extra_building_types` keeps its deploy-target meaning: each type is paired
+/// with every house colour. A load-time country roster, in contrast, knows
+/// which House can build which type, so it passes only those pairs here — the
+/// cross product of a whole faction roster with every colour would multiply
+/// the SHP bake (measured 156,964 sprites against 25,449 in a stock skirmish).
+#[allow(clippy::too_many_arguments)]
+pub fn build_sprite_atlas_with_pairs(
+    device: &wgpu::Device,
+    queue: &wgpu::Queue,
+    batch: &BatchRenderer,
+    entities: &crate::sim::entity_store::EntityStore,
+    asset_manager: &AssetManager,
+    palette: &Palette,
+    theater_ext: &str,
+    theater_name: &str,
+    rules: Option<&RuleSet>,
+    art: Option<&ArtRegistry>,
+    house_colors: &HouseColorMap,
+    extra_building_types: &[&str],
+    extra_object_pairs: &[(String, HouseColorIndex)],
+    anim_remap_keys: &HashSet<AnimRemapKey>,
+    cell_drawer_type_ids: &HashSet<String>,
+    additional_keys: &HashSet<ShpSpriteKey>,
+    cell_palette: Option<&Palette>,
+    existing: Option<SpriteAtlas>,
+    interner: Option<&crate::sim::intern::StringInterner>,
+) -> Option<SpriteAtlas> {
     let started = Instant::now();
     let previous_atlas = existing;
 
@@ -1762,11 +1814,17 @@ pub fn build_sprite_atlas(
             .as_ref()
             .is_some_and(|atlas| atlas.covers_object(type_id, color))
     };
-    let new_objects: HashSet<(String, HouseColorIndex)> =
+    let mut new_objects: HashSet<(String, HouseColorIndex)> =
         object_pairs(entities, house_colors, extra_building_types, interner)
             .filter(|&(type_id, color)| !collected(type_id, color))
             .map(|(type_id, color)| (type_id.to_string(), color))
             .collect();
+    new_objects.extend(
+        extra_object_pairs
+            .iter()
+            .filter(|(type_id, color)| !collected(type_id, *color))
+            .cloned(),
+    );
     let new_remaps: HashSet<AnimRemapKey> = anim_remap_keys
         .iter()
         .filter(|remap| {
@@ -2250,6 +2308,32 @@ pub fn build_sprite_atlas(
         new_keys.len(),
         needed.len(),
     );
+    if !new_keys.is_empty() {
+        // Name the types behind a refresh so a device log can tie a long frame
+        // to the object that asked for it. `new_keys` is sorted by type, so one
+        // pass collects each run's first key.
+        let mut types: Vec<&str> = Vec::new();
+        for key in &new_keys {
+            if types.last().is_none_or(|last| *last != key.type_id.as_str()) {
+                types.push(key.type_id.as_str());
+            }
+        }
+        const LIST_LIMIT: usize = 16;
+        let listed = types
+            .iter()
+            .take(LIST_LIMIT)
+            .copied()
+            .collect::<Vec<_>>()
+            .join(",");
+        if types.len() > LIST_LIMIT {
+            log::info!(
+                "Sprite atlas new types: {listed} (+{} more)",
+                types.len() - LIST_LIMIT
+            );
+        } else {
+            log::info!("Sprite atlas new types: {listed}");
+        }
+    }
 
     // Load anim.pal for world effect SHPs. Anim types (explosions, warp flashes,
     // etc.) are drawn with anim.pal, not unit.pal. Init_Game 0x0052BA60

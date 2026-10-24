@@ -299,36 +299,83 @@ impl UnitAtlasDemand {
         rules: &RuleSet,
         interner: &crate::sim::intern::StringInterner,
     ) -> Self {
-        use crate::rules::object_type::ObjectCategory;
         let mut demand = Self::default();
         for member in teams.authored_task_force_members() {
             let Some(type_id) = interner.try_resolve(member.id) else {
                 continue;
             };
-            let Some(object) = rules.object(type_id) else {
-                continue;
-            };
-            // The spawner's own voxel admission: the art row decides, and only
-            // vehicles and aircraft default to a voxel model.
-            if rules
-                .art()
-                .resolve_metadata_entry(type_id, &object.image)
-                .map(|entry| entry.voxel)
-                .unwrap_or(matches!(
-                    object.category,
-                    ObjectCategory::Vehicle | ObjectCategory::Aircraft
-                ))
+            demand.insert_type(type_id, rules);
+        }
+        demand
+    }
+
+    /// The voxel models every House in the match can build from its own
+    /// country's roster.
+    ///
+    /// A world at load only holds the starting entities, so the first
+    /// harvester, miner or defense structure a country produces used to open a
+    /// growth page mid-match — a visible freeze of hundreds of milliseconds.
+    /// Asking every participating House for its side's ownable vehicle,
+    /// aircraft and voxel-turret building types turns that into one bigger
+    /// load-time bake. Passive houses (Neutral, Civilian) sit the match out and
+    /// contribute nothing, and a country shared by several Houses is read once.
+    pub fn of_participating_houses(
+        houses: &crate::sim::houses::Houses,
+        rules: &RuleSet,
+        interner: &crate::sim::intern::StringInterner,
+        game_mode_nonzero: bool,
+    ) -> Self {
+        let mut demand = Self::default();
+        for country in crate::sim::ai_buildable::participating_countries(houses, rules, interner) {
+            for type_id in rules
+                .vehicle_ids
+                .iter()
+                .chain(&rules.aircraft_ids)
+                .chain(&rules.building_ids)
             {
-                demand.insert_voxel(type_id, matches!(object.category, ObjectCategory::Aircraft));
-            } else if object.turret_anim_is_voxel && object.turret_anim.is_some() {
-                demand.turrets.insert(type_id.to_string());
+                let Some(object) = rules.object(type_id) else {
+                    continue;
+                };
+                if crate::sim::ai_buildable::producible_by_country(
+                    object,
+                    country.masks,
+                    country.side_index,
+                    game_mode_nonzero,
+                    rules,
+                ) {
+                    demand.insert_type(type_id, rules);
+                }
             }
         }
         demand
     }
 
-    /// One authored member's voxel body: an aircraft model for an aircraft
-    /// type, a ground model (every slope) otherwise.
+    /// Admit one rules type exactly as the spawner chooses its model: the ART
+    /// row decides the body, only vehicles and aircraft default to a voxel
+    /// model, and a building without a voxel body still contributes a voxel
+    /// turret when its `TurretAnimIsVoxel=` says so.
+    fn insert_type(&mut self, type_id: &str, rules: &RuleSet) {
+        use crate::rules::object_type::ObjectCategory;
+        let Some(object) = rules.object(type_id) else {
+            return;
+        };
+        if rules
+            .art()
+            .resolve_metadata_entry(type_id, &object.image)
+            .map(|entry| entry.voxel)
+            .unwrap_or(matches!(
+                object.category,
+                ObjectCategory::Vehicle | ObjectCategory::Aircraft
+            ))
+        {
+            self.insert_voxel(type_id, matches!(object.category, ObjectCategory::Aircraft));
+        } else if object.turret_anim_is_voxel && object.turret_anim.is_some() {
+            self.turrets.insert(type_id.to_string());
+        }
+    }
+
+    /// One type's voxel body: an aircraft model for an aircraft type, a ground
+    /// model (every slope) otherwise.
     fn insert_voxel(&mut self, type_id: &str, is_air: bool) {
         let set = if is_air {
             &mut self.air
@@ -424,12 +471,46 @@ impl UnitAtlasDemand {
         self.ground.is_empty() && self.air.is_empty() && self.turrets.is_empty()
     }
 
-    fn len(&self) -> usize {
+    pub(crate) fn len(&self) -> usize {
         self.ground.len() + self.air.len() + self.turrets.len()
     }
 
+    /// The held models as one line, tagged by the pose they draw with. A
+    /// refresh logs this so a device log names the type that cost the frame
+    /// instead of only counting it.
+    pub fn describe(&self) -> String {
+        let group = |label: &str, set: &BTreeSet<String>| {
+            (!set.is_empty()).then(|| {
+                format!(
+                    "{label}{}",
+                    set.iter()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join(",")
+                )
+            })
+        };
+        [
+            group("ground ", &self.ground),
+            group("air ", &self.air),
+            group("turret ", &self.turrets),
+        ]
+        .into_iter()
+        .flatten()
+        .collect::<Vec<_>>()
+        .join(" | ")
+    }
+
+    /// Every held type id, once, regardless of which pose set holds it. A
+    /// tool that compares demand across frames consumes this.
+    pub fn type_ids(&self) -> impl Iterator<Item = &str> {
+        [&self.ground, &self.air, &self.turrets]
+            .into_iter()
+            .flat_map(|set| set.iter().map(String::as_str))
+    }
+
     /// The models in `self` that `covered` does not hold.
-    fn without(&self, covered: &Self) -> Self {
+    pub fn without(&self, covered: &Self) -> Self {
         let missing = |mine: &BTreeSet<String>, theirs: &BTreeSet<String>| {
             mine.difference(theirs).cloned().collect()
         };
@@ -440,7 +521,14 @@ impl UnitAtlasDemand {
         }
     }
 
-    fn extend(&mut self, other: Self) {
+    /// Whether `self` holds every model `other` draws, i.e. whether a world
+    /// covered by `other` needs no atlas growth.
+    pub fn covers(&self, other: &Self) -> bool {
+        other.without(self).is_empty()
+    }
+
+    /// Add every model of `other`, keeping the sets deduplicated.
+    pub fn extend(&mut self, other: Self) {
         self.ground.extend(other.ground);
         self.air.extend(other.air);
         self.turrets.extend(other.turrets);
@@ -991,7 +1079,7 @@ type UnitFrameCounts = BTreeMap<(String, VxlLayer, i32), u32>;
 ///
 /// Ground vehicles get all 17 slope variants (0-16) pre-rendered so that no
 /// atlas rebuild is needed when they drive onto any populated ramp.
-fn needed_unit_keys(
+pub(crate) fn needed_unit_keys(
     demand: &UnitAtlasDemand,
     asset_manager: &AssetManager,
     rules: Option<&RuleSet>,
@@ -1089,7 +1177,7 @@ pub fn build_unit_atlas_with_demand(
         demand.extend(authored);
         if demand.len() != world_models {
             log::info!(
-                "Unit atlas preloads {} authored team model(s) the world does not hold",
+                "Unit atlas preloads {} model(s) beyond the world at load",
                 demand.len() - world_models,
             );
         }
@@ -1136,9 +1224,10 @@ pub fn build_unit_atlas_with_demand(
             ))
     });
     log::info!(
-        "Unit atlas: {} new sprites to render for {} new voxel models",
+        "Unit atlas: {} new sprites to render for {} new voxel models: {}",
         new_keys.len(),
         missing.len(),
+        missing.describe(),
     );
 
     // Step 2: Render the new sprites.

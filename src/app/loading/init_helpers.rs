@@ -487,11 +487,25 @@ pub(crate) fn build_presentation_manifest(
         // starting entities never name the types its roster recruits. Bake
         // them now: a mid-match growth page costs the player a visible freeze.
         let authored = rules.map(|rules| {
-            unit_atlas::UnitAtlasDemand::of_authored_teams(
+            let teams = unit_atlas::UnitAtlasDemand::of_authored_teams(
                 sim.team_script_vm(),
                 rules,
                 sim.interner(),
-            )
+            );
+            let rosters = unit_atlas::UnitAtlasDemand::of_participating_houses(
+                sim.houses(),
+                rules,
+                sim.interner(),
+                sim.session().game_mode_nonzero(),
+            );
+            log::info!(
+                "Unit atlas load roster: {} authored team model(s), {} country buildable model(s)",
+                teams.len(),
+                rosters.len(),
+            );
+            let mut demand = teams;
+            demand.extend(rosters);
+            demand
         });
         unit_atlas::build_unit_atlas_with_demand(
             &gpu.device,
@@ -507,8 +521,55 @@ pub(crate) fn build_presentation_manifest(
     } else {
         None
     };
-    // Pre-load building types that can be spawned at runtime (e.g., ConYards from MCV deploy).
+    // Pre-load building types that can be spawned at runtime (e.g., ConYards
+    // from MCV deploy). A hull that is not resident opens a growth page on the
+    // first power plant or defense a match builds, which is a visible freeze.
     let extra_buildings: Vec<&str> = deployable_building_types(rules);
+    // The rest of what the participating Houses can field is SHP too:
+    // infantry bodies and building hulls. Their own House colour is the only
+    // variant they draw, so pass exact (type, colour) pairs instead of the
+    // deploy targets' every-colour cross product.
+    let country_shp_pairs = rules.map_or_else(Vec::new, |rules| {
+        let game_mode_nonzero = sim.session().game_mode_nonzero();
+        let mut pairs: Vec<(String, crate::rules::house_colors::HouseColorIndex)> = Vec::new();
+        for country in crate::sim::ai_buildable::participating_countries(
+            sim.houses(),
+            rules,
+            sim.interner(),
+        ) {
+            let colors: Vec<_> = sim
+                .houses()
+                .values()
+                .filter(|house| {
+                    sim.interner().resolve(house.house_type_id()) == country.name
+                })
+                .filter_map(|house| {
+                    house_colors
+                        .get(sim.interner().resolve(house.name()))
+                        .copied()
+                })
+                .collect();
+            let types = crate::sim::ai_buildable::producible_shp_types_for_country(
+                country.masks,
+                country.side_index,
+                rules,
+                game_mode_nonzero,
+            );
+            for type_id in types {
+                for &color in &colors {
+                    pairs.push((type_id.to_owned(), color));
+                }
+            }
+        }
+        pairs.sort_unstable_by(|a, b| (&a.0, a.1.0).cmp(&(&b.0, b.1.0)));
+        pairs.dedup();
+        log::info!(
+            "Sprite atlas load roster: {} country buildable SHP pair(s) across {} House colour(s)",
+            pairs.len(),
+            house_colors.len(),
+        );
+        pairs
+    });
     let mut anim_remap_keys = sprite_atlas::collect_anim_remap_base_keys(sim, house_colors);
     if let Some(rules) = rules {
         anim_remap_keys.extend(startup_crate_anim_remap_keys(rules, overlay_registry));
@@ -523,7 +584,7 @@ pub(crate) fn build_presentation_manifest(
         sprite_atlas::collect_fogged_sprite_keys(sim, rules, house_colors)
     });
     let shp_atlas: Option<SpriteAtlas> = palette.and_then(|pal| {
-        sprite_atlas::build_sprite_atlas(
+        sprite_atlas::build_sprite_atlas_with_pairs(
             &gpu.device,
             &gpu.queue,
             batch,
@@ -536,6 +597,7 @@ pub(crate) fn build_presentation_manifest(
             art,
             house_colors,
             &extra_buildings,
+            &country_shp_pairs,
             &anim_remap_keys,
             &cell_drawer_type_ids,
             &frozen_keys,

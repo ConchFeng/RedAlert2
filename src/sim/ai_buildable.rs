@@ -125,6 +125,161 @@ pub fn candidate_allowed(
         .is_some_and(|super_weapon| !super_weapon.disableable_from_shell)
 }
 
+/// Whether `country` may own and build `candidate` outside the AI's base-plan
+/// chooser: the `Owner=`/`RequiredHouses=`/`ForbiddenHouses=` gates, the
+/// `DoubleOwned=` multiplayer override and the side's `AIBasePlanningSide`.
+///
+/// The load-time render preload sizes its voxel bake from this. It
+/// deliberately ignores TechLevel, prerequisites and the shell super-weapon
+/// switch, so the answer is a superset of what the country ends up building:
+/// baking one model too many only costs load time, while one too few costs a
+/// mid-match atlas refresh.
+pub fn producible_by_country(
+    candidate: &ObjectType,
+    country: CountryBuildMasks,
+    side_index: i32,
+    game_mode_nonzero: bool,
+    rules: &RuleSet,
+) -> bool {
+    // Get_Ownable711EC0: a DoubleOwned type belongs to every house outside a
+    // campaign, regardless of its authored Owner= mask.
+    if !(candidate.double_owned && game_mode_nonzero)
+        && !owner_allows(candidate, country.owner, rules)
+    {
+        return false;
+    }
+    if !candidate.required_houses.is_empty()
+        && rules.house_type_mask(&candidate.required_houses) & country.actual == 0
+    {
+        return false;
+    }
+    let forbidden = rules.house_type_mask(&candidate.forbidden_houses);
+    if forbidden != u32::MAX && forbidden & country.actual != 0 {
+        return false;
+    }
+    candidate.planned_for_side(side_index)
+}
+
+/// One Country that actually plays the match, with the masks its production
+/// gates ask for.
+pub struct ParticipatingCountry<'a> {
+    pub name: &'a str,
+    pub masks: CountryBuildMasks,
+    pub side_index: i32,
+}
+
+/// Every distinct Country named by a House that is still in the match.
+///
+/// A passive House (Neutral, Civilian) sits the match out, and a defeated one
+/// builds nothing more. Houses that share a Country are read once, so a retail
+/// map with several Houses per faction does not repeat the roster scan.
+/// Registration order is the Houses' own, which keeps the caller's bake order
+/// stable across runs.
+pub fn participating_countries<'a>(
+    houses: &crate::sim::houses::Houses,
+    rules: &RuleSet,
+    interner: &'a crate::sim::intern::StringInterner,
+) -> Vec<ParticipatingCountry<'a>> {
+    let mut seen = std::collections::BTreeSet::new();
+    let mut out = Vec::new();
+    for house in houses.values() {
+        if house.multiplay_passive() || house.is_defeated() {
+            continue;
+        }
+        let country = interner.resolve(house.house_type_id());
+        if !seen.insert(country) {
+            continue;
+        }
+        // An unregistered Country cannot pass any Owner= gate; its House would
+        // never build from a rules roster.
+        let Some(side_index) = rules.country_side_index_raw(country) else {
+            continue;
+        };
+        out.push(ParticipatingCountry {
+            name: country,
+            masks: CountryBuildMasks::for_country(rules, country),
+            side_index,
+        });
+    }
+    out
+}
+
+/// The non-voxel types the participating Houses can put on the field,
+/// deduplicated: infantry bodies, building hulls and any vehicle or aircraft
+/// whose ART row turns its body back into an SHP.
+///
+/// This feeds the sprite-atlas preload rather than the voxel atlas. A match
+/// otherwise opens a growth page for its first power plant seconds after the
+/// start, and again for every defense, infantry type or building it later
+/// fields for the first time.
+pub fn producible_shp_types<'a>(
+    houses: &crate::sim::houses::Houses,
+    rules: &'a RuleSet,
+    interner: &crate::sim::intern::StringInterner,
+    game_mode_nonzero: bool,
+) -> Vec<&'a str> {
+    let mut out: Vec<&str> = Vec::new();
+    for country in participating_countries(houses, rules, interner) {
+        for type_id in producible_shp_types_for_country(
+            country.masks,
+            country.side_index,
+            rules,
+            game_mode_nonzero,
+        ) {
+            if !out.contains(&type_id) {
+                out.push(type_id);
+            }
+        }
+    }
+    out
+}
+
+/// One Country's share of [`producible_shp_types`], in rules category order.
+pub fn producible_shp_types_for_country<'a>(
+    masks: CountryBuildMasks,
+    side_index: i32,
+    rules: &'a RuleSet,
+    game_mode_nonzero: bool,
+) -> Vec<&'a str> {
+    use crate::rules::object_type::ObjectCategory;
+    let mut out: Vec<&str> = Vec::new();
+    for type_id in rules
+        .infantry_ids
+        .iter()
+        .chain(&rules.building_ids)
+        .chain(&rules.vehicle_ids)
+        .chain(&rules.aircraft_ids)
+    {
+        let Some(candidate) = rules.object(type_id) else {
+            continue;
+        };
+        if !producible_by_country(
+            candidate,
+            masks,
+            side_index,
+            game_mode_nonzero,
+            rules,
+        ) {
+            continue;
+        }
+        // A vehicle or aircraft defaults to a voxel body; only an explicit ART
+        // row can take it back to SHP. Buildings and infantry are SHP unless
+        // the same row says otherwise.
+        let voxel = rules
+            .art()
+            .resolve_metadata_entry(type_id, &candidate.image)
+            .map(|entry| entry.voxel)
+            .unwrap_or(matches!(
+                candidate.category,
+                ObjectCategory::Vehicle | ObjectCategory::Aircraft
+            ));
+        if !voxel {
+            out.push(type_id);
+        }
+    }
+    out
+}
+
 /// Resolve the first passing BuildingType pointer from one authored AI list.
 pub(crate) fn first_buildable_from_array<'a>(
     rules: &'a RuleSet,

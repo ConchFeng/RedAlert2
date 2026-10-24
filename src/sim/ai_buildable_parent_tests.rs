@@ -77,3 +77,35 @@ fn opening_mcv_uses_parent_owner_without_production_restrictions() {
         Some("RIGHT")
     );
 }
+
+/// The load-time SHP preload must take exactly the types whose body is a
+/// sprite: infantry, building hulls, and a vehicle or aircraft whose ART row
+/// turns `Voxel=` off. Voxel vehicles would only duplicate the unit atlas.
+#[test]
+fn producible_shp_types_follow_the_art_body_not_only_the_category() {
+    let mut rules = RuleSet::from_ini(&IniFile::from_str(
+        "[Countries]\n0=AMER\n[AMER]\nParentCountry=AMER\n\
+         [InfantryTypes]\n0=E1\n[VehicleTypes]\n0=GRIZ\n1=SHPVAN\n\
+         [AircraftTypes]\n0=ORCA\n1=SHPJET\n[BuildingTypes]\n0=GAPOWR\n\
+         [E1]\nOwner=AMER\n[GRIZ]\nOwner=AMER\n[SHPVAN]\nOwner=AMER\n\
+         [ORCA]\nOwner=AMER\n[SHPJET]\nOwner=AMER\n[GAPOWR]\nOwner=AMER\n",
+    ))
+    .unwrap();
+    rules.install_art_data(crate::rules::art_data::ArtRegistry::from_ini(
+        &IniFile::from_str("[SHPVAN]\nVoxel=no\n[SHPJET]\nVoxel=no\n"),
+    ));
+    let masks = CountryBuildMasks::for_country(&rules, "AMER");
+    let types = producible_shp_types_for_country(masks, 0, &rules, false);
+    assert!(types.contains(&"E1"), "infantry bodies are SHP");
+    assert!(types.contains(&"GAPOWR"), "building hulls are SHP");
+    assert!(types.contains(&"SHPVAN"), "Voxel=no keeps a vehicle on SHP");
+    assert!(types.contains(&"SHPJET"), "Voxel=no keeps an aircraft on SHP");
+    assert!(
+        !types.contains(&"GRIZ"),
+        "a default vehicle belongs to the voxel atlas"
+    );
+    assert!(
+        !types.contains(&"ORCA"),
+        "a default aircraft belongs to the voxel atlas"
+    );
+}
