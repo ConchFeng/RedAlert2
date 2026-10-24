@@ -110,7 +110,7 @@ impl Gpu {
     fn new() -> Self {
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY,
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::default()
         });
         let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
             compatible_surface: None,

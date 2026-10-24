@@ -46,36 +46,38 @@ pub(crate) struct ChatState {
     target: ChatTarget,
     /// Indexed by House array index. Dialog 0x73 writes it (`0x006582C3`);
     /// the local player's own byte is never written there.
-    mask: [bool; 8],
+    muted: std::collections::BTreeSet<usize>,
 }
 
 impl Default for ChatState {
     fn default() -> Self {
         Self {
             target: ChatTarget::None,
-            mask: [true; 8],
+            muted: Default::default(),
         }
     }
 }
 
 impl ChatState {
     pub(crate) fn listens(&self, house_index: usize) -> bool {
-        // Native reads past the eight bytes for a higher index; Multiplay
-        // Houses take the first indices.
-        self.mask.get(house_index).copied().unwrap_or(false)
+        // VERA extends the native eight-byte mask to actual House indices,
+        // including player Houses after Neutral/Special in a large roster.
+        !self.muted.contains(&house_index)
     }
 
     /// A chat box click: the byte takes the box's new check state
     /// (`HIWORD(wParam) == 1`, `0x00658294..0x006582C3`).
     pub(crate) fn set_listens(&mut self, house_index: usize, listens: bool) {
-        if let Some(byte) = self.mask.get_mut(house_index) {
-            *byte = listens;
+        if listens {
+            self.muted.remove(&house_index);
+        } else {
+            self.muted.insert(house_index);
         }
     }
 
     /// MPlayer_Defeated's local branch (`0x004FC23E`) sets every byte.
     pub(crate) fn local_player_defeated(&mut self) {
-        self.mask = [true; 8];
+        self.muted.clear();
     }
 }
 
@@ -465,12 +467,52 @@ mod tests {
     }
 
     #[test]
+    fn later_house_chat_and_beacons_survive_defeat_and_reset() {
+        let mut chat = ChatState::default();
+        let houses = [
+            ChatHouse {
+                index: 8,
+                allied: false,
+                peer: Some(7),
+            },
+            ChatHouse {
+                index: 31,
+                allied: true,
+                peer: Some(29),
+            },
+        ];
+        assert_eq!(
+            route_houses(ChatTarget::Listeners, false, &chat, &houses),
+            (vec![7, 29], false)
+        );
+        chat.set_listens(31, false);
+        assert_eq!(
+            route_houses(ChatTarget::Listeners, false, &chat, &houses),
+            (vec![7], false)
+        );
+        chat.local_player_defeated();
+        assert_eq!(
+            route_houses(ChatTarget::Listeners, true, &chat, &houses),
+            (vec![7, 29], false)
+        );
+        let mut beacons = crate::app::match_runtime::beacons::BeaconManager::default();
+        assert_eq!(beacons.store(31, [10, 20, 0], None), Some(0));
+        assert_eq!(
+            beacons.iter().next().map(|(house, slot, _)| (house, slot)),
+            Some((31, 0))
+        );
+        beacons = Default::default();
+        assert_eq!(beacons.iter().count(), 0);
+        assert!(beacons.can_place(31));
+    }
+
+    #[test]
     fn the_mask_starts_set_and_defeat_sets_it_again() {
         let mut chat = ChatState::default();
         assert!((0..8).all(|index| chat.listens(index)));
         chat.set_listens(2, false);
         assert!(!chat.listens(2));
-        assert!(!chat.listens(8), "no byte past the eighth");
+        assert!(chat.listens(31), "VERA includes every House registry index");
         chat.local_player_defeated();
         assert!(chat.listens(2));
     }

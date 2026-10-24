@@ -86,6 +86,7 @@ impl ScreenPresentationPass {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
         }
 
@@ -240,7 +241,7 @@ mod tests {
         fn new() -> Self {
             let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
                 backends: wgpu::Backends::PRIMARY,
-                ..Default::default()
+                ..wgpu::InstanceDescriptor::default()
             });
             let adapter = block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
                 compatible_surface: None,

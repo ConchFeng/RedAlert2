@@ -289,7 +289,6 @@ pub(crate) fn install_world_presentation(
                 .houses()
                 .order()
                 .iter()
-                .take(crate::app::match_runtime::beacons::BEACON_HOUSES)
                 .map(|house| {
                     let index = colors
                         .get(sim.interner().resolve(*house))
@@ -325,6 +324,7 @@ pub(crate) fn install_world_presentation(
             [cw, ch],
             crate::render::shroud_buffer::SHROUD_EDGE_LUT,
         );
+        buffer.set_translucent_fog(&state.renderer.gpu.queue, state.translucent_fog_enabled());
         // Cell47EFE0/47F250 use FOG.SHP's raw A bytes when Scenario0x1000
         // is set. It belongs to this same tactical source, not a sprite atlas.
         let fog = crate::assets::shp_file::ShpFile::from_bytes(assets.get_ref("fog.shp")?).ok()?;
@@ -430,7 +430,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         simulation.install_fresh_process_main(&state.frontend.frontend_main_rng);
         simulation.publish_scenario_started();
         simulation.batch_path_searches();
-        simulation.batch_target_scans();
         crate::sim::runtime::SimRuntime {
             simulation,
             resources: crate::sim::runtime::SimResources {
@@ -547,9 +546,6 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.match_state.input.cursor_y = tactical_height as f32 * 0.5;
     state.platform.frame_pacer.reset_for_immediate_frame();
     state.match_state.input.queued_order_mode = render::OrderMode::Move;
-    for group in &mut state.match_state.input.control_groups {
-        group.clear();
-    }
     state.match_state.local_owner_override = result.scenario.initial_local_owner;
     state.match_state.match_audio.reset_for_new_match();
     state.match_state.sandbox_full_visibility = result.scenario.sandbox_full_visibility;
@@ -708,6 +704,7 @@ pub(crate) fn clear_screen(encoder: &mut wgpu::CommandEncoder, view: &wgpu::Text
         depth_stencil_attachment: None,
         timestamp_writes: None,
         occlusion_query_set: None,
+
     });
 }
 

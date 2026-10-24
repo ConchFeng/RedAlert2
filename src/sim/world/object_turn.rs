@@ -72,7 +72,6 @@ impl LiveObjectPassOutcome {
 pub(crate) struct GroundLocomotorOutcome {
     pub(super) movement: movement::MovementTickStats,
     pub(super) bridge_state_changed: bool,
-    track_owned: bool,
 }
 
 #[derive(Default)]
@@ -90,7 +89,6 @@ pub(crate) struct LocomotorProcess {
     admitted: bool,
     movement: movement::MovementTickStats,
     bridge_state_changed: bool,
-    track_owned: bool,
     /// The Process ran `Per_Cell_Process(2)`: a Hover, tube-exit, touchdown
     /// or warp arrival.
     per_cell_ran: bool,
@@ -107,7 +105,6 @@ impl LocomotorProcess {
             admitted: true,
             movement: ground.movement,
             bridge_state_changed: ground.bridge_state_changed,
-            track_owned: ground.track_owned,
             per_cell_ran: false,
             ended: false,
         }
@@ -336,8 +333,8 @@ impl Simulation {
     /// Teleport Process (`0x007192F0`): the warp and its arrival. A
     /// Chronosphere warp (the latch, or a state past 0) takes the whole
     /// Process (`0x00719351..0x00719361`, `movement::teleport_chrono`). Its
-    /// arrival runs its own `Per_Cell_Process(2)` (state 5), so the cell
-    /// change of its landing (state 4) takes no stand-in.
+    /// arrival runs its own `Per_Cell_Process(2)` in state 5; the coordinate
+    /// change in state 4 supplies no additional callback.
     fn process_teleport_locomotor(
         &mut self,
         stable_id: u64,
@@ -676,7 +673,6 @@ impl Simulation {
                 .run_track_process(invocation, rules, overlay_registry, effects)
                 .map_err(|cause| frame_error(sim, cause))?;
             pending_movement.record_track_movement(pass.moved);
-            outcome.track_owned = true;
             // Only the FIRST, active-track call tests Process_Track's AL
             // (4B057B). The post-fresh call ignores AL and goes through the
             // live-owner check to the common tail (4B0AAF..4B0ABC).
@@ -730,8 +726,14 @@ impl Simulation {
         overlay_registry: Option<&crate::rules::overlay_types::OverlayTypeRegistry>,
         effects: super::FrameEffects<'_>,
     ) -> Result<LiveObjectPassOutcome, super::FrameAdvanceError> {
+        #[cfg(all(feature = "telemetry", target_os = "horizon"))]
+        let profile_start = self.frame_profiling.then(std::time::Instant::now);
         self.answer_batched_path_searches(rules, overlay_registry);
-        self.answer_batched_scans(rules, overlay_registry);
+        #[cfg(all(feature = "telemetry", target_os = "horizon"))]
+        let profile_paths = profile_start.map(|_| std::time::Instant::now());
+
+        #[cfg(all(feature = "telemetry", target_os = "horizon"))]
+        let profile_scans = profile_start.map(|_| std::time::Instant::now());
         let object_ctx = techno_ai::ObjectAiCtx {
             effects,
             overlay_registry,
@@ -774,10 +776,23 @@ impl Simulation {
             outcome.ownership_changed |= turn.ownership_changed;
             Ok(())
         });
+        #[cfg(all(feature = "telemetry", target_os = "horizon"))]
+        let profile_turns = profile_start.map(|_| std::time::Instant::now());
         self.fog.settle_plane_writes();
         self.reveal_viewers.end();
         self.finish_batched_path_searches();
-        self.finish_batched_scans();
+
+        #[cfg(all(feature = "telemetry", target_os = "horizon"))]
+        if let (Some(start), Some(paths), Some(scans), Some(turns)) =
+            (profile_start, profile_paths, profile_scans, profile_turns)
+        {
+            record_object_pass_profile([
+                paths - start,
+                scans - paths,
+                turns - scans,
+                turns.elapsed(),
+            ]);
+        }
         walked?;
         Ok(outcome)
     }
@@ -809,7 +824,6 @@ impl Simulation {
         if let Some(error) = ai.fall_error.take() {
             return Err(error);
         }
-        let mut per_cell_ran = ai.landed;
         outcome.bridge_state_changed |= ai.bridge_state_changed;
         outcome.destroyed_structure |= ai.destroyed_structure;
         outcome.ownership_changed |= ai.ownership_changed();
@@ -912,17 +926,6 @@ impl Simulation {
         else {
             return Ok(outcome);
         };
-        let cell_before_movement = sim
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| (entity.position.rx(), entity.position.ry()));
-        let walk_process_owned = sim
-            .substrate
-            .entities
-            .get(stable_id)
-            .and_then(|e| e.locomotor.as_ref())
-            .is_some_and(|l| l.active_kind() == crate::rules::locomotor_type::LocomotorKind::Walk);
         // An entry-active TubeMovement leaf runs in place of the Foot AI and
         // its Process.
         let process = if tube_active_at_entry {
@@ -937,8 +940,6 @@ impl Simulation {
         } else {
             sim.process_active_locomotor(stable_id, rules, object_ctx)?
         };
-        let track_owned = process.track_owned;
-        per_cell_ran |= process.per_cell_ran;
         outcome.movement.merge(process.movement);
         outcome.bridge_state_changed |= process.bridge_state_changed;
         // `0x004DA87A`: the Process may have converted or removed the owner.
@@ -996,12 +997,62 @@ impl Simulation {
             return Ok(outcome);
         }
 
-        // FootClass::AI 0x004DADF5..0x004DAE59: the 64-frame idle scatter.
-        // RESIDUAL: native runs the MoveSound tail (0x004DAA01..0x004DAB3C)
-        // before it; VERA's runs later in this turn. Trigger: an Infantry
-        // whose null Scatter finds a cell runs its Walk Process at once.
-        // Effect: a MoveSound= infantry (YURIPR, JUMPJET) starts its sound,
-        // and spends its draw, one frame early. Units run no Process here.
+        // Foot4DAA01 MoveSound,4DABC7 sinking and4DACDD crash edges run
+        // before Scatter/piggyback/pending-entry/Parasite callbacks. In
+        // particular, a later Squid cull cannot run this visit's sound edge.
+        Self::tick_move_sound_after_process(
+            &sim.interner,
+            &sim.session,
+            &sim.main_rng,
+            &mut sim.substrate,
+            &mut sim.sound_events,
+            &sim.houses,
+            stable_id,
+            body_frame_before_process,
+            rules,
+        );
+        // Foot AI 4DAB3C..4DABB1: a DropAsBomb object starting to fall plays
+        // its type's VoiceFalling at its Location, before the sinking/crash
+        // edges and looping-sound position update (PlayAt7509E0, ungated).
+        if let Some(entity) = sim.substrate.entities.get_mut(stable_id)
+            && entity.observe_falling_edge()
+            && let Some(voice) = sim
+                .interner
+                .object_type(entity.type_ref(), rules)
+                .and_then(|object| object.voice_falling.clone())
+        {
+            let event =
+                super::SimSoundEvent::voc_at_location(voice, entity, sim.resolved_terrain.as_ref());
+            sim.sound_events.emit(event);
+        }
+        Self::sinking_edge_sounds(
+            &sim.interner,
+            &mut sim.substrate,
+            &mut sim.sound_events,
+            stable_id,
+            rules,
+        );
+        Self::crash_edge_sounds(
+            &sim.interner,
+            &mut sim.substrate,
+            &mut sim.sound_events,
+            &sim.session,
+            &sim.houses,
+            stable_id,
+            rules,
+        );
+        // Foot4DADF0 ->750D40 uses the coordinate BEFORE those callbacks
+        // and Unit's subsequent hull lowering. Finish PlayAt/Release first.
+        if let Some(entity) = sim.substrate.entities.get(stable_id) {
+            object_ctx.effects.update_looping_sound(
+                sim,
+                rules,
+                stable_id,
+                Self::movement_sound_world(entity),
+            );
+        }
+
+        // FootClass::AI 0x004DADF5..0x004DAE59: the64-frame idle Scatter.
         match sim.foot_idle_scatter(stable_id, rules, overlay_registry, object_ctx.effects) {
             Ok(changed) => outcome.bridge_state_changed |= changed,
             Err(cause) => log::debug!("Foot {stable_id} did not idle-scatter: {cause}"),
@@ -1043,66 +1094,10 @@ impl Simulation {
                 cause,
             })?;
 
-        let cell_after_movement = sim
-            .substrate
-            .entities
-            .get(stable_id)
-            .map(|entity| (entity.position.rx(), entity.position.ry()));
-        // A mover that changes cell in a frame without a `Per_Cell_Process`
-        // call takes VERA's cell-change stand-in for the Foot body's sensor,
-        // uncloak and Temporal steps (`movement/per_cell.rs`): Fly, Jumpjet
-        // cruise and Rocket (`0x006622C0`), whose native Process has no
-        // PerCell call at all, and a Hover crossing a cell outside its
-        // `0x00515A1C`/`0x005146CA` calls.
-        //
-        // RESIDUAL: native reaches none of these from a bare cell change.
-        // Trigger: such a mover changing cell. Effect: its sensor deposit,
-        // cloak scan and Temporal release run there (for a Hover, again at
-        // its next PerCell). Risk: a mover with `Sensors=` or a held
-        // Temporal target.
-        if !track_owned
-            && !walk_process_owned
-            && !per_cell_ran
-            && cell_before_movement != cell_after_movement
-        {
-            sim.refresh_unit_sensor_at_per_cell(stable_id, rules, overlay_registry);
-            crate::sim::world::techno_ai_cloak::uncloak_on_sensor_neighbour_after_cell_entry(
-                sim, stable_id, rules,
-            );
-            Self::temporal_release_if_warping(
-                &mut sim.substrate,
-                &mut sim.houses,
-                &mut sim.power_states,
-                stable_id,
-            );
-        }
+        // FootClass::AI4DA806..4DAEF3 adds no PerCell for a bare coordinate
+        // change. Keep sensors/uncloak/Temporal under actual class arrivals;
+        // airborne Jumpjet54AEC0 can retain a sensor circle at its old cell.
 
-        Self::tick_move_sound_after_process(
-            &sim.interner,
-            &sim.session,
-            &sim.main_rng,
-            &mut sim.substrate,
-            &mut sim.sound_events,
-            &sim.houses,
-            stable_id,
-            body_frame_before_process,
-            rules,
-        );
-        Self::sinking_edge_sounds(
-            &sim.interner,
-            &mut sim.substrate,
-            &mut sim.sound_events,
-            stable_id,
-            rules,
-        );
-        Self::crash_edge_sounds(
-            &sim.interner,
-            &mut sim.substrate,
-            &mut sim.sound_events,
-            &sim.houses,
-            stable_id,
-            rules,
-        );
         // Aircraft414DA8..414DB0 rereads Object+90 after the complete Foot
         // tail. A dead aircraft returns before descent, wake draws and the
         // remaining class suffix, regardless of which callback cleared Alive.
@@ -1179,6 +1174,23 @@ impl Simulation {
             );
             outcome.bridge_state_changed |= receipt.bridge_state_changed;
             outcome.destroyed_structure |= receipt.structure_destroyed;
+            // UnitAI736689 Reload+424 follows FireAtTarget/Facing and
+            // precedes the second Ready/Commence. Aircraft/Infantry have
+            // no corresponding ordinary Reload dispatch here. The native
+            // post-Foot alive gate precedes firing; no second gate is added.
+            if let Some(entity) = sim.substrate.entities.get_mut(stable_id)
+                && entity.category() == EntityCategory::Unit
+                && let Some(obj) = sim.interner.object_type(entity.type_ref(), rules)
+            {
+                entity
+                    .reload_unit_ammo(obj, sim.session.binary_frame() as i32)
+                    .map_err(|cause| super::FrameAdvanceError {
+                        tick: sim.session.tick(),
+                        binary_frame: sim.session.binary_frame(),
+                        entity_id: stable_id,
+                        cause,
+                    })?;
+            }
             sim.object_ai_post_movement_promote_one(stable_id, rules);
             // Unit73671F..736817 follows that Commence (the CTF flag block
             // between them is unreachable).
@@ -1195,4 +1207,27 @@ impl Simulation {
         sim.aircraft_crash_smoke(stable_id, rules);
         Ok(outcome)
     }
+}
+
+#[cfg(all(feature = "telemetry", target_os = "horizon"))]
+fn record_object_pass_profile(spans: [std::time::Duration; 4]) {
+    std::thread_local! {
+        static PROFILE: std::cell::RefCell<(u32, [std::time::Duration; 4])> =
+            const { std::cell::RefCell::new((0, [std::time::Duration::ZERO; 4])) };
+    }
+    PROFILE.with(|profile| {
+        let mut profile = profile.borrow_mut();
+        profile.0 += 1;
+        for (total, span) in profile.1.iter_mut().zip(spans) {
+            *total += span;
+        }
+        if profile.0 == 100 {
+            let millis = profile.1.map(|span| span.as_secs_f64() * 10.0);
+            log::info!(target: "switch::perf",
+                "Object pass CPU average: paths={:.3}ms scans={:.3}ms turns={:.3}ms settle={:.3}ms",
+                millis[0], millis[1], millis[2], millis[3],
+            );
+            *profile = (0, [std::time::Duration::ZERO; 4]);
+        }
+    });
 }

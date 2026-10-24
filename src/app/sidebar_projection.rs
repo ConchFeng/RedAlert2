@@ -91,6 +91,54 @@ impl SidebarProjectionState {
         self.current_view = view;
     }
 
+    /// Republish the House power pair while retaining the current strip,
+    /// layout and cameo membership. The values are live House state, not a
+    /// membership transition, so an ordinary presentation pump must not
+    /// rebuild every rules build option to refresh the meter and its tooltip.
+    pub(crate) fn refresh_power(&mut self, produced: i32, drained: i32) {
+        if let Some(view) = &mut self.current_view {
+            view.power_produced = produced;
+            view.power_drained = drained;
+            view.low_power = produced < drained;
+        }
+    }
+
+    pub(crate) fn refresh_gadget_draw_state(
+        &mut self,
+        gadgets: &crate::ui::sidebar::gadget_flash::SidebarGadgetState,
+    ) {
+        let Some(view) = &mut self.current_view else {
+            return;
+        };
+        for tab in &mut view.tabs {
+            let index = tab.tab.tab_index();
+            tab.disabled = gadgets.tab_disabled[index];
+            tab.frame_index = gadgets.tab_frame(index, tab.active);
+        }
+        view.repair_button.active = gadgets.repair_mode_on;
+        view.repair_button.disabled = gadgets.repair_disabled;
+        view.repair_button.frame_index = gadgets.repair_frame();
+        view.sell_button.active = gadgets.sell_mode_on;
+        view.sell_button.disabled = gadgets.sell_disabled;
+        view.sell_button.frame_index = gadgets.sell_frame();
+        view.scroll_down_button.frame_index =
+            gadgets.scroll_down_frame(view.scroll_down_button.disabled);
+        view.scroll_up_button.frame_index = gadgets.scroll_up_frame(view.scroll_up_button.disabled);
+        for (index, button) in view.top_buttons.iter_mut().enumerate() {
+            button.frame_index = gadgets.top_button_frame(index);
+        }
+    }
+
+    pub(crate) fn refresh_armed_superweapon(&mut self, armed: Option<&str>) {
+        if let Some(view) = &mut self.current_view {
+            for item in view.items.iter_mut().filter(|item| item.is_superweapon) {
+                item.is_armed = armed
+                    .zip(item.super_weapon_section.as_deref())
+                    .is_some_and(|(armed, section)| armed.eq_ignore_ascii_case(section));
+            }
+        }
+    }
+
     /// Forget the strip entry list: the next reconciliation is a scenario's
     /// first projection again (`[0xA8E7AC] != 0`, silent). Called wherever a
     /// new scenario is installed, so a
@@ -383,47 +431,56 @@ impl SidebarProjectionState {
                 });
             }
         }
-        let paid_supers = view
+        // StripDraw6A99AC asks the retained Super every draw, even when no
+        // Ready event or House recheck rebuilt the view. Drain AI changes its
+        // stage/status without an ordinary Ready announcement.
+        let supers = view
             .items
             .iter()
-            .any(|item| {
-                item.super_weapon_section
-                    .as_deref()
-                    .and_then(|name| rules.super_weapon(name))
-                    .is_some_and(|sw| {
-                        sw.money_amount != 0
-                            || crate::sim::superweapon::financial_type(rules, sw).money_amount != 0
-                    })
-            })
+            .any(|item| item.is_superweapon)
             .then(|| crate::sim::superweapon::superweapon_views_for_owner(sim, rules, &owner));
+        let queue =
+            crate::sim::production::queue_view_for_owner(sim, rules, sim.interner().resolve(owner));
         for item in &mut view.items {
-            // A super weapon's cameo darkens from its SuperClass readiness,
-            // not from a build factory.
+            let type_id = sim.interner().get(&item.type_id);
+            if let Some((_, strips)) = self.cameos.as_ref().filter(|(house, _)| *house == owner)
+                && let Some(type_id) = type_id
+            {
+                let id = if item.is_superweapon {
+                    CameoId::SuperWeapon(type_id)
+                } else {
+                    CameoId::Object(type_id)
+                };
+                item.flash_darkened = strips.flash_darkened(id);
+            }
             if item.is_superweapon {
-                if let Some(views) = &paid_supers
-                    && let Some(section) = item.super_weapon_section.as_deref()
-                    && rules.super_weapon(section).is_some_and(|sw| {
-                        sw.money_amount != 0
-                            || crate::sim::superweapon::financial_type(rules, sw).money_amount != 0
-                    })
-                {
-                    item.enabled = views
-                        .iter()
-                        .find(|sw| {
+                if let Some(sw) = supers.as_ref().and_then(|views| {
+                    views.iter().find(|sw| {
+                        item.super_weapon_section.as_deref().is_some_and(|section| {
                             sim.interner()
                                 .resolve(sw.type_id)
                                 .eq_ignore_ascii_case(section)
                         })
-                        .is_some_and(|sw| sw.is_online && sw.can_afford);
+                    })
+                }) {
+                    item.enabled = sw.is_online && sw.can_afford;
+                    item.progress = sw.progress;
+                    item.is_ready = sw.is_ready;
+                    item.is_on_hold = !sw.is_online;
+                    item.is_building_this_type = !sw.is_ready && sw.is_online && sw.progress > 0.0;
+                    item.super_weapon_display = Some(sw.display);
                 }
                 continue;
             }
-            let (Some(type_id), Some(object)) = (
-                sim.interner().get(&item.type_id),
-                rules.object(&item.type_id),
-            ) else {
+            let (Some(type_id), Some(object)) = (type_id, rules.object(&item.type_id)) else {
                 continue;
             };
+            item.queued_count = queue
+                .iter()
+                .filter(|entry| {
+                    entry.type_id == type_id && entry.queue_category == item.queue_category
+                })
+                .count();
             let tab = crate::ui::sidebar::SidebarTab::for_category(
                 crate::sim::production::category_for_object(object),
             );
@@ -457,6 +514,9 @@ impl SidebarProjectionState {
         owner: InternedId,
         armed_building: Option<InternedId>,
     ) {
+        self.set_cameo_frame(sim.session().binary_frame() as i32);
+        self.reconcile_factory_links(sim, owner);
+        self.advance_cameo_requests(sim, owner);
         let Some(mut view) = self.current_view.take() else {
             return;
         };
@@ -819,12 +879,6 @@ impl SidebarProjectionState {
         self.cameos.as_ref()?.1.selectable_tab(index)
     }
 
-    pub(crate) fn cameo_redraw_requested(&self, frame: i32) -> bool {
-        self.cameos
-            .as_ref()
-            .is_some_and(|(_, strips)| strips.redraw_requested(frame))
-    }
-
     pub(crate) fn set_cameo_frame(&mut self, frame: i32) {
         if let Some((_, strips)) = self.cameos.as_mut() {
             strips.set_frame(frame);
@@ -893,16 +947,18 @@ impl SidebarProjectionState {
 
     /// Roll queued scroll rows for `visits` Sidebar Actions (one per
     /// simulation frame); see [`CameoStrips::step_pending_scroll`].
-    pub(crate) fn step_pending_scroll(&mut self, visible_rows: usize, visits: u64) {
+    pub(crate) fn step_pending_scroll(&mut self, visible_rows: usize, visits: u64) -> bool {
         let Some((_, strips)) = self.cameos.as_mut() else {
-            return;
+            return false;
         };
+        let before = crate::ui::sidebar::SidebarTab::all().map(|tab| strips.scroll_row(tab));
         for _ in 0..visits {
             if !strips.has_pending_scroll() {
                 break;
             }
             strips.step_pending_scroll(visible_rows);
         }
+        before != crate::ui::sidebar::SidebarTab::all().map(|tab| strips.scroll_row(tab))
     }
 
     pub(crate) fn saved_credits_counter(&self, owner: &str) -> Option<i32> {
@@ -937,20 +993,10 @@ impl SidebarProjectionState {
     /// `counting_up(+0x9) = step > 0` at `0x004A2740..0x004A2751` only on a
     /// changed step), `None` otherwise.
     pub(crate) fn advance_credits(&mut self, owner: &str, actual: i32) -> Option<CreditTick> {
-        use std::collections::hash_map::Entry;
-
-        let mut entry = match self.displayed_credits.entry(owner.to_string()) {
-            Entry::Vacant(entry) => {
-                entry.insert(actual);
-                return None;
-            }
-            Entry::Occupied(entry) => entry,
-        };
-        let displayed = entry.get_mut();
-        if *displayed == actual {
-            return None;
-        }
-
+        let displayed = self
+            .displayed_credits
+            .entry(owner.to_string())
+            .or_insert(actual);
         // gamemd `CreditsClass::AI / FUN_004A2600 @ 0x004A2600`:
         // |actual-displayed| / 8, clamped to [1, 143]. The stored 1/3 value
         // does not delay this call's step (SIDEBAR_SYSTEM_GHIDRA_REPORT §30).
@@ -958,10 +1004,15 @@ impl SidebarProjectionState {
         let step = (difference / 8).clamp(1, 143) as i32;
         let before = *displayed;
         let counting_up = actual > *displayed;
-        if counting_up {
-            *displayed = displayed.saturating_add(step).min(actual);
-        } else {
-            *displayed = displayed.saturating_sub(step).max(actual);
+        if *displayed != actual {
+            if counting_up {
+                *displayed = displayed.saturating_add(step).min(actual);
+            } else {
+                *displayed = displayed.saturating_sub(step).max(actual);
+            }
+        }
+        if let Some(view) = &mut self.current_view {
+            view.credits = *displayed;
         }
         (*displayed != before).then_some(CreditTick { counting_up })
     }

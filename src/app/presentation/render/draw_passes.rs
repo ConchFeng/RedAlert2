@@ -688,7 +688,7 @@ pub(super) fn dispatch_draw_passes(
     // BeaconManager Draw 430AC0 (6D46B6) precedes BandBox. Its flags 600
     // bypass A and Z; each House row has its own Convert strip.
     if let Some(art) = state.match_state.match_presentation.beacon_art.as_ref() {
-        for house in 0..crate::app::match_runtime::beacons::BEACON_HOUSES {
+        for house in 0..art.house_count() {
             if let (Some(strip), Some((buffer, count))) =
                 (art.tactical_strip(house), pool.get_page("beacons", house))
             {

@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """Cross-build the VERA20k client or diagnostic probes with Horizon std/newlib."""
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
 import re
+import shutil
 import struct
 import subprocess
 import sys
@@ -16,6 +18,7 @@ TOOLCHAIN = "nightly-2026-10-04"
 UPSTREAM_COMMIT = "3eac779b232ee47cd0eb957676c64386ac7b0f1d"
 DEFAULT_CLIENT_ASSETS = ROOT / "target/emulator/master-xdg-data/eden/sdmc/game"
 CLIENT_VERSION = "0.0.1 beta"
+PROFILE_FEATURES = "horizon-frame-profile,telemetry"
 
 
 def configure_client_savedata(nacp: Path, title_id: str):
@@ -30,9 +33,37 @@ def configure_client_savedata(nacp: Path, title_id: str):
     nacp.write_bytes(data)
 
 
+def client_nsp_artifact(version: str) -> str:
+    """Name client NSPs by their three-part release version."""
+    match = re.fullmatch(r"(\d+\.\d+\.\d+)(?:\s+.+)?", version)
+    if match is None:
+        raise SystemExit(f"Client NSP version must start with x.y.z: {version!r}")
+    return f"vera20-client-v{match.group(1)}"
+
+
 def run(*arguments, **kwargs):
     print("+", " ".join(map(str, arguments)), flush=True)
     return subprocess.run(list(map(str, arguments)), cwd=ROOT, check=True, **kwargs)
+
+
+def horizon_ring(work: Path, config: Path) -> Path:
+    """Select ring's existing AArch64 ELF assembly for the Horizon target."""
+    patch = ROOT / "third_party/ring-horizon.patch"
+    patched = work / ("ring-0.17.14-" + hashlib.sha256(patch.read_bytes()).hexdigest()[:12])
+    if patched.is_dir():
+        return patched
+    cargo_root = Path(os.environ.get("CARGO_HOME", Path.home() / ".cargo"))
+    sources = list((cargo_root / "registry/src").glob("*/ring-0.17.14"))
+    if not sources:
+        run("cargo", f"+{TOOLCHAIN}", "fetch", "--config", config)
+        sources = list((cargo_root / "registry/src").glob("*/ring-0.17.14"))
+    if not sources:
+        raise SystemExit("ring 0.17.14 source unavailable after cargo fetch")
+    staged = patched.with_name(patched.name + ".stage")
+    shutil.copytree(sources[0], staged)
+    subprocess.run(["patch", "-p1", "-i", str(patch)], cwd=staged, check=True)
+    staged.rename(patched)
+    return patched
 
 
 def normalize_std_lock(lock: Path, patch_names: set[str]) -> bool:
@@ -73,6 +104,8 @@ def main():
                           help="Build the native-window production GPU probe")
     frontend.add_argument("--client", action="store_true",
                           help="Build the shared full client with the Horizon event backend")
+    parser.add_argument("--profile-sim", action="store_true",
+                        help="Include the opt-in per-phase simulation profiler (client only)")
     parser.add_argument("--host-test", action="store_true", help="Run the same core probe on the host")
     parser.add_argument("--check-libc-abi", action="store_true", help="Compare patched libc against SDK headers")
     parser.add_argument("--check-client-deps", action="store_true",
@@ -90,6 +123,8 @@ def main():
         parser.error("--nsp-assets requires --nsp")
     if args.nsp_assets and not args.client:
         parser.error("--nsp-assets currently requires --client")
+    if args.profile_sim and not args.client:
+        parser.error("--profile-sim currently requires --client")
     if args.nsp_assets and (args.check or args.host_test or args.check_libc_abi or args.check_client_deps):
         parser.error("--nsp-assets requires a linked client build")
     if args.nsp_assets:
@@ -112,6 +147,11 @@ def main():
     sdk = Path(os.environ.get("DEVKITPRO", WORKSPACE / "toolchains/switch/sdk/opt/devkitpro")).resolve()
     os.environ["DEVKITPRO"] = str(sdk)
     os.environ["PATH"] = f"{sdk}/devkitA64/bin:{sdk}/tools/bin:" + os.environ["PATH"]
+    # cc-rs otherwise treats Horizon as the 32-bit Nintendo 3DS target.
+    # Native dependencies such as ring must match the Rust AArch64 objects.
+    os.environ["CC_aarch64_nintendo_horizon"] = str(sdk / "devkitA64/bin/aarch64-none-elf-gcc")
+    os.environ["AR_aarch64_nintendo_horizon"] = str(sdk / "devkitA64/bin/aarch64-none-elf-ar")
+    os.environ["CFLAGS_aarch64_nintendo_horizon"] = "-march=armv8-a+crc+crypto -mtune=cortex-a57 -mtp=soft -fPIE"
     work = ROOT / "target/switch-build"
     work.mkdir(parents=True, exist_ok=True)
     config = work / "cargo.toml"
@@ -127,6 +167,16 @@ def main():
             patches[name] = upstream / "patches/bevy-0.18" / name
     config.write_text("[patch.crates-io]\n" + "\n".join(
         f'{name} = {{ path = {json.dumps(str(path))} }}' for name, path in patches.items()) + "\n")
+    if args.client:
+        patched_ring = horizon_ring(work, config)
+        with config.open("a") as fh:
+            fh.write(f'ring = {{ path = {json.dumps(str(patched_ring))} }}\n')
+    # getrandom 0.3.x has no Horizon backend; select the custom backend and
+    # let vera20k-switch provide __getrandom_v03_custom via csrngGetRandomBytes.
+    if args.client:
+        with config.open("a") as fh:
+            fh.write('\n[target.aarch64-nintendo-horizon]\n'
+                     'rustflags = ["--cfg", "getrandom_backend=\\"custom\\""]\n')
     if args.check_libc_abi:
         # Reuse the pinned upstream checker rather than maintaining a second
         # list of C/Rust layouts. Run its Python body locally, without Docker.
@@ -185,7 +235,10 @@ def main():
         manifest = ["--manifest-path", probe / "Cargo.toml"]
         os.environ["CARGO_TARGET_DIR"] = str(ROOT / "target")
     selected_feature = "client" if args.client else "gpu" if args.gpu else None
-    features = ["--features", selected_feature] if selected_feature else []
+    selected_features = [selected_feature] if selected_feature else []
+    if args.profile_sim:
+        selected_features.extend(PROFILE_FEATURES.split(","))
+    features = ["--features", ",".join(selected_features)] if selected_features else []
     run("cargo", f"+{TOOLCHAIN}", "check" if args.check or args.check_client_deps else "build", *manifest, *features,
         "--release", "--config", config, "--target", target,
         "-Zbuild-std=std,panic_abort", "-Zjson-target-spec", "--lib")
@@ -250,12 +303,22 @@ def main():
     nacp = work / f"{artifact}.nacp"
     title = "VERA20k" if args.client else "VERA20k GPU Probe" if args.gpu else "VERA20k Core Probe"
     title_id = CLIENT_TITLE_ID if args.client else GPU_TITLE_ID if args.gpu else TITLE_ID
-    version = CLIENT_VERSION if args.client else "0.1.0"
+    version = (CLIENT_VERSION + "-profile") if args.client and args.profile_sim else (
+        CLIENT_VERSION if args.client else "0.1.0"
+    )
+    output_artifact = (
+        "vera20-client-profile"
+        if args.client and args.profile_sim
+        else client_nsp_artifact(CLIENT_VERSION)
+        if args.client
+        else f"{artifact}-assets" if args.nsp_assets else None
+    )
     run(sdk / "tools/bin/nacptool", "--create", title, "Homebrew", version, nacp,
         f"--titleid={title_id}")
     if args.client:
         configure_client_savedata(nacp, title_id)
-    run(sdk / "tools/bin/elf2nro", elf, dist / f"{artifact}.nro", f"--nacp={nacp}",
+    nro_artifact = "vera20k-client-profile" if args.profile_sim else artifact
+    run(sdk / "tools/bin/elf2nro", elf, dist / f"{nro_artifact}.nro", f"--nacp={nacp}",
         f"--icon={icon_path(ROOT, sdk, artifact)}")
     if args.nsp:
         package(
@@ -263,10 +326,10 @@ def main():
             sdk,
             elf,
             nacp,
-            artifact=artifact,
+            artifact=nro_artifact,
             title_id=title_id,
             romfs=Path(args.nsp_assets) if args.nsp_assets else None,
-            output_artifact=f"{artifact}-assets" if args.nsp_assets else None,
+            output_artifact=output_artifact,
         )
 
 

@@ -472,7 +472,7 @@ fn sync_in_game_regions(state: &mut AppState) {
     });
     // Power meter first: gamemd asks the power bar for a tip before the
     // sidebar gadget ids, and registration order decides the hit here.
-    // Gadget idle republishes these retained House values each unlocked pump.
+    // The power-bar owner republishes these retained House values each pump.
     let power_rect = crate::ui::sidebar::power_bar_rect(
         &view.layout,
         state.match_state.match_presentation.sidebar_layout_spec,

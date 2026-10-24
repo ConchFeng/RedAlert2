@@ -1,0 +1,14 @@
+--- a/build.rs
++++ b/build.rs
+@@ -170,6 +170,11 @@
+ // None means "any OS" or "any target". The first match in sequence order is
+ // taken.
+ const ASM_TARGETS: &[AsmTarget] = &[
++    AsmTarget {
++        oss: &["horizon"],
++        arch: AARCH64,
++        perlasm_format: "linux64",
++    },
+     AsmTarget {
+         oss: LINUX_ABI,
+         arch: AARCH64,

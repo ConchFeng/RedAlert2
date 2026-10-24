@@ -849,8 +849,21 @@ pub(crate) fn render_wol_page(
         let Some(spec) = spec.and_then(|spec| spec.button(button.id)) else {
             continue;
         };
+        let text = if matches!(&painted, Painted::Login(_))
+            && button.id == crate::ui::wol_login::MANAGE
+            && state
+                .frontend
+                .wol
+                .as_ref()
+                .and_then(|visit| visit.login())
+                .is_some_and(|login| login.policy == crate::ui::wol_login::LoginPolicy::Online)
+        {
+            "Create Account".into()
+        } else {
+            resolve_csf(state, spec.csf_key)
+        };
         labels.push(PaintLabel {
-            text: resolve_csf(state, spec.csf_key),
+            text,
             rect: owner_draw_button_label_rect(button.rect, *pressed),
             align: ShellAlign(ShellAlign::H_CENTER.0 | ShellAlign::V_CENTER.0),
             rgb: crate::app::frontend::skirmish_shell_render::wol_button_label_rgb(*enabled),

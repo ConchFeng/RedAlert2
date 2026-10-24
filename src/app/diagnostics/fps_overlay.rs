@@ -163,6 +163,7 @@ impl FpsOverlay {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+
         });
         if let Some((buffer, count)) = frame.pool.get("window_fps") {
             batch.draw_passthrough_range_bound(

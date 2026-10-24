@@ -31,6 +31,85 @@ pub(crate) struct MatchDiagnosticsState {
     /// The active diagnostic segment; `None` between segments. Opened lazily
     /// by the frame loop, closed by the lifecycle flush points above.
     pub(crate) replay_log: Option<ReplayLog>,
+    command_executions: Option<CommandExecutionLog>,
+    loading_cancel: Option<Vec<LoadingCancelObservation>>,
+}
+
+/// One actual post-formation native command dispatch and its immediate
+/// receiver state. This opt-in app observation is never saved or hashed.
+pub(crate) struct CommandExecutionObservation {
+    pub frame: u32,
+    pub record: crate::sim::command::CommandRecord,
+    pub applied: bool,
+    pub actor: Option<u64>,
+    pub timing: Option<CommandTimingObservation>,
+    pub destination: Option<crate::sim::components::NavTargetRef>,
+    pub cell: Option<(u16, u16)>,
+    pub mission: Option<(i32, i32)>,
+}
+pub(crate) struct CommandTimingObservation {
+    pub publisher: Option<i8>,
+    pub fps: Option<u16>,
+    pub frame_send_rate: Option<u8>,
+    pub max_ahead: Option<i32>,
+}
+
+#[derive(Default)]
+pub(crate) struct CommandExecutionLog {
+    records: Vec<CommandExecutionObservation>,
+    overflowed: bool,
+}
+impl CommandExecutionLog {
+    pub(crate) fn record(
+        &mut self,
+        sim: &crate::sim::world::Simulation,
+        record: &crate::sim::command::CommandRecord,
+        applied: bool,
+    ) {
+        let actor = crate::sim::command::MegaMissionRecord::decode(record)
+            .map(|r| r.source_id)
+            .or_else(|| crate::sim::command::StopRecord::decode(record).map(|r| r.entity_id));
+        let actor = actor.and_then(|id| u64::try_from(id).ok());
+        let is_timing = matches!(
+            record.opcode(),
+            crate::sim::command::TIMING_OPCODE | crate::sim::command::PROCESS_TIME_OPCODE
+        );
+        if actor.is_none() && !is_timing {
+            return;
+        }
+        if self.records.len() >= 131072 {
+            self.overflowed = true;
+            return;
+        }
+        let entity = actor.and_then(|actor| sim.entities().get(actor));
+        self.records.push(CommandExecutionObservation {
+            frame: sim.session().binary_frame(),
+            record: record.clone(),
+            applied,
+            actor,
+            timing: sim
+                .session()
+                .network_command_timing()
+                .map(|timing| CommandTimingObservation {
+                    publisher: sim.network_timing_host_house(),
+                    fps: Some(timing.frames_per_second()),
+                    frame_send_rate: Some(timing.frame_send_rate().get()),
+                    max_ahead: sim.session().network_max_ahead_frames(),
+                }),
+            destination: entity.and_then(|e| e.navigation.nav_com()),
+            cell: entity.map(|e| (e.position.rx(), e.position.ry())),
+            mission: entity.map(|e| (e.mission.current().raw(), e.mission.queued().raw())),
+        });
+    }
+}
+
+#[derive(Clone, serde::Serialize)]
+pub(crate) struct LoadingCancelObservation {
+    pub event: &'static str,
+    pub match_id: Option<String>,
+    pub source: Option<usize>,
+    pub worker_owner_taken: bool,
+    pub loading_active: bool,
 }
 
 pub(crate) struct ReplayLogFlush {
@@ -39,6 +118,55 @@ pub(crate) struct ReplayLogFlush {
 }
 
 impl MatchDiagnosticsState {
+    pub(crate) fn begin_loading_cancel_observation(&mut self) {
+        self.loading_cancel.get_or_insert_with(Vec::new);
+    }
+    pub(crate) fn observe_loading_cancel(
+        &mut self,
+        event: &'static str,
+        match_id: Option<String>,
+        source: Option<usize>,
+        worker_owner_taken: bool,
+        loading_active: bool,
+    ) {
+        if let Some(log) = self.loading_cancel.as_mut() {
+            if log.len() < 16 {
+                log.push(LoadingCancelObservation {
+                    event,
+                    match_id,
+                    source,
+                    worker_owner_taken,
+                    loading_active,
+                });
+            }
+        }
+    }
+    pub(crate) fn loading_cancel_observations(&self) -> Option<&[LoadingCancelObservation]> {
+        self.loading_cancel.as_deref()
+    }
+    pub(crate) fn end_loading_cancel_observation(&mut self) {
+        self.loading_cancel = None;
+    }
+
+    pub(crate) fn begin_command_observation(&mut self) {
+        self.command_executions = Some(CommandExecutionLog::default());
+    }
+    pub(crate) fn command_observations_mut(&mut self) -> Option<&mut CommandExecutionLog> {
+        self.command_executions.as_mut()
+    }
+    pub(crate) fn take_command_observations(
+        &mut self,
+    ) -> anyhow::Result<Vec<CommandExecutionObservation>> {
+        let Some(log) = self.command_executions.as_mut() else {
+            return Ok(Vec::new());
+        };
+        anyhow::ensure!(!log.overflowed, "command execution observation overflowed");
+        Ok(std::mem::take(&mut log.records))
+    }
+    pub(crate) fn end_command_observation(&mut self) {
+        self.command_executions = None;
+    }
+
     /// Open before the first frame or scenario service input of this timeline.
     pub(crate) fn get_or_begin_replay(
         &mut self,
@@ -260,6 +388,7 @@ mod tests {
     fn diagnostics_with_segment() -> MatchDiagnosticsState {
         MatchDiagnosticsState {
             replay_log: Some(sample_log()),
+            ..Default::default()
         }
     }
 
@@ -324,6 +453,7 @@ mod tests {
         let mut first = diagnostics_with_segment();
         let mut second = MatchDiagnosticsState {
             replay_log: Some(sample_log_with(0xBEEF, "restored.map", 0x5555)),
+            ..Default::default()
         };
 
         let first_flush = first
@@ -371,6 +501,7 @@ mod tests {
         // header), replays to the same tick, and leaves via a teardown flush.
         let mut restored = MatchDiagnosticsState {
             replay_log: Some(sample_log_with(0xAAAA, "restored.map", 0x1111)),
+            ..Default::default()
         };
         let second = restored
             .flush_to(41, &root, 1_234)
@@ -414,6 +545,7 @@ mod tests {
         let original_bytes = std::fs::read(&first.path).unwrap();
         let mut second = MatchDiagnosticsState {
             replay_log: Some(sample_log_with(0xBEEF, "restored.map", 0x5555)),
+            ..Default::default()
         };
         let error = second.flush_to_with_writer(41, &root, 1234, |log, file| {
             let mut writer = PartialWriter { file, written: 0 };

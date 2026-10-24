@@ -1806,7 +1806,15 @@ impl Simulation {
         if config.hide_if_no_ore
             && let Some(overlay_registry) = overlay_registry
         {
-            let hidden = self.anim_cell_tiberium_value(location, rules, overlay_registry) == 0;
+            let value = self.anim_cell_tiberium_value(location, rules, overlay_registry);
+            // Phobos' `AnimClass_AI_Early @ 0x423B95` replacement keeps the same
+            // gate and compares instead: `GetContainedTiberiumValue() <=
+            // abs(HideIfNoOre.Threshold)`. `wrapping_abs` keeps the native
+            // two's-complement result for INT_MIN, where C++'s `abs` overflows.
+            #[cfg(feature = "phobos")]
+            let hidden = value <= config.hide_if_no_ore_threshold.wrapping_abs();
+            #[cfg(not(feature = "phobos"))]
+            let hidden = value == 0;
             if let Some(anim) = self.substrate.anims.get_mut(id) {
                 anim.draw_runtime.hidden = hidden;
             }
@@ -2189,8 +2197,15 @@ impl Simulation {
         };
         let owner_name = self.interner.resolve(owner).to_string();
         let (rx, ry, _, _, _) = location.to_cell_sub_z();
-        let Some(infantry) = self.construct_object_limbo_at_height(
-            kind,
+        // Rules6707DC/67BB10 retains an InfantryType pointer; AnimAI4249F9
+        // calls that type's creator, independent of other name registries.
+        let Some(object) =
+            rules.object_in_category(crate::rules::object_type::ObjectCategory::Infantry, kind)
+        else {
+            return true;
+        };
+        let Some(infantry) = self.construct_resolved_object_limbo_at_height(
+            object,
             &owner_name,
             rx,
             ry,
@@ -3776,6 +3791,69 @@ mod tests {
     use crate::rules::ini_parser::IniFile;
     use crate::sim::combat::Health;
     use crate::sim::game_entity::GameEntity;
+
+    /// Phobos' `AnimClass_AI_Early @ 0x423B95` replacement of the stock
+    /// `HideIfNoOre` test: the anim's cell `Get_Tiberium_Value @ 0x00485020`
+    /// hides it at or below `abs(HideIfNoOre.Threshold=)`, not only at zero.
+    #[test]
+    #[cfg(feature = "phobos")]
+    fn hide_if_no_ore_threshold_moves_the_value_cut_off() {
+        use crate::sim::overlay_grid::OverlayGrid;
+        use crate::sim::world::Simulation;
+
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+             [Tiberiums]\n0=Riparius\n[Riparius]\nImage=1\nValue=25\n\
+             [OverlayTypes]\n0=TIBCELL\n[TIBCELL]\nTiberium=yes\n",
+        );
+        let mut rules = RuleSet::from_ini(&ini).expect("twinkle rules");
+        let mut art = ArtRegistry::from_ini(&IniFile::from_str(
+            "[TWNK1]\nLoopCount=-1\nDetailLevel=2\nHideIfNoOre=true\n\
+             HideIfNoOre.Threshold=-60\nRate=450\n",
+        ));
+        art.bind_anim_frame_count_for_test("TWNK1", 8);
+        rules.replace_art_registry_for_test(art);
+        let overlays = crate::rules::overlay_types::OverlayTypeRegistry::from_ini(&ini, None);
+
+        let hidden_over = |density: u8| {
+            let mut sim = Simulation::new();
+            sim.session.set_map_width_for_test(16);
+            sim.session.set_map_height_for_test(16);
+            let mut grid = OverlayGrid::new(16, 16);
+            grid.place_overlay(8, 8, 0, density);
+            sim.install_overlay_grid_for_load(grid);
+            let type_id = sim.interner.intern("TWNK1");
+            let id = sim
+                .spawn_anim_at_world(
+                    &rules,
+                    AnimClassSpawnDescriptor {
+                        loop_count: -1,
+                        ..runtime_descriptor(type_id, 0)
+                    },
+                    AnimWorldCoord {
+                        x: 8 * 256 + 128,
+                        y: 8 * 256 + 128,
+                        z: 0,
+                    },
+                )
+                .expect("the twinkle constructs");
+            sim.visit_anim(
+                id,
+                &rules,
+                Some(&overlays),
+                crate::sim::world::FrameEffects::default(),
+            );
+            sim.anim(id)
+                .expect("the looping twinkle survives its visit")
+                .draw_runtime
+                .hidden
+        };
+
+        // `TiberiumClass::Value` times `OverlayData + 1`, so 50 against the
+        // threshold's 60 and 125 over it.
+        assert!(hidden_over(1), "50 <= abs(-60) hides the twinkle");
+        assert!(!hidden_over(4), "125 > 60 leaves it drawing");
+    }
 
     #[test]
     fn damage_fire_references_follow_original_owner_then_anim_expiry() {

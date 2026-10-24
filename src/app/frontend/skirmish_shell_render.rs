@@ -899,6 +899,7 @@ fn render_skirmish_shell_with_atlas(
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
+
     });
     state.renderer.batch_renderer.draw_with_buffer_passthrough(
         &mut pass,
@@ -1023,6 +1024,7 @@ fn clear_shell_target(
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
+
     });
 }
 

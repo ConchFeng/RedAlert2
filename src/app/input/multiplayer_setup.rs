@@ -13,12 +13,21 @@ use winit::keyboard::{KeyCode, PhysicalKey};
 
 pub(crate) fn layout(state: &AppState) -> MultiplayerSetupLayout {
     let (w, h) = shell_layout::shell_screen_size(state);
-    MultiplayerSetupLayout::new(
+    let mut layout = MultiplayerSetupLayout::new(
         crate::app::shell_network_setup::dialog(state),
         w as i32,
         h as i32,
         shell_layout::fills_window(state),
-    )
+    );
+    if state
+        .match_state
+        .session
+        .network_setup_capacity()
+        .is_some_and(|rows| rows > 8)
+    {
+        layout.arrange_extended_rows();
+    }
+    layout
 }
 
 pub(crate) fn update_geometry(state: &mut AppState) {
@@ -48,7 +57,9 @@ fn transfer_active(state: &AppState) -> bool {
         .frontend
         .network_setup_protocol
         .as_ref()
-        .is_some_and(|protocol| protocol.transfer_progress().is_some())
+        .is_some_and(|protocol| {
+            protocol.blocking_map_transfer() && protocol.transfer_progress().is_some()
+        })
 }
 
 fn notice_feed(state: &AppState) -> [crate::ui::shell::layout::LaidOutControl; 1] {
@@ -352,6 +363,8 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
                 CHOOSE_MAP => Some(SetupAction::ChooseMap),
                 EMOTE => Some(SetupAction::Emote),
                 PAGE => Some(SetupAction::Page),
+                PREVIOUS_ROWS => Some(SetupAction::RosterPage { forward: false }),
+                NEXT_ROWS => Some(SetupAction::RosterPage { forward: true }),
                 _ => None,
             };
         }
@@ -368,6 +381,9 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) {
 /// Original scrollbar timers: one callback, no catch-up burst; no wheel or
 /// arrow-key path exists in the native ComboDropWin/list subclasses.
 pub(crate) fn poll(state: &mut AppState) -> Option<Instant> {
+    if crate::app::shell_network_setup::verify(state).is_some() {
+        return crate::app::shell_network_setup::verify_poll_scroll(state);
+    }
     if transfer_active(state) {
         return None;
     }

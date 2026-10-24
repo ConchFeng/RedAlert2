@@ -182,7 +182,10 @@ fn guest_answer(state: &mut AppState, request: &NetworkSetupRequest) {
             let mut pings = [-1; 8];
             pings[1] = 60;
             for event in [
-                NetworkSetupEvent::GameStarted { users, pings },
+                NetworkSetupEvent::GameStarted {
+                    users,
+                    pings: pings.to_vec(),
+                },
                 NetworkSetupEvent::VerifyStarted { pairs: true },
                 NetworkSetupEvent::PeerConnected { node: 1 },
                 NetworkSetupEvent::Negotiated { result: 2 },
@@ -334,7 +337,8 @@ fn host_options(
         NetworkSetupEvent::HostSetup(crate::app::shell_network_setup::HostOptions {
             launch,
             map_metadata,
-            vacancies: [crate::app::match_runtime::session::NetworkVacancy::Open; 8],
+            vacancies: [crate::app::match_runtime::session::NetworkVacancy::Open;
+                crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT],
             observer_row: None,
             cooperative_difficulty: 0,
             seed: Some(HOST_SEED),
@@ -368,6 +372,9 @@ fn answer(state: &mut AppState, request: WolServiceRequest) {
         WolServiceRequest::Connect { .. } => {
             WolServiceEvent::Login(Ok(WolLoginAccepted { motd: MOTD.into() }))
         }
+        // The offline provider has no account database and must never claim
+        // that a requested real account was created.
+        WolServiceRequest::CreateAccount { .. } => WolServiceEvent::Login(Err(0x8000_4005)),
         WolServiceRequest::ListChannels { kind, .. } => WolServiceEvent::Channels {
             kind,
             channels: if kind == GAME_CHANNEL {
@@ -519,6 +526,7 @@ fn answer(state: &mut AppState, request: WolServiceRequest) {
         // Nothing to cancel or deliver: nobody is online.
         WolServiceRequest::SetLocale(_)
         | WolServiceRequest::LeaveChannel
+        | WolServiceRequest::MatchReturned
         | WolServiceRequest::Logout
         | WolServiceRequest::CancelWait
         | WolServiceRequest::Chat { .. }
@@ -824,7 +832,8 @@ pub(crate) fn matchbot_options(
     Ok(crate::app::shell_network_setup::HostOptions {
         launch,
         map_metadata: crate::app::shell_network_setup::local_map_metadata(state, &file)?,
-        vacancies: [crate::app::match_runtime::session::NetworkVacancy::Open; 8],
+        vacancies: [crate::app::match_runtime::session::NetworkVacancy::Open;
+            crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT],
         observer_row: None,
         cooperative_difficulty: 0,
         seed: Some(HOST_SEED),

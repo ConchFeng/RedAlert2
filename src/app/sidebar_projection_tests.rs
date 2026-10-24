@@ -817,6 +817,102 @@ fn a_house_recheck_stays_pending_until_the_projection_runs_it() {
 }
 
 #[test]
+fn retained_sidebar_publishes_counters_and_button_frames_without_rebuild() {
+    let sim = Simulation::with_seed(0);
+    let mut projection = SidebarProjectionState::default();
+    projection.reconcile_fixture(InternedId::default(), &[], 4);
+    let initial = view(&sim, &[], &projection, SidebarTab::Building, 600.0);
+    projection.replace_view(Some(initial));
+    projection.displayed_credits_or_seed("Americans", 50_000);
+    assert!(projection.advance_credits("Americans", 49_000).is_some());
+    projection.refresh_power(100, 200);
+    let mut gadgets = SidebarGadgetState::new();
+    gadgets.repair_mode_on = true;
+    gadgets.sell_disabled = true;
+    gadgets.top_pressed[0] = true;
+    projection.refresh_gadget_draw_state(&gadgets);
+    let drawn = projection.view().unwrap();
+    assert_eq!(drawn.credits, projection.saved_credits_counter("Americans").unwrap());
+    assert!(drawn.credits < 50_000 && drawn.credits > 49_000);
+    assert_eq!((drawn.power_produced, drawn.power_drained), (100, 200));
+    assert!(drawn.low_power && drawn.repair_button.active && drawn.sell_button.disabled);
+    assert_eq!(drawn.repair_button.frame_index, gadgets.repair_frame());
+    assert_eq!(drawn.top_buttons[0].frame_index, gadgets.top_button_frame(0));
+    gadgets.repair_mode_on = false;
+    gadgets.top_pressed[0] = false;
+    projection.refresh_gadget_draw_state(&gadgets);
+    let drawn = projection.view().unwrap();
+    assert!(!drawn.repair_button.active);
+    assert_eq!(drawn.top_buttons[0].frame_index, gadgets.top_button_frame(0));
+}
+
+#[test]
+fn retained_superweapon_refreshes_charge_hold_and_armed_state() {
+    let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[InfantryTypes]\n[VehicleTypes]\n[AircraftTypes]\n[BuildingTypes]\n\
+         [SuperWeaponTypes]\n0=NukeSpecial\n[NukeSpecial]\nType=MultiMissile\nRechargeTime=10\n",
+    )).unwrap();
+    let mut sim = Simulation::with_seed(0);
+    sim.intern_rule_type_ids(&rules);
+    let owner = sim.intern("Americans");
+    let id = sim.interner().get("NukeSpecial").unwrap();
+    let mut instance = crate::sim::superweapon::SuperWeaponInstance::new(id, owner, 0);
+    instance.set_is_active_for_test(true);
+    sim.super_weapons_mut_for_test().entry(owner).or_default().insert(id, instance);
+    let supers = crate::sim::superweapon::superweapon_views_for_owner(&sim, &rules, &owner);
+    let mut projection = SidebarProjectionState::default();
+    projection.reconcile_fixture(
+        owner,
+        &cameo_candidates(&sim, &rules, None, owner, &[], &[], &supers),
+        4,
+    );
+    let initial = build_sidebar_view_with_spec(
+        SidebarChromeLayoutSpec::stock(),
+        800.0,
+        600.0,
+        SidebarTab::Defense,
+        0,
+        0,
+        0,
+        None,
+        &[],
+        &[],
+        &[],
+        None,
+        &[],
+        Some(sim.interner()),
+        &supers,
+        &SidebarGadgetState::new(),
+        None,
+        None,
+        None,
+        None,
+        [None; 2],
+        projection.cameo_strips(),
+    );
+    projection.replace_view(Some(initial));
+    assert!(!projection.view().unwrap().items[0].is_ready);
+    let instance = sim
+        .super_weapons_mut_for_test()
+        .get_mut(&owner)
+        .unwrap()
+        .get_mut(&id)
+        .unwrap();
+    instance.set_is_ready_for_test(true);
+    instance.set_is_suspended_for_test(true);
+    let before = sim.state_hash();
+    projection.refresh_cameo_draw_state(&sim, &rules, owner, None);
+    projection.refresh_armed_superweapon(Some("NukeSpecial"));
+    let drawn = &projection.view().unwrap().items[0];
+    assert!(drawn.is_ready && drawn.is_armed);
+    assert!(!drawn.enabled);
+    assert_eq!(drawn.progress, 1.0);
+    projection.refresh_armed_superweapon(None);
+    assert!(!projection.view().unwrap().items[0].is_armed);
+    assert_eq!(sim.state_hash(), before);
+}
+
+#[test]
 fn building_production_darkens_other_cameos_until_cancelled() {
     let Some(rules) = crate::rules::retail_ini_fixture::retail_battle_rules_for_map("XMP03T4.MAP")
         .map(|retail| retail.rules)
@@ -844,6 +940,15 @@ fn building_production_darkens_other_cameos_until_cancelled() {
     projection.reconcile_factory_links(&sim, owner);
     projection.refresh_cameo_draw_state(&sim, &rules, owner, None);
     let items = &projection.view().unwrap().items;
+    assert_eq!(
+        items
+            .iter()
+            .find(|item| item.type_id == "GAPOWR")
+            .unwrap()
+            .queued_count,
+        1,
+        "the retained view publishes queue badges without rebuilding membership",
+    );
     assert!(
         items
             .iter()
@@ -1260,7 +1365,7 @@ fn superweapon_retained_cameo_keeps_identity_through_hold_and_recovery() {
             .map(|entry| entry.id)
             .collect();
         assert_eq!(ids, vec![CameoId::SuperWeapon(sw_views[0].type_id)]);
-        let sidebar = build_sidebar_view_with_spec(
+        let mut sidebar = build_sidebar_view_with_spec(
             SidebarChromeLayoutSpec::stock(),
             800.0,
             430.0,
@@ -1288,6 +1393,14 @@ fn superweapon_retained_cameo_keeps_identity_through_hold_and_recovery() {
             sidebar.items.len(),
             1,
             "one retained Super, without duplicates"
+        );
+        // The per-frame receiver must restore the live Super display without
+        // rebuilding membership; drain transitions use this same receiver.
+        sidebar.items[0].super_weapon_display = None;
+        projection.apply_cameo_draw_state(&mut sidebar, sim, rules, owner, None);
+        assert_eq!(
+            sidebar.items[0].super_weapon_display,
+            Some(sw_views[0].display)
         );
         (sidebar.items[0].clone(), change)
     }

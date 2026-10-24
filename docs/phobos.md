@@ -32,4 +32,8 @@ other mode, even with identical retail INIs.
 Supported extensions:
 
 - [Custom radiation types](phobos-custom-radiation.md)
+- [Shields](phobos-shields.md) (damage absorption, shield bar, shield tint, break, respawn and self-healing)
+- [Custom ore spawners](phobos-ore-spawners.md)
+- [Custom gather animations](phobos-harvester-gather-animations.md)
+- [Ore-stage animation hiding](phobos-hide-if-no-ore-threshold.md)
 - [Superweapon techno gates](phobos-superweapon-technos.md)

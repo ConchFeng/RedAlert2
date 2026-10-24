@@ -649,7 +649,10 @@ impl BatchRenderer {
         let pipeline_layout: wgpu::PipelineLayout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Batch Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &camera_bind_group_layout,
+                    &texture_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
 
@@ -875,7 +878,10 @@ impl BatchRenderer {
         let zdepth_pipeline_layout: wgpu::PipelineLayout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("ZDepth Pipeline Layout"),
-                bind_group_layouts: &[&camera_bind_group_layout, &zdepth_texture_bind_group_layout],
+                bind_group_layouts: &[
+                    &camera_bind_group_layout,
+                    &zdepth_texture_bind_group_layout,
+                ],
                 push_constant_ranges: &[],
             });
         let zdepth_pipeline: wgpu::RenderPipeline =
@@ -1000,7 +1006,7 @@ impl BatchRenderer {
                 },
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled,
+                    depth_write_enabled: depth_write_enabled,
                     // Sprite leaves test `z < zbuf` (strict).
                     depth_compare: wgpu::CompareFunction::Less,
                     stencil: wgpu::StencilState::default(),
@@ -1124,7 +1130,7 @@ impl BatchRenderer {
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
                     depth_write_enabled: false,
-                    depth_compare,
+                    depth_compare: depth_compare,
                     stencil: wgpu::StencilState::default(),
                     bias: wgpu::DepthBiasState::default(),
                 }),

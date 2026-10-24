@@ -47,6 +47,7 @@ pub(crate) mod diagnostics;
 pub(crate) mod display_target;
 mod frame;
 pub mod frontend;
+mod game_data_check;
 mod handler;
 mod in_game;
 mod initialize;
@@ -127,6 +128,8 @@ pub struct App {
     shell_capture: Option<crate::app::diagnostics::shell_capture::ShellCaptureSession>,
     tactical_capture:
         Option<crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession>,
+    /// Render admission for hidden captures; service events may wake earlier.
+    capture_render_not_before: Option<Instant>,
     /// Retained until `resumed()` so the profile's pre-window Video read can
     /// use the command-line screen fields as its current-value defaults.
     startup_options: crate::app::frontend::startup_options::RetailStartupOptions,
@@ -193,6 +196,7 @@ impl App {
             state: None,
             shell_capture: None,
             tactical_capture: None,
+            capture_render_not_before: None,
             startup_options,
             spawn_request: None,
             startup_failure: None,
@@ -209,6 +213,7 @@ impl App {
                 crate::app::diagnostics::shell_capture::ShellCaptureSession::new(request),
             ),
             tactical_capture: None,
+            capture_render_not_before: None,
             startup_options: crate::app::frontend::startup_options::RetailStartupOptions::default(),
             spawn_request: None,
             startup_failure: None,
@@ -227,6 +232,7 @@ impl App {
                     request,
                 ),
             ),
+            capture_render_not_before: None,
             startup_options: crate::app::frontend::startup_options::RetailStartupOptions::default(),
             spawn_request: None,
             startup_failure: None,

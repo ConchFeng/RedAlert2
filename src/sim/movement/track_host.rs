@@ -218,7 +218,10 @@ impl Simulation {
             return false;
         };
         loco.store_track_destination(family, Some(supplied));
-        loco.store_track_target_fraction(family, crate::util::fixed_math::SIM_ONE);
+        loco.store_track_target_fraction_native(
+            family,
+            crate::util::native_x87::NativeF64Bits::ONE,
+        );
         true
     }
 
@@ -888,7 +891,10 @@ impl Simulation {
         supplied: DriveCoord,
         put: bool,
     ) {
-        for coord in Self::track_occupation_coords(substrate, id, family, supplied) {
+        for coord in Self::track_occupation_coords(substrate, id, family, supplied)
+            .into_iter()
+            .flatten()
+        {
             Self::track_raw_mark_at(substrate, path_grid, resolved_terrain, coord, put);
         }
     }
@@ -904,6 +910,7 @@ impl Simulation {
         let supplied = head_or_null(self.substrate.entities.get(id), family);
         Self::track_occupation_coords(&self.substrate, id, family, supplied)
             .into_iter()
+            .flatten()
             .map(|coord| {
                 super::foot_mark::raw_occupation_plane(
                     coord,
@@ -924,12 +931,12 @@ impl Simulation {
         id: u64,
         family: TrackFamily,
         supplied: DriveCoord,
-    ) -> Vec<DriveCoord> {
+    ) -> [Option<DriveCoord>; 2] {
         let Some((state, retained_head, current)) = Self::track_state(substrate, id, family) else {
-            return Vec::new();
+            return [None; 2];
         };
         if supplied == (DriveCoord { x: 0, y: 0, z: 0 }) {
-            return Vec::new();
+            return [None; 2];
         }
         let handoff = (!state.reversed() && state.turn_index() != -1)
             .then(|| {
@@ -964,7 +971,7 @@ impl Simulation {
                 })
             })
             .flatten();
-        handoff.into_iter().chain([supplied]).collect()
+        [handoff, Some(supplied)]
     }
 
     fn track_try_chain(
@@ -1000,7 +1007,7 @@ impl Simulation {
             return Ok(false);
         };
         let candidate = super::track_head::offset_head(head(entity, family), direction);
-        let saved_speed = entity.foot_speed.applied_fraction();
+        let saved_speed = entity.foot_speed.native_applied_fraction();
         //4B1BA1..4B1C3E: Unit+1AC(cell(head + delta), dir, Object 0x5F5F00,
         //0, 1), with no Mark bracket.
         let target = super::foot_path::coord_cell(candidate);
@@ -1128,7 +1135,9 @@ impl Simulation {
             true,
         );
         if let Some(entity) = self.substrate.entities.get_mut(id) {
-            entity.foot_speed.set_speed_fraction(saved_speed);
+            entity
+                .foot_speed
+                .set_speed_fraction_native_bits(saved_speed.bits());
             entity.navigation.path_replay_mut().consume(1);
         }
         Ok(true)
@@ -1372,7 +1381,11 @@ impl Simulation {
         let current = entity.mission.current().known();
         let effective = entity.mission.effective().known();
         let category = entity.category();
-        let unit_type = self.interner.object_type(entity.type_ref(), rules);
+        let unit_type = self.interner.object_type_in_category(
+            entity.type_ref(),
+            entity.category().into(),
+            rules,
+        );
         let miner = unit_type.is_some_and(|object| object.harvester || object.weeder);
         // Unit738A6E calls the existing IsArmed701120 owner only after the
         // Harvester/Weeder gates. Armed idle keeps TarCom and burst; the
@@ -1383,7 +1396,9 @@ impl Simulation {
                 .is_some_and(|object| crate::sim::combat::combat_weapon::is_armed(entity, object));
         let deploys_into = unit_type
             .and_then(|object| object.deploys_into.as_deref())
-            .and_then(|name| rules.object(name))
+            .and_then(|name| {
+                rules.object_in_category(crate::rules::object_type::ObjectCategory::Building, name)
+            })
             .is_some();
         // 0x00738A7C..0x00738AAF: an unarmed mission-only Unit (`+0x3D4`) of
         // a `Passengers=` type (`+0x5E0`) carrying a first passenger
@@ -1459,7 +1474,7 @@ impl Simulation {
                         .is_some_and(|building| {
                             building.category() == EntityCategory::Structure
                                 && self
-                                    .object_type(building.type_ref(), rules)
+                                    .entity_object_type(building, rules)
                                     .is_some_and(|object| object.bunker)
                         })
                         && self.substrate.occupancy.first_building_on_layer(
@@ -1547,15 +1562,13 @@ fn unit_idle_guard_pick(sim: &Simulation, id: u64, rules: &RuleSet) -> MissionTy
         .houses
         .get(&entity.owner())
         .is_some_and(|house| house.current_iq() >= rules.general.iq_guard_area)
-        || sim
-            .object_type(entity.type_ref(), rules)
-            .is_some_and(|object| {
-                crate::sim::combat::veterancy::has_weapon_ability(
-                    entity.veterancy.rank_kind(),
-                    object,
-                    crate::rules::object_type::Ability::GuardArea,
-                ) || object.default_to_guard_area
-            });
+        || sim.entity_object_type(entity, rules).is_some_and(|object| {
+            crate::sim::combat::veterancy::has_weapon_ability(
+                entity.veterancy.rank_kind(),
+                object,
+                crate::rules::object_type::Ability::GuardArea,
+            ) || object.default_to_guard_area
+        });
     if wide
         && sim.team_script_vm.team_for_member(id).is_none()
         && entity.slave.owner().is_none()
@@ -1619,7 +1632,7 @@ fn harvester_idle_selection(
             .get(&entity.owner())
             .is_none_or(|house| house.is_controlled_by_human(sim.session.game_mode_nonzero()));
     let weeder = sim
-        .object_type(entity.type_ref(), rules)
+        .entity_object_type(entity, rules)
         .is_some_and(|obj| !obj.harvester && obj.weeder);
     let wanted_land = if weeder {
         crate::rules::terrain_rules::LandType::Weeds

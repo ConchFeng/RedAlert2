@@ -275,7 +275,10 @@ fn decode_pack_section(ini: &IniFile, section_name: &str) -> Option<Vec<u8>> {
         }
     };
 
-    match lcw::decompress_chunks(&compressed) {
+    // ReadMapOverlayPacks 0x005FD2E0 consumes one byte per fixed-grid cell.
+    // Reject excess decoded data before allocating it; short packs retain the
+    // existing failed-read semantics in OverlayIdentityPack/OverlayDataPack.
+    match lcw::decompress_chunks(&compressed, OVERLAY_TOTAL_CELLS) {
         Ok(data) => {
             log::info!(
                 "{}: {} compressed → {} decompressed bytes",
@@ -387,6 +390,23 @@ pub fn compute_wall_connectivity(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn overlay_pack_limits_cumulative_output_and_keeps_short_pack_reads() {
+        // Four 65535-byte RLE chunks plus five more bytes exceed 512x512.
+        let packed = "BQD///7///+ABQD///7///+ABQD///7///+ABQD///7///+ABQAFAP4FAP+A";
+        let ini = IniFile::from_str(&format!(
+            "[OverlayPack]\n1={packed}\n[OverlayDataPack]\n1={packed}\n"
+        ));
+        let rejected = parse_overlay_packs(&ini);
+        assert!(!rejected.identity.has_positive_length());
+        assert!(!rejected.data.has_positive_length());
+
+        let short = parse_overlay_packs(&IniFile::from_str("[OverlayPack]\n1=BQD///7///+A\n"));
+        assert_eq!(short.identity.decoded_len(), 65535);
+        assert_eq!(short.identity.read_byte(0, 0), Some(NO_OVERLAY));
+        assert_eq!(short.identity.read_byte(511, 127), None);
+    }
 
     #[test]
     fn raw_identity_pack_distinguishes_sentinel_from_failed_short_read() {

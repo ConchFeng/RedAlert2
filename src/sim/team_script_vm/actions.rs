@@ -17,18 +17,12 @@
 //! `deploy` rows (actions 14, 43, 8 and 9) in `transport_tests`.
 //!
 //! RESIDUALS:
-//! - Actions other than 0, 1, 2, 3, 5, 6, 8, 9, 10, 11, 12, 14, 16, 17, 19, 20, 21, 24, 30, 37, 38, 39, 40, 41, 42, 43,
-//!   46, 47, 49, 50, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63 and 64 are not ported. A team
-//!   that reaches one stays on it, as a native handler that has not
-//!   finished does, and records the first as its refusal; the rest of its
-//!   update runs. Trigger: none of the 163 retail AIMD TeamTypes reaches
-//!   one. Effect: the team idles on that action for good, keeping its
+//! - Actions outside [`action_is_ported`] are not ported. A team that reaches
+//!   one stays on it and records the first as its refusal; the rest of its
+//!   update runs. Trigger: an authored script reaches an unsupported action.
+//!   Effect: the team idles on that action for good, keeping its
 //!   members and its TeamType's `Max=` slot, and nothing else sends those
 //!   units out.
-//! - `Coordinate_Attack` keeps a cell target that only a terrain object
-//!   blocks: a team target holds no terrain object. Trigger: a cell target,
-//!   which no ported caller gives (`Greatest_Threat`'s wall fallback is not
-//!   ported). Effect: the members fire at the cell instead of the tree.
 //! - `Coordinate_Attack` orders an unloading unit to attack without asking
 //!   Unit vt+0x4E4 (`0x00736D50`), which keeps it unloading when its type is
 //!   `DeployToFire=`, or when a computer unit's `DeploysInto=` building is
@@ -40,12 +34,6 @@
 //!   natively, as in VERA, those actions take them off Unload in the air.
 //!   Trigger: a member of a modded type deploying when its team attacks.
 //!   Effect: it stops deploying and attacks.
-//! - Non-aircraft ammunition (`+0x2FC`) retains its constructor and chrono
-//!   reinforcement writes; ordinary weapon-fire debits remain unported.
-//!   Actions 0 and 46 therefore do not find an ordinary finite-ammo team spent
-//!   (`team_out_of_ammo`). Trigger: a team of units with `Ammo=` above 0.
-//!   Effect: the team keeps attacking where native would move on once all
-//!   are empty.
 
 use crate::map::entities::EntityCategory;
 use crate::rules::object_type::ObjectCategory;
@@ -132,6 +120,7 @@ pub(super) const fn action_is_ported(action_id: i32) -> bool {
             | 26
             | 27
             | 30
+            | 34
             | 37
             | 38
             | 39
@@ -398,6 +387,38 @@ impl Simulation {
                         "Team {team_id} Script17 names invalid ScriptType ordinal {}",
                         action.argument
                     );
+                }
+            }
+            // Original gamemd.exe TeamClass::AI Script34, table6E9FFC ->
+            //6E9ACF..6E9B6A: Zone+34 GetCoords, Ground578080, then Map565730
+            // bridge flags100/400. Keep subcell XY even for an object Zone.
+            // FocusOn6D2420 copies the coordinate; Team+80 completes now,
+            // independently of the camera's progress. No House/first gate.
+            34 => {
+                let coord = self
+                    .team_script_vm
+                    .teams
+                    .get(&team_id)
+                    .and_then(|team| team.zone)
+                    .and_then(|zone| self.team_target_coord(zone));
+                if let (Some(coord), Some(terrain)) = (coord, self.resolved_terrain.as_ref()) {
+                    let cells = crate::map::resolved_terrain::NativeCellQuery::canonical(terrain);
+                    let ground =
+                        crate::sim::movement::ground_pose::query_ground_height(&cells, coord)
+                            .expect("authored camera ground query requires a valid native slope");
+                    let cell = cells.lookup_world(coord.x, coord.y);
+                    let on_bridge = cells.flags(cell) & 0x100 != 0
+                        || cells.flags(cells.lookup_world(coord.x, coord.y)) & 0x400 != 0;
+                    let z = crate::sim::movement::ground_pose::z_at_height(ground, 0, on_bridge);
+                    self.publish_trigger_effects(vec![
+                        crate::sim::trigger_runtime::TriggerEffect::CameraAtCoord {
+                            coord: [coord.x, coord.y, z],
+                            velocity: Some(action.argument),
+                        },
+                    ]);
+                }
+                if let Some(team) = self.team_script_vm.teams.get_mut(&team_id) {
+                    team.advance_pending = true;
                 }
             }
             37 => {
@@ -2092,8 +2113,9 @@ impl Simulation {
     /// team clears it and finishes; otherwise the existing CoordinateAttack
     /// owner orders the members. No RNG or timer write in this handler.
     /// Source: original6EC9A0..6ECA64 and6E9605..6E961D in Steam gamemd.exe.
-    /// Terrain targets and retained Dummy identity remain the existing
-    /// TeamTarget residuals; ALL01 Nuke_Repair's waypoint364 names a Building.
+    /// Cell47C5A0's Terrain result retains the same Object identity as a
+    /// Techno, so PointerExpired6EAE97..6EAEA4 clears it after destruction.
+    /// Retained Dummy Cell identity remains a separate TeamTarget residual.
     fn team_action_attack_waypoint(
         &mut self,
         team_id: u64,
@@ -2107,8 +2129,10 @@ impl Simulation {
             let target =
                 self.team_waypoint_blocker(waypoint)
                     .map(|(target, blocker)| match blocker {
-                        Some(BlockingObject::Entity(object)) => TeamTarget::Object(object),
-                        Some(BlockingObject::Terrain(_)) | None => target,
+                        Some(BlockingObject::Entity(object) | BlockingObject::Terrain(object)) => {
+                            TeamTarget::Object(object)
+                        }
+                        None => target,
                     });
             self.team_assign_mission_target(team_id, target, rules, registry, frame_effects);
         }
@@ -2476,14 +2500,15 @@ impl Simulation {
         let mut focus = team.focus;
         let has_members = !team.members.is_empty();
         let leader = self.team_leader(team_id, rules);
-        // `0x006EB51A..0x006EB593`; a terrain object is not a team target
-        // (module residual).
+        // CoordinateAttack6EB51A..6EB593 retains any Cell47C5A0 Object,
+        // including Terrain. Shared Object identity lets the existing
+        // PointerExpired6EAE97..6EAEA4 clear it. Source: gamemd instructions.
         if let Some(TeamTarget::Cell { x, y }) = focus
             && has_members
             && leader
                 .and_then(|leader| self.substrate.entities.get(leader))
                 .is_some_and(|entity| entity.category() != EntityCategory::Aircraft)
-            && let Some(BlockingObject::Entity(object)) =
+            && let Some(BlockingObject::Entity(object) | BlockingObject::Terrain(object)) =
                 self.find_blocking_object((x as u16, y as u16), MovementLayer::Ground)
             && let Some(team) = self.team_script_vm.teams.get_mut(&team_id)
         {

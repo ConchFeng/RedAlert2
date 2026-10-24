@@ -50,6 +50,14 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
 }
 
 impl AppState {
+    /// Client presentation preference; the simulation never reads this option.
+    pub(crate) fn translucent_fog_enabled(&self) -> bool {
+        self.platform
+            .game_config
+            .as_ref()
+            .is_some_and(|config| config.graphics.translucent_fog)
+    }
+
     /// Current projection: frontend/result use physical window pixels; tactical
     /// rendering and pending tactical installation use the optional zoom pass.
     /// Loading artwork explicitly uses GPU/window dimensions in loading::pump.

@@ -400,6 +400,11 @@ pub struct AnimTypeRuntimeConfig {
     pub tiberium_chain_reaction: bool,
     pub is_tiberium: bool,
     pub hide_if_no_ore: bool,
+    /// Phobos `AnimTypeExt::HideIfNoOre_Threshold` (`src/Ext/AnimType/Body.h`,
+    /// read as a `Valueable<int>` with constructor default 0): the smallest
+    /// contained tiberium value at which a `HideIfNoOre=` anim still draws.
+    #[cfg(feature = "phobos")]
+    pub hide_if_no_ore_threshold: i32,
     pub is_animated_tiberium: bool,
     pub tiberium_spread_radius: i32,
     /// The Type references (`TiberiumSpawnType=`, `Spawns=`, `Warhead=`,
@@ -811,6 +816,8 @@ fn parse_anim_runtime_config(section: &IniSection) -> AnimTypeRuntimeConfig {
         tiberium_chain_reaction: section.read_bool("TiberiumChainReaction", false),
         is_tiberium: section.read_bool("IsTiberium", false),
         hide_if_no_ore: section.read_bool("HideIfNoOre", false),
+        #[cfg(feature = "phobos")]
+        hide_if_no_ore_threshold: section.read_ares_int("HideIfNoOre.Threshold", 0),
         is_animated_tiberium: section.read_bool("IsAnimatedTiberium", false),
         tiberium_spread_radius: section.read_int("TiberiumSpreadRadius", 0),
         // The Type references (`TiberiumSpawnType=`, `Spawns=`, `Warhead=`,

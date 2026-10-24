@@ -47,6 +47,10 @@ mod area_guard_tests;
 #[path = "player_scatter_tests.rs"]
 mod player_scatter_tests;
 
+#[cfg(test)]
+#[path = "mcv_group_tests.rs"]
+mod mcv_group_tests;
+
 /// Handle mouse button press/release for selection and move commands.
 ///
 /// The in-game gadget walk runs FIRST (study G22/A8): chrome buttons + cameos
@@ -1250,7 +1254,10 @@ fn apply_sidebar_action_inner(state: &mut AppState, action: SidebarAction) {
         ),
         SidebarAction::SelectTab(tab) => {
             // Retained strips own their rows; changing tabs only selects a strip.
-            state.match_state.match_presentation.active_sidebar_tab = tab;
+            if state.match_state.match_presentation.active_sidebar_tab != tab {
+                state.match_state.match_presentation.active_sidebar_tab = tab;
+                crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
+            }
         }
         SidebarAction::CameoPress {
             type_id,
@@ -1753,6 +1760,7 @@ fn select_sidebar_tab_command(state: &mut AppState, index: i32) {
     if matches!(tab, SidebarTab::Building | SidebarTab::Defense) {
         place_ready_building_for_tab(state, tab);
     }
+    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 /// The tail of the Structures and Defense tab commands: Building7342A0 and
@@ -1920,12 +1928,7 @@ pub(crate) fn dispatch_command_bar(state: &mut AppState, command: usize, right: 
         0..=2 => {
             let group = command + 1;
             if right {
-                let sim = state
-                    .match_state
-                    .sim_runtime
-                    .as_ref()
-                    .map(|runtime| &runtime.simulation);
-                clear_control_group(&mut state.match_state.input.control_groups, group, sim);
+                queue_control_group_assignment(state, group, Vec::new());
                 return;
             }
             HotkeyCommand::TeamSelect(group)
@@ -2927,6 +2930,7 @@ mod item83_selection_order_tests {
                         target_rx: 5,
                         target_ry: 7,
                     },
+                    None,
                 )
                 .unwrap();
             let command = sim.decode_native_command_record(&record, 0).unwrap();
@@ -3047,6 +3051,7 @@ mod item83_selection_order_tests {
                         target_rx: 5,
                         target_ry: 7,
                     },
+                    None,
                 )
             } else {
                 sim.encode_plan_connect_record(local, actor, (5, 7))
@@ -3278,6 +3283,9 @@ fn queue_stop_for_selected(state: &mut AppState) {
         );
         return;
     }
+    if !super::commands::selection_input_has_capacity(state, selected_ids.len()) {
+        return;
+    }
     let Some(runtime) = state.match_state.sim_runtime.as_mut() else {
         return;
     };
@@ -3360,6 +3368,9 @@ fn queue_guard_for_selected(state: &mut AppState) {
         &state.match_state.input.selection_order,
         state.match_state.input.selection_order_pending,
     );
+    if !super::commands::selection_input_has_capacity(state, selected.len()) {
+        return;
+    }
     let Some(runtime) = state.match_state.sim_runtime.as_mut() else {
         return;
     };
@@ -3408,6 +3419,9 @@ fn queue_scatter_for_selected(state: &mut AppState) {
                 crate::app::input::planning_mode::PlanningRefusal::Scatter,
             );
         }
+        return;
+    }
+    if !super::commands::selection_input_has_capacity(state, selected.len()) {
         return;
     }
     let Some(runtime) = state.match_state.sim_runtime.as_mut() else {
@@ -3520,6 +3534,9 @@ fn queue_deploy_undeploy_for_selected(state: &mut AppState) {
         &state.match_state.input.selection_order,
         state.match_state.input.selection_order_pending,
     );
+    if !super::commands::selection_input_has_capacity(state, selected_ids.len()) {
+        return;
+    }
     let Some(sim) = state
         .match_state
         .sim_runtime
@@ -3591,10 +3608,7 @@ fn deploy_key_commands(
     let first = selection.first().and_then(|&id| sim.entities().get(id));
     if let Some(building) = first.filter(|entity| {
         entity.category() == EntityCategory::Structure
-            && entity
-                .passenger_role
-                .cargo()
-                .is_some_and(|cargo| !cargo.is_empty())
+            && entity.passenger_role.occupants().count() > 0
     }) {
         return deploy_key_command(sim, rules, building.stable_id(), local_owner)
             .into_iter()
@@ -3783,56 +3797,37 @@ fn control_group_action_for_input(
     )
 }
 
-/// Assign `ids` to `slot`, evicting them from every other slot.
-///
-/// Membership is a single group index stored on the object, so a unit belongs
-/// to at most one group and re-grouping it silently drops it from the old one.
-/// VERA keeps ten id lists, so the eviction is explicit here.
-fn assign_control_group(groups: &mut [Vec<u64>], slot: usize, ids: Vec<u64>) {
-    for (index, group) in groups.iter_mut().enumerate() {
-        if index != slot {
-            group.retain(|id| !ids.contains(id));
-        }
+/// CreateTeamCommand535CC0 passes its one-based parameter to TeamAssign731060;
+/// TeamClear7310D0 (command bar6D0990) performs its clear without setting any
+/// selected fields. The simulation owns both effects on Techno+214. Registered
+/// digit0 is parameter10, hence raw group9; digits1..9 map to raw0..8.
+fn schedule_control_group_assignment(
+    sim: &mut crate::sim::world::Simulation,
+    owner: &str,
+    slot: usize,
+    entity_ids: Vec<u64>,
+) -> Option<u64> {
+    if slot >= 10 {
+        return None;
     }
-    groups[slot] = ids;
+    crate::app::input::commands::schedule_command_in_sim(
+        sim,
+        owner,
+        Command::AssignControlGroup {
+            group: ((slot + 9) % 10) as i32,
+            entity_ids,
+        },
+    )
 }
 
-/// TeamClear7310D0, reached by the command bar at6D0990. Eligibility is
-/// tested before touching+214, so ineligible live members retain their slot.
-/// Missing objects have no native field and are pruned from the host index.
-fn clear_control_group(
-    groups: &mut [Vec<u64>],
-    slot: usize,
-    sim: Option<&crate::sim::world::Simulation>,
-) {
-    let Some(members) = groups.get_mut(slot) else {
+fn queue_control_group_assignment(state: &mut AppState, slot: usize, entity_ids: Vec<u64>) {
+    let Some(owner) = preferred_local_owner_name(state) else {
         return;
     };
-    let Some(sim) = sim else {
-        // With no world every retained ID is absent, as on world cleanup.
-        members.clear();
+    let Some(runtime) = state.match_state.sim_runtime.as_mut() else {
         return;
     };
-    let eligible: HashSet<_> = live_group_members(Some(sim), members).into_iter().collect();
-    members.retain(|id| sim.entities().get(*id).is_some() && !eligible.contains(id));
-}
-
-/// Apply TeamAssign's clear-then-set effects to the Rust group index.
-/// TeamAssign731060 skips both effects for an ineligible owner, so those live
-/// members keep their slot latent until their owner becomes eligible again.
-fn reassign_control_group(
-    groups: &mut [Vec<u64>],
-    slot: usize,
-    selected: &[u64],
-    sim: &crate::sim::world::Simulation,
-) {
-    //73109E..7310BF performs the same eligible clear before setting the
-    //selected field. Reuse its owner instead of copying the eligibility gate.
-    clear_control_group(groups, slot, Some(sim));
-    let eligible_selected = live_group_members(Some(sim), selected);
-    let mut target_members = groups[slot].clone();
-    target_members.extend(eligible_selected);
-    assign_control_group(groups, slot, target_members);
+    let _ = schedule_control_group_assignment(&mut runtime.simulation, &owner, slot, entity_ids);
 }
 
 /// CenterCamera's Unselect_All gate (`0x007313E3..0x00731419`): a non-empty
@@ -3907,10 +3902,9 @@ fn team_walk_members(sim: Option<&crate::sim::world::Simulation>, group: &[u64])
     members
 }
 
-/// Existing eligible members in retained membership order. Assignment, clear
-/// and recall share this entity-level filter; the House owner decides the
+/// Existing eligible members in retained membership order. The House owner decides the
 /// mode-zero PlayerControl/nonzero current-House predicate. Limbo policy is
-/// left to the selection consumer, rather than added to assignment or clear.
+/// left to the selection consumer; assignment and clear use the simulation owner.
 fn live_group_members(sim: Option<&crate::sim::world::Simulation>, group: &[u64]) -> Vec<u64> {
     let Some(sim) = sim else {
         return Vec::new();
@@ -3931,7 +3925,7 @@ fn handle_control_group_command(
     group_idx: usize,
     action_override: Option<GroupPressAction>,
 ) {
-    if group_idx >= state.match_state.input.control_groups.len() {
+    if group_idx >= 10 {
         return;
     }
     let sim = state
@@ -3939,7 +3933,9 @@ fn handle_control_group_command(
         .sim_runtime
         .as_ref()
         .map(|rt| &rt.simulation);
-    let group = state.match_state.input.control_groups[group_idx].clone();
+    let group = sim
+        .map(|sim| sim.projected_control_groups()[group_idx].clone())
+        .unwrap_or_default();
     let selected = selected_stable_ids_in_order(
         sim,
         state.rules(),
@@ -3964,8 +3960,22 @@ fn handle_control_group_command(
     });
 
     if action != GroupPressAction::Assign {
-        // Recall731205, CenterCamera7313DE and AddTeam7314FD leave beacon
-        // mode before their Selects.
+        // Recall731205, CenterCamera7313DE and AddTeam7314FD each START by
+        // turning off every armed map mode on DisplayClass 0x87F7E8:
+        // SetTogglePowerMode(0) 0x4AC820 (unreachable in YR), SetWaypointMode
+        // (0,0) 0x4AC700 — its +0x11B3 byte is never armed in YR, the only
+        // write of 1 (0x004AC7A7) only ever runs with 0, see cursor.rs —
+        // SetRepairMode(0) 0x4AC8C0 and SetSellMode(0) 0x4AC660, then
+        // SetPlaceBeaconMode(0) 0x4AC960. The repair/sell and beacon owners
+        // refuse these under a pending placement themselves. The PlanMgr
+        // planning mode is a separate owner these Display setters do not
+        // cancel. TeamAssign 731060 is not evidenced to clear any mode, so
+        // Assign keeps every armed mode as it is.
+        state
+            .match_state
+            .match_presentation
+            .sidebar_gadget_state
+            .disable_selection_modes(state.armed_building_type().is_some());
         crate::app::input::beacon::set_place_beacon_mode(
             state,
             crate::app::input::beacon::BeaconModeRequest::Off,
@@ -3978,15 +3988,7 @@ fn handle_control_group_command(
         .map(|rt| &rt.simulation);
     match action {
         GroupPressAction::Assign => {
-            let Some(sim) = sim else {
-                return;
-            };
-            reassign_control_group(
-                &mut state.match_state.input.control_groups,
-                group_idx,
-                &selected,
-                sim,
-            );
+            queue_control_group_assignment(state, group_idx, selected);
         }
         GroupPressAction::Center => {
             // Alt+digit and Recall's double tap both run CenterCamera, which
@@ -4329,7 +4331,9 @@ mod deploy_key_tests {
     }
 
     #[test]
-    fn the_deploy_key_issues_unload_for_a_loaded_bio_reactor() {
+    // Selection730AF0/730B28 reads Occupants, not the absorber's Cargo.
+    // Building CanDeploySlashUnload465D30 refuses the ordinary D walk.
+    fn the_deploy_key_does_nothing_for_a_loaded_bio_reactor() {
         let rules = RuleSet::from_ini(&IniFile::from_str(
             "[BuildingTypes]\n0=YAPOWR\n[YAPOWR]\nStrength=1000\n\
              InfantryAbsorb=yes\nPassengers=5\n",
@@ -4346,16 +4350,14 @@ mod deploy_key_tests {
             .unwrap()
             .passenger_role = PassengerRole::transport(cargo);
 
-        assert_eq!(
+        assert!(
             deploy_key_commands(
                 &sim,
                 Some(&rules),
                 &[reactor],
                 sim.session().current_house()
-            ),
-            [Command::UnloadPassengers {
-                transport_id: reactor
-            }]
+            )
+            .is_empty()
         );
     }
 
@@ -4489,9 +4491,9 @@ mod deploy_key_tests {
 mod control_group_tests {
     use super::{
         GroupPressAction, KeyModifiers, TEAM_SELECTION_VOICE_POLICY, TeamSelection,
-        assign_control_group, clear_control_group, control_group_action_for_input,
-        control_group_press_action, live_group_members, reassign_control_group,
-        selection_voice_recipients, team_selection, team_walk_members,
+        control_group_action_for_input, control_group_press_action, live_group_members,
+        schedule_control_group_assignment, selection_voice_recipients, team_selection,
+        team_walk_members,
     };
     use std::time::Duration;
 
@@ -4504,6 +4506,157 @@ mod control_group_tests {
         ctrl: false,
         alt: false,
     };
+
+    /// Exercise the ordinary app producer and the authoritative command
+    /// receiver without advancing unrelated gameplay for input controls.
+    fn apply_group_assignment(
+        sim: &mut crate::sim::world::Simulation,
+        slot: usize,
+        selected: &[u64],
+    ) {
+        let owner = sim
+            .session()
+            .current_house()
+            .expect("fixture current House");
+        let owner_name = sim.interner().resolve(owner).to_owned();
+        schedule_control_group_assignment(sim, &owner_name, slot, selected.to_vec()).unwrap();
+        let commands = sim.take_due_commands();
+        assert_eq!(commands.len(), 1);
+        assert!(sim.apply_command(&owner_name, &commands[0].payload, None));
+    }
+
+    #[test]
+    fn retail_bunker_docking_forgets_control_group_through_release_and_saved_view() {
+        use crate::app::input::state::{MatchInputState, PreparedSavedLocalView};
+        use crate::sim::command::{Command, CommandEnvelope};
+        use crate::sim::docking::bunker_link::BunkerLink;
+        use crate::ui::sidebar::gadget_flash::SidebarGadgetState;
+
+        let Some(retail) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+            return;
+        };
+        let mut rules = retail.rules;
+        let (_, mut assets) = crate::rules::retail_ini_fixture::retail_assets().unwrap();
+        crate::map::theater::load_theater(&mut assets, "TEMPERATE").unwrap();
+        let walls = ["NATBNK_A", "NATBNK_B", "NATBNK_A2", "NATBNK_B2"].map(str::to_owned);
+        assert_eq!(
+            rules.bind_anim_class_assets(&walls, &assets, "TEM", "TEMPERATE"),
+            0
+        );
+        let mut sim = crate::sim::arena_fixture::rival_arena(&rules, 0x459315);
+        sim.intern_rule_type_ids(&rules);
+        sim.resolve_type_handles(&rules);
+        sim.set_input_delay_ticks(0);
+        let bunker = sim
+            .spawn_object("NATBNK", "Americans", 10, 10, 0, &rules)
+            .unwrap();
+        let tank = sim
+            .spawn_object("MTNK", "Americans", 14, 10, 0, &rules)
+            .unwrap();
+        let reserve = sim
+            .spawn_object("MTNK", "Americans", 18, 14, 0, &rules)
+            .unwrap();
+        let owner = sim.interner().get("Americans").unwrap();
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(owner));
+        let mut input = MatchInputState::new(Default::default());
+        apply_group_assignment(&mut sim, 0, &[tank, bunker]);
+        apply_group_assignment(&mut sim, 9, &[reserve]);
+        assert_eq!(sim.projected_control_groups()[0], [bunker, tank]);
+        sim.queue_command(CommandEnvelope::new(
+            owner,
+            sim.session().tick() + 1,
+            Command::clicked_mission(
+                tank,
+                crate::sim::mission::MissionType::Enter,
+                crate::sim::combat::TargetKind::Entity(bunker),
+            ),
+        ));
+        let mut runtime = crate::sim::runtime::SimRuntime {
+            simulation: sim,
+            resources: crate::sim::runtime::SimResources::new(rules),
+        };
+        for _ in 0..600 {
+            let commands = runtime.simulation.take_due_commands();
+            let frame = runtime
+                .advance_frame(
+                    &commands,
+                    33,
+                    crate::sim::world::TickLane::Ordinary,
+                    Default::default(),
+                )
+                .unwrap();
+            let sim = &runtime.simulation;
+            for output in &frame.lifecycle_outputs {
+                input.apply_lifecycle_output(output, Some(owner));
+            }
+            if sim.entities().get(tank).unwrap().bunker.link() == BunkerLink::Installed(bunker) {
+                break;
+            }
+            assert_eq!(
+                sim.projected_control_groups()[0],
+                [bunker, tank],
+                "approaching retains the group"
+            );
+        }
+        let sim = &runtime.simulation;
+        let rules = &runtime.resources.rules;
+        assert_eq!(
+            sim.entities().get(tank).unwrap().bunker.link(),
+            BunkerLink::Installed(bunker)
+        );
+        // UpdateBunker458E50/459315 clears +214 at installation, before
+        // deselection. A recall-time filter would wrongly revive it on exit.
+        assert_eq!(sim.entities().get(tank).unwrap().object_group(), -1);
+        assert_eq!(sim.projected_control_groups()[0], [bunker]);
+        assert_eq!(sim.projected_control_groups()[9], [reserve]);
+        let saved = input
+            .capture_saved_local_view(&sim, &rules, &SidebarGadgetState::new())
+            .unwrap();
+        let saved = crate::util::save_codec::deserialize(
+            &crate::util::save_codec::serialize(&saved).unwrap(),
+        )
+        .unwrap();
+        let mut restored = MatchInputState::new(Default::default());
+        PreparedSavedLocalView::new(saved, &sim, &rules)
+            .unwrap()
+            .commit_into(&mut restored, &mut SidebarGadgetState::new());
+        let next_tick = runtime.simulation.session().tick() + 1;
+        runtime.simulation.queue_command(CommandEnvelope::new(
+            owner,
+            next_tick,
+            Command::EjectBunker { bunker_id: bunker },
+        ));
+        for _ in 0..120 {
+            let commands = runtime.simulation.take_due_commands();
+            let frame = runtime
+                .advance_frame(
+                    &commands,
+                    33,
+                    crate::sim::world::TickLane::Ordinary,
+                    Default::default(),
+                )
+                .unwrap();
+            let sim = &runtime.simulation;
+            for output in &frame.lifecycle_outputs {
+                restored.apply_lifecycle_output(output, Some(owner));
+            }
+            if sim.entities().get(tank).unwrap().bunker.link() == BunkerLink::None {
+                break;
+            }
+        }
+        let sim = &runtime.simulation;
+        assert_eq!(
+            sim.entities().get(tank).unwrap().bunker.link(),
+            BunkerLink::None
+        );
+        assert_eq!(
+            team_walk_members(Some(&sim), &sim.projected_control_groups()[0]),
+            [bunker]
+        );
+        assert_eq!(sim.entities().get(tank).unwrap().object_group(), -1);
+        assert_eq!(sim.projected_control_groups()[9], [reserve]);
+    }
 
     #[test]
     fn ctrl_assigns_shift_adds_alt_centers_bare_recalls() {
@@ -4666,10 +4819,20 @@ mod control_group_tests {
     /// Membership is one group index per object, so assigning evicts.
     #[test]
     fn assignment_evicts_the_units_from_their_previous_group() {
-        let mut groups = vec![vec![1u64, 2, 3], vec![4u64], Vec::new()];
-        assign_control_group(&mut groups, 1, vec![2, 4]);
-        assert_eq!(groups[0], vec![1, 3]);
-        assert_eq!(groups[1], vec![2, 4]);
+        let mut sim = crate::sim::world::Simulation::new();
+        let local = house(&mut sim, "Local", false, true);
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(local));
+        for id in 1..=4 {
+            group_entity(&mut sim, id, local);
+            sim.entities_mut_for_test()
+                .get_mut(id)
+                .unwrap()
+                .set_object_group_for_test(if id == 4 { 0 } else { 9 });
+        }
+        apply_group_assignment(&mut sim, 1, &[2, 4]);
+        assert_eq!(sim.projected_control_groups()[0], [1, 3]);
+        assert_eq!(sim.projected_control_groups()[1], [2, 4]);
     }
 
     fn house(
@@ -4726,6 +4889,8 @@ mod control_group_tests {
         let ai = house(&mut sim, "AI", false, false);
         let human_only = house(&mut sim, "HumanOnly", true, false);
         let missing_house = sim.intern("MissingHouse");
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(local));
         for (stable_id, owner) in [
             (1, local),
             (2, local),
@@ -4746,39 +4911,45 @@ mod control_group_tests {
             "TeamAssign's mode-zero PlayerControl gate excludes a human-flag-only house"
         );
 
-        let mut groups = vec![Vec::new(); 10];
-        groups[1] = vec![1, 2];
-        groups[3] = vec![5];
+        for (id, group) in [(1, 0), (2, 0), (5, 2), (7, 1)] {
+            sim.entities_mut_for_test()
+                .get_mut(id)
+                .unwrap()
+                .set_object_group_for_test(group);
+        }
         sim.change_owner(2, ai);
 
-        reassign_control_group(&mut groups, 1, &[3, 4, 5, 6], &sim);
+        apply_group_assignment(&mut sim, 1, &[3, 4, 5, 6]);
         assert_eq!(
-            groups[1],
+            sim.projected_control_groups()[1],
             vec![2, 3],
             "eligible old membership clears, the transferred AI member stays latent, and only the local selection is added"
         );
         assert_eq!(
-            groups[3],
+            sim.projected_control_groups()[3],
             vec![5],
             "an ineligible selected member remains in its prior group"
         );
         assert_eq!(
-            live_group_members(Some(&sim), &groups[1]),
+            live_group_members(Some(&sim), &sim.projected_control_groups()[1]),
             vec![3],
             "recall filters the latent member while its owner is an AI house"
         );
 
-        groups[2] = vec![1, 7];
-        reassign_control_group(&mut groups, 2, &[], &sim);
+        sim.entities_mut_for_test()
+            .get_mut(1)
+            .unwrap()
+            .set_object_group_for_test(1);
+        apply_group_assignment(&mut sim, 2, &[]);
         assert_eq!(
-            groups[2],
+            sim.projected_control_groups()[2],
             vec![7],
             "an empty assignment clears eligible old members but leaves an ineligible member's native slot intact"
         );
 
         sim.change_owner(2, local);
         assert_eq!(
-            live_group_members(Some(&sim), &groups[1]),
+            live_group_members(Some(&sim), &sim.projected_control_groups()[1]),
             vec![2, 3],
             "the native group slot becomes usable again when its member returns to an eligible owner"
         );
@@ -4799,35 +4970,39 @@ mod control_group_tests {
             group_entity(&mut sim, 1, local);
             group_entity(&mut sim, 2, ai);
             group_entity(&mut sim, 3, human_only);
+            group_entity(&mut sim, 4, local);
             sim.session_mut_for_test().set_game_mode(
                 crate::sim::scenario_session::ScenarioGameMode::from_legacy_nonzero(multiplayer),
             );
             sim.session_mut_for_test()
                 .set_current_house_for_test(Some(local));
-            let mut groups = vec![Vec::new(); 10];
-            groups[1] = vec![1, 2, 3, 99];
-            groups[2] = vec![4];
-            let before = sim.state_hash();
+            for id in 1..=4 {
+                sim.entities_mut_for_test()
+                    .get_mut(id)
+                    .unwrap()
+                    .set_object_group_for_test(if id == 4 { 1 } else { 0 });
+            }
+            let rng_before = sim.rng_state();
 
             // This is the actual command-bar mutation endpoint, retaining
             // the production digit1 -> Rust slot1 mapping.
-            clear_control_group(&mut groups, 1, Some(&sim));
+            apply_group_assignment(&mut sim, 1, &[]);
             assert_eq!(
-                groups[1],
+                sim.projected_control_groups()[1],
                 [2, 3],
-                "native7310FD/731105 skips ineligible owners in mode{multiplayer}; absent99 has no field"
+                "native7310FD/731105 skips ineligible owners in mode{multiplayer}"
             );
-            assert_eq!(groups[2], [4], "clearing1 cannot alter another slot");
             assert_eq!(
-                sim.state_hash(),
-                before,
-                "group clear writes no gameplay state or timers"
+                sim.projected_control_groups()[2],
+                [4],
+                "clearing1 cannot alter another slot"
             );
-            assert!(live_group_members(Some(&sim), &groups[1]).is_empty());
+            assert_eq!(sim.rng_state(), rng_before, "group clear draws no RNG");
+            assert!(live_group_members(Some(&sim), &sim.projected_control_groups()[1]).is_empty());
 
             sim.change_owner(2, local);
             assert_eq!(
-                live_group_members(Some(&sim), &groups[1]),
+                live_group_members(Some(&sim), &sim.projected_control_groups()[1]),
                 [2],
                 "the original membership is usable after the owner becomes eligible again"
             );
@@ -4855,7 +5030,6 @@ mod control_group_tests {
             sim.session_mut_for_test()
                 .set_current_house_for_test(Some(owners[0]));
             let actors = input["actors"].as_array().unwrap();
-            let mut groups = vec![Vec::new(); 10];
             let mut selected = Vec::new();
             for (index, actor) in actors.iter().enumerate() {
                 let id = index as u64 + 1;
@@ -4874,48 +5048,37 @@ mod control_group_tests {
                 if is_selected {
                     selected.push(id);
                 }
-                let field = actor["group_slot"].as_i64().unwrap();
-                if (0..10).contains(&field) {
-                    // Native field0..9 maps to displayed/Rust digits1..9,0.
-                    groups[(field as usize + 1) % 10].push(id);
-                }
+                sim.entities_mut_for_test()
+                    .get_mut(id)
+                    .unwrap()
+                    .set_object_group_for_test(actor["group_slot"].as_i64().unwrap() as i32);
             }
-            let fields = |groups: &[Vec<u64>]| {
+            let fields = |sim: &crate::sim::world::Simulation| {
                 (1..=actors.len() as u64)
-                    .map(|id| {
-                        let memberships: Vec<_> = groups
-                            .iter()
-                            .enumerate()
-                            .filter_map(|(slot, group)| group.contains(&id).then_some(slot))
-                            .collect();
-                        assert!(memberships.len() <= 1, "one native+214 field per object");
-                        memberships
-                            .first()
-                            .map_or(-1, |&slot| ((slot + 9) % 10) as i32)
-                    })
+                    .map(|id| sim.entities().get(id).unwrap().object_group())
                     .collect::<Vec<_>>()
             };
             for step in row["steps"].as_array().unwrap() {
-                assert_eq!(serde_json::json!(fields(&groups)), step["before"], "{row}");
+                assert_eq!(serde_json::json!(fields(&sim)), step["before"], "{row}");
                 let command = &step["command"];
                 let parameter = command["group"].as_u64().unwrap() as usize;
                 assert!((1..=10).contains(&parameter));
                 let slot = parameter % 10;
-                let before = sim.state_hash();
+                let rng_before = sim.rng_state();
                 match command["operation"].as_str().unwrap() {
-                    "assign" => reassign_control_group(&mut groups, slot, &selected, &sim),
-                    "clear" => clear_control_group(&mut groups, slot, Some(&sim)),
+                    "assign" => apply_group_assignment(&mut sim, slot, &selected),
+                    "clear" => apply_group_assignment(&mut sim, slot, &[]),
                     other => panic!("unsupported original assignment operation {other}"),
                 }
                 assert_eq!(
-                    serde_json::json!(fields(&groups)),
+                    serde_json::json!(fields(&sim)),
                     step["after"],
                     "{row}: {step}"
                 );
                 assert_eq!(
-                    sim.state_hash(),
-                    before,
-                    "input membership cannot write gameplay timers"
+                    sim.rng_state(),
+                    rng_before,
+                    "native assignment draws no RNG"
                 );
                 assert_eq!(step["timers_unchanged"], true);
             }
@@ -5096,7 +5259,9 @@ mod control_group_tests {
         use crate::sim::world::Simulation;
 
         let mut sim = Simulation::new();
-        let owner = sim.intern("Americans");
+        let owner = house(&mut sim, "Americans", false, true);
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(owner));
         let building_type = sim.intern("YAPOWR");
         let mut building = GameEntity::new_at_frame_zero_for_test(
             27,
@@ -5131,8 +5296,9 @@ mod control_group_tests {
         let crate::app::input::hotkeys::HotkeyCommand::TeamCreate(slot) = create_one_slot else {
             panic!("TeamCreate_1 must remain the existing group assignment command");
         };
-        let mut groups = vec![Vec::new(); 10];
-        assign_control_group(&mut groups, slot, vec![27]);
+        schedule_control_group_assignment(&mut sim, "Americans", slot, vec![27]).unwrap();
+        assert_eq!(sim.entities().get(27).unwrap().object_group(), -1);
+        let groups = sim.projected_control_groups();
 
         assert_eq!(
             crate::app::presentation::ui_overlays::control_group_status_labels(
@@ -5195,7 +5361,7 @@ mod control_group_tests {
             }
         };
         let mut groups = vec![Vec::new(); 10];
-        assign_control_group(&mut groups, registered_slot("TeamCreate_1"), vec![27]);
+        groups[registered_slot("TeamCreate_1")] = vec![27];
 
         let font = crate::render::bit_font::tests::make_test_font(
             &[(b'0' as u16, 6), (b'1' as u16, 5)],
@@ -5260,7 +5426,8 @@ mod control_group_tests {
             "Aircraft badge follows the shared exact-Z screen-position lift"
         );
 
-        assign_control_group(&mut groups, registered_slot("TeamCreate_10"), vec![27]);
+        groups[1].clear();
+        groups[registered_slot("TeamCreate_10")] = vec![27];
         assert_eq!(
             crate::app::presentation::ui_overlays::control_group_status_labels(
                 &sim,
@@ -5280,7 +5447,7 @@ mod control_group_tests {
             .selection
             .set_selected_for_test(false);
         assert!(render(&sim, &groups, None).is_empty());
-        assign_control_group(&mut groups, registered_slot("TeamCreate_10"), Vec::new());
+        groups[registered_slot("TeamCreate_10")].clear();
         sim.entities_mut_for_test()
             .get_mut(27)
             .expect("retained ORCA")
@@ -5352,7 +5519,7 @@ mod control_group_tests {
             }
         };
         let mut groups = vec![Vec::new(); 10];
-        assign_control_group(&mut groups, registered_slot("TeamCreate_1"), vec![27]);
+        groups[registered_slot("TeamCreate_1")] = vec![27];
 
         fn labels(
             sim: &Simulation,
@@ -5408,21 +5575,22 @@ mod control_group_tests {
             .expect("retained building")
             .selection
             .set_selected_for_test(true);
-        assign_control_group(&mut groups, registered_slot("TeamCreate_10"), vec![27]);
+        groups[1].clear();
+        groups[registered_slot("TeamCreate_10")] = vec![27];
         assert_eq!(
             labels(&sim, &groups, current_house, None, true),
             vec![(27, '0')]
         );
-        assign_control_group(&mut groups, 0, Vec::new());
+        groups[0].clear();
         assert!(labels(&sim, &groups, current_house, None, true).is_empty());
 
-        assign_control_group(&mut groups, 1, vec![27]);
+        groups[1] = vec![27];
         sim.entities_mut_for_test().remove(27);
         assert!(labels(&sim, &groups, current_house, None, true).is_empty());
     }
 
     #[test]
-    fn assignment_reassignment_and_ungrouping_drive_status_group_projection() {
+    fn status_group_projection_follows_group_changes_and_removal() {
         use crate::map::entities::EntityCategory;
         use crate::sim::combat::Health;
         use crate::sim::game_entity::GameEntity;
@@ -5504,9 +5672,9 @@ mod control_group_tests {
             );
         }
 
-        // MatchInputState holds ten control-group slots. Keep this test on the
-        // public command/projection path rather than reaching through the
-        // private input-state owner for its storage constant.
+        // These transient render fixtures contain the same ten registered-digit
+        // slots as Simulation::projected_control_groups. Assignment behavior
+        // is exercised through the simulation command owner above.
         let mut groups = vec![Vec::new(); 10];
         let projected_with_visibility =
             |groups: &[Vec<u64>], hovered_unit_id, ignore_visibility| {
@@ -5584,7 +5752,7 @@ mod control_group_tests {
 
         let create_one_slot = registered_create_slot("TeamCreate_1");
         assert_eq!(create_one_slot, 1);
-        assign_control_group(&mut groups, create_one_slot, vec![17, 18, 19]);
+        groups[create_one_slot] = vec![17, 18, 19];
         assert_eq!(projected(&groups, None), vec![(17, '1')]);
         let group_one = group_overlay(&groups, None);
         assert_eq!(group_one.len(), 1);
@@ -5613,7 +5781,8 @@ mod control_group_tests {
             "the pip-only allied gate excludes a revealed non-allied unit"
         );
 
-        assign_control_group(&mut groups, 2, vec![17, 18, 19]);
+        groups[1].clear();
+        groups[2] = vec![17, 18, 19];
         assert_eq!(projected(&groups, None), vec![(17, '2')]);
         let group_two = group_overlay(&groups, None);
         assert_eq!(group_two.len(), 1);
@@ -5624,7 +5793,8 @@ mod control_group_tests {
 
         let create_zero_slot = registered_create_slot("TeamCreate_10");
         assert_eq!(create_zero_slot, 0);
-        assign_control_group(&mut groups, create_zero_slot, vec![17]);
+        groups[2] = vec![18, 19];
+        groups[create_zero_slot] = vec![17];
         assert_eq!(projected(&groups, None), vec![(17, '0')]);
         let group_zero = group_overlay(&groups, None);
         assert_eq!(group_zero.len(), 1);
@@ -5633,12 +5803,12 @@ mod control_group_tests {
         assert_eq!(group_zero.rectangles.len(), 5);
         assert_eq!(group_zero.rectangles[0].tint, [0.0; 3]);
 
-        assign_control_group(&mut groups, 0, Vec::new());
+        groups[0].clear();
         assert!(projected(&groups, None).is_empty());
         let no_group_overlay = group_overlay(&groups, None);
         assert!(no_group_overlay.is_empty());
 
-        assign_control_group(&mut groups, 0, vec![17]);
+        groups[0] = vec![17];
         sim.entities_mut_for_test().remove(17);
         assert!(
             crate::app::presentation::ui_overlays::control_group_status_labels(
@@ -5735,7 +5905,7 @@ mod control_group_tests {
             crate::sim::world::RevealOutcome::Revealed { .. }
         ));
         let mut groups = vec![Vec::new(); 10];
-        assign_control_group(&mut groups, 1, vec![80]);
+        groups[1] = vec![80];
         assert!(
             crate::app::presentation::instances::tactical_entity_encounter_order(&sim)
                 .contains(&80),
@@ -5940,7 +6110,7 @@ mod control_group_tests {
                 crate::sim::world::RevealOutcome::Revealed { .. }
             ));
             let mut groups = vec![Vec::new(); 10];
-            assign_control_group(&mut groups, digit_index, vec![1]);
+            groups[digit_index] = vec![1];
             assert_eq!(
                 crate::app::presentation::ui_overlays::control_group_status_labels(
                     &sim,
@@ -6124,9 +6294,19 @@ mod control_group_tests {
 
     #[test]
     fn assigning_an_empty_selection_empties_the_slot() {
-        let mut groups = vec![vec![1u64, 2], Vec::new()];
-        assign_control_group(&mut groups, 0, Vec::new());
-        assert!(groups[0].is_empty());
+        let mut sim = crate::sim::world::Simulation::new();
+        let local = house(&mut sim, "Local", false, true);
+        sim.session_mut_for_test()
+            .set_current_house_for_test(Some(local));
+        for id in [1, 2] {
+            group_entity(&mut sim, id, local);
+            sim.entities_mut_for_test()
+                .get_mut(id)
+                .unwrap()
+                .set_object_group_for_test(9);
+        }
+        apply_group_assignment(&mut sim, 0, &[]);
+        assert!(sim.projected_control_groups()[0].is_empty());
     }
 }
 
@@ -6265,3 +6445,7 @@ mod context_click_route_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "building_occupant_deploy_tests.rs"]
+mod building_occupant_deploy_tests;

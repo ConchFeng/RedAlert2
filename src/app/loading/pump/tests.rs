@@ -147,6 +147,7 @@ fn admitted_network_start_preserves_canonical_humans_and_host_seed_in_fresh_load
     let initial = crate::app::loading::init::MapLoadInitial::from_test_map_source(
         prefix_test_map(&[(0, 20, 24), (1, 42, 46)]),
         crate::map::source::LoadedMapSource::Loose {
+            cache_lease: Default::default(),
             path: std::path::PathBuf::from("mp01t4.map"),
             payload_len: 23,
             source_sha256: crate::util::sha256::sha256_hex(b"synthetic network map"),
@@ -206,6 +207,7 @@ fn campaign_preparation_failure_retires_the_lease_with_shell_retry_policy() {
                 None,
                 slot.take().unwrap(),
                 true,
+                None,
                 None,
             )
             .err()
@@ -435,6 +437,21 @@ fn loading_replacement_and_terminal_retirement_preserve_cache_and_admission_orde
         .load_file_from_mix("sentinel.bin")
         .unwrap();
     assert!(std::sync::Arc::ptr_eq(&original.bytes, &cached.bytes));
+    // A completed observer handoff retains that same result and cache after
+    // the real wait has finished. Cancel/replacement must return its lease too.
+    let pending = slot.as_mut().unwrap();
+    let LoadingStage::AwaitingPeers { result, .. } = std::mem::replace(
+        &mut pending.stage,
+        LoadingStage::Selected(LoadingRequest::generic_map_load("auto")),
+    ) else {
+        unreachable!()
+    };
+    pending.stage = LoadingStage::ReadyToInstall { result };
+    let cached = audio_service_asset_manager(&assets, slot.as_ref())
+        .unwrap()
+        .load_file_from_mix("sentinel.bin")
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&original.bytes, &cached.bytes));
     // The installer's resource-only cleanup must preserve the replacement
     // admission until its actual L0 observation commits.
     retire_loading_attempt(&mut slot, &mut assets);
@@ -468,6 +485,7 @@ fn loading_replacement_and_terminal_retirement_preserve_cache_and_admission_orde
                 None,
                 slot.take().unwrap(),
                 true,
+                None,
                 None,
             )
             .err()
@@ -602,6 +620,7 @@ fn loading_preparation_consumes_real_source_and_returns_lease_on_initial_and_adm
         session,
         true,
         Some(ra2_dir.clone()),
+        None,
     )
     .unwrap();
     assert_eq!(session.next_frame, NextLoadingFrame::Blank);
@@ -637,6 +656,7 @@ fn loading_preparation_consumes_real_source_and_returns_lease_on_initial_and_adm
             session,
             false,
             Some(ra2_dir.clone()),
+            None,
         )
         .err()
         .unwrap();
@@ -923,6 +943,7 @@ fn load_descriptor_source_family_format_matrix() {
     ];
     for source in [
         crate::map::source::LoadedMapSource::Loose {
+            cache_lease: Default::default(),
             path: std::path::PathBuf::from("mp01t4.map"),
             payload_len: 17,
             source_sha256: crate::util::sha256::sha256_hex(b"synthetic map fixture"),
@@ -1026,6 +1047,7 @@ fn accepted_and_resolved_legacy_share_one_stock_cursor_shape() {
 
     let starts = [(0, 20, 24), (1, 42, 46)];
     let source = crate::map::source::LoadedMapSource::Loose {
+        cache_lease: Default::default(),
         path: std::path::PathBuf::from("mp01t4.map"),
         payload_len: 23,
         source_sha256: crate::util::sha256::sha256_hex(b"synthetic map fixture"),
@@ -1123,6 +1145,7 @@ fn generic_manual_and_unresolved_legacy_reject_before_receipt_or_staging() {
     let authored = crate::app::loading::init::MapLoadInitial::from_test_map_source(
         prefix_test_map(&starts),
         crate::map::source::LoadedMapSource::Loose {
+            cache_lease: Default::default(),
             path: std::path::PathBuf::from("manual.map"),
             payload_len: 1,
             source_sha256: crate::util::sha256::sha256_hex(b"synthetic map fixture"),
@@ -1283,6 +1306,7 @@ fn authored_prefix_rejects_random_map_staging_for_loose_and_mix_sources() {
     let starts = [(0, 20, 24), (1, 42, 46)];
     let sources = [
         crate::map::source::LoadedMapSource::Loose {
+            cache_lease: Default::default(),
             path: std::path::PathBuf::from(selected),
             payload_len: 1,
             source_sha256: crate::util::sha256::sha256_hex(b"synthetic map fixture"),
@@ -1517,6 +1541,7 @@ fn loading_request_moves_exact_startup_authority_once() {
     let initial = MapLoadInitial::from_test_map_source(
         prefix_test_map(&[(0, 20, 24), (1, 42, 46)]),
         crate::map::source::LoadedMapSource::Loose {
+            cache_lease: Default::default(),
             path: PathBuf::from("mp01t4.map"),
             payload_len: 1,
             source_sha256: crate::util::sha256::sha256_hex(b"synthetic map fixture"),
@@ -1697,23 +1722,26 @@ fn selected_native_gate_preserves_metadata_and_raw_progress_cadence() {
         );
         native.runtime_color_scheme_count = 16;
         {
-            let mut phase = LoadingPhaseProgress::select(Some(&mut native), true, |_| {
+            let mut phase = LoadingPhaseProgress::select(Some(&mut native), true, None, |_, _| {
                 panic!("no atlas must select the real gated sink")
             });
             assert!(matches!(&phase.sink, SelectedProgressSink::Gated(_)));
             assert!(phase.native_theater_cache_mismatch);
             assert_eq!(phase.runtime_color_scheme_count, 16);
             for raw in [8, 6, 8, 12, 12] {
-                phase.sink.milestone(raw);
+                phase.sink.milestone(raw).unwrap();
             }
         }
         assert_eq!(native.progress.current_percent(), expected);
         {
-            let mut phase = LoadingPhaseProgress::select(Some(&mut native), false, |_| {
+            let mut phase = LoadingPhaseProgress::select(Some(&mut native), false, None, |_, _| {
                 panic!("no atlas must select the real gated sink")
             });
             assert!(!phase.native_theater_cache_mismatch);
-            phase.sink.milestone(cadence.terminal_raw_percent());
+            phase
+                .sink
+                .milestone(cadence.terminal_raw_percent())
+                .unwrap();
         }
         assert_eq!(native.progress.current_percent(), 100.0);
     }
@@ -1859,7 +1887,7 @@ fn absent_and_lost_loading_managers_preserve_media_policy() {
 }
 
 #[test]
-fn network_loading_progress_and_completion_match_original_controls() {
+fn native_loading_percentage_controls_and_completion_match_original() {
     let corpus: serde_json::Value =
         crate::test_fixture::json("tools/storage_oracle/lan_lobby.json").clone();
     for row in corpus["loading_wait_progress"].as_array().unwrap() {
@@ -1881,7 +1909,15 @@ fn network_loading_progress_and_completion_match_original_controls() {
             if index == 0 {
                 local.advance_progress(percent as u32);
             } else {
-                rows.update_remote_progress(index, percent);
+                // This corpus exercises native SetPercent643C94..643CC9 and
+                // the original average/wait controls, including signed values
+                // after100. The network row's VERA terminal latch is a separate
+                // transport policy, covered by the real-UDP loading test.
+                rows.participants[index]
+                    .remote_progress
+                    .as_mut()
+                    .unwrap()
+                    .set_percent(f64::from(percent));
             }
         }
         for (index, expected) in row["values"].as_array().unwrap().iter().enumerate() {
@@ -2016,5 +2052,167 @@ fn a_network_start_installs_its_mode_and_timing_into_the_scenario() {
     assert_eq!(
         sim.session().game_mode().command_queue_route(),
         crate::sim::world::CommandQueueRoute::Multiplayer
+    );
+}
+
+#[test]
+fn held_network_sink_sends_rmg_display_progress_and_services_the_same_source_rows() {
+    let (mut host, mut host_session, _, mut guest, mut guest_session, _) =
+        crate::app::lan_service::loading_test_pair();
+    let native = |session: &crate::app::match_runtime::session::MatchSession| {
+        NativeLoadingScreenState::standard_skirmish(
+            Some(LoadingArtVariant::Americans),
+            0,
+            HouseColorIndex(0),
+            LoadingProgressRowSnapshot::from_launch_session(session.network_setup().unwrap()),
+            NativeLoadingProgressCadence::RandomMapHalved,
+        )
+    };
+    let mut host_native = native(&host_session);
+    let mut guest_native = native(&guest_session);
+    let mut wait = NetworkLoadWait::new(
+        0,
+        host_native
+            .progress_row
+            .total_fraction(&host_native.progress),
+    );
+    host_session.request_kick_proposal(1);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(2);
+    loop {
+        for (service, session, native, raw) in [
+            (&mut host, &mut host_session, &mut host_native, 60),
+            (&mut guest, &mut guest_session, &mut guest_native, 12),
+        ] {
+            let network = crate::app::lan_service::LoadingNetworkService::borrow(
+                session,
+                Some(service),
+                false,
+            )
+            .unwrap();
+            let mut phase = LoadingPhaseProgress::select(Some(native), false, network, |_, _| {
+                panic!("fixture deliberately uses the real gated network sink without GPU art")
+            });
+            phase.sink.milestone(raw).unwrap();
+        }
+        if host_native.progress_row.participants[1]
+            .remote_progress
+            .as_ref()
+            .unwrap()
+            .current_percent()
+            == 6.0
+            && guest_native.progress_row.participants[0]
+                .remote_progress
+                .as_ref()
+                .unwrap()
+                .current_percent()
+                == 30.0
+        {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "held loader did not service real UDP progress"
+        );
+        std::thread::yield_now();
+    }
+    assert_eq!(
+        host_native.progress.current_percent(),
+        30.0,
+        "raw60 is halved only once"
+    );
+    assert_eq!(guest_native.progress.current_percent(), 6.0);
+    assert!(
+        host_native.progress_row.participants[0]
+            .remote_progress
+            .is_none()
+    );
+    assert_eq!(
+        host_session.take_network_loading_requests(),
+        vec![
+            crate::app::match_runtime::session::NetworkLoadingRequest::ProposeKick {
+                target_source: 1
+            },
+        ],
+        "the synchronous report drain cannot steal another owner's request"
+    );
+    let fraction = host_native
+        .progress_row
+        .total_fraction(&host_native.progress);
+    assert_eq!(wait.poll(3500, fraction), NetworkLoadPoll::ReportProgress);
+    assert_eq!(
+        wait.timeout.remaining(3500),
+        7200,
+        "actual peer progress refreshes the native wait"
+    );
+    assert_ne!(wait.poll(3601, fraction), NetworkLoadPoll::TimedOut);
+}
+
+#[test]
+fn cancelled_admission_cannot_release_a_ready_result_and_returns_the_same_asset_lease() {
+    let (_, mut session, accepted, _, _, _) = crate::app::lan_service::loading_test_pair();
+    let dir = crate::map::source::test_support::TestDirectory::new("loading-cancel-lease");
+    dir.write("sentinel.bin", b"same process cache");
+    let mut assets = crate::app::process_assets::ProcessAssets::new(
+        crate::assets::asset_manager::MediaArchiveMode::STOCK_DIGITAL,
+        false,
+    );
+    assets.return_from_loading(AssetManager::from_loose_root_for_test(dir.path()));
+    let original = assets
+        .manager()
+        .unwrap()
+        .load_file_from_mix("sentinel.bin")
+        .unwrap();
+    let mut loading = LoadingSession::from_request(LoadingRequest::network(accepted.clone()));
+    let mut result = super::super::transitions::fallback_map_load_result();
+    result.scenario.startup = accepted;
+    result.asset_manager = assets.lease_for_loading();
+    loading.stage = LoadingStage::ReadyToInstall {
+        result: Box::new(result),
+    };
+    let mut slot = Some(loading);
+    let mut startup = crate::app::match_runtime::startup::MatchStartup::default();
+    let still_admitted = take_after_network_service(&mut slot, &session)
+        .unwrap()
+        .unwrap();
+    assert!(assets.is_leased() && !assets.is_available());
+    slot = Some(still_admitted);
+    //This is the SAME MatchSession retirement used by ordinary shell/HTTPS
+    //abort reducers. Local completion cannot authorize an obsolete result.
+    session.return_to_network_lobby();
+    assert!(take_after_network_service(&mut slot, &session).is_err());
+    assert!(
+        slot.is_some() && assets.is_leased(),
+        "the guard cannot consume the invalid result"
+    );
+    //fail_loading's exact retirement seam, without a window/GPU fixture.
+    assert_eq!(
+        retire_failed_loading_attempt(
+            &mut slot,
+            &mut startup,
+            &mut assets,
+            LoadingFailurePolicy::RetryNetworkShell
+        ),
+        LoadingFailurePolicy::RetryNetworkShell
+    );
+    assert!(slot.is_none() && assets.is_available() && !assets.is_leased());
+    let restored = assets
+        .manager()
+        .unwrap()
+        .load_file_from_mix("SENTINEL.BIN")
+        .unwrap();
+    assert!(std::sync::Arc::ptr_eq(&original.bytes, &restored.bytes));
+    assert!(
+        take_after_network_service(&mut slot, &session)
+            .unwrap()
+            .is_none()
+    );
+    let same = assets
+        .manager()
+        .unwrap()
+        .load_file_from_mix("sentinel.bin")
+        .unwrap();
+    assert!(
+        std::sync::Arc::ptr_eq(&restored.bytes, &same.bytes),
+        "no second lease return"
     );
 }

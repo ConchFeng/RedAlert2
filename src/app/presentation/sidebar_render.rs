@@ -436,6 +436,16 @@ pub(crate) fn refresh_sidebar_cameo_draw_state(state: &mut AppState) {
         .match_presentation
         .sidebar_projection
         .refresh_cameo_draw_state(sim, &runtime.resources.rules, owner, armed_building);
+    let armed_superweapon = match_state.input.targeting_mode.as_ref().and_then(
+        |mode| match mode {
+            crate::app::types::TargetingMode::SuperWeapon(section) => Some(section.as_str()),
+            _ => None,
+        },
+    );
+    match_state
+        .match_presentation
+        .sidebar_projection
+        .refresh_armed_superweapon(armed_superweapon);
 }
 
 // ---------------------------------------------------------------------------
@@ -837,6 +847,7 @@ pub(crate) fn begin_main_pass<'a>(
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
+
     })
 }
 
@@ -868,6 +879,7 @@ pub(crate) fn begin_main_load_pass<'a>(
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
+
     })
 }
 

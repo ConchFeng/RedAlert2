@@ -253,6 +253,7 @@ impl SidebarSurface {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+
         })
     }
 
@@ -384,6 +385,7 @@ mod tests {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
             surface.composite(&mut pass);
         }

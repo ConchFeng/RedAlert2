@@ -531,8 +531,8 @@ pub(crate) fn handle_mouse_button_event(
 /// Once-per-frame idle tick: drives the masked-0 sticky re-dispatch that pops
 /// the pressed visual on drag-off and restores it on drag-back (G22 rows 2/3)
 /// and would drive G23 hold-repeat for any future held-mask gadget.
-/// Each unlocked pass also republishes the complete sidebar projection,
-/// including the retained House power pair consumed by the tooltip driver.
+/// Membership, production and House values have their own ordered owners;
+/// publishing the pressed bits updates only the retained button visuals.
 pub(crate) fn idle_tick(state: &mut AppState) {
     let Some(view) = current_sidebar_view(state).cloned() else {
         return;
@@ -543,7 +543,6 @@ pub(crate) fn idle_tick(state: &mut AppState) {
         return;
     }
     let _ = run_tick(state, &view, 0);
-    crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
 }
 
 fn run_tick(state: &mut AppState, view: &SidebarView, key: u16) -> GadgetConsume {
@@ -788,6 +787,9 @@ fn publish_pressed_visuals(state: &mut AppState) {
     gs.scroll_down_pressed = down;
     gs.scroll_up_pressed = up;
     gs.top_pressed = top;
+    let presentation = &mut state.match_state.match_presentation;
+    presentation.sidebar_projection
+        .refresh_gadget_draw_state(&presentation.sidebar_gadget_state);
 }
 
 #[cfg(test)]

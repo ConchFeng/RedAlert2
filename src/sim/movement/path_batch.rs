@@ -705,6 +705,15 @@ impl Simulation {
         Some(self.path_batch.as_ref()?.stats.stats())
     }
 
+    /// Actor ids whose requests are waiting for the next live object pass.
+    /// A Foot can register more than once in a pass; callers needing a set
+    /// deduplicate this read-only projection of the existing pending queue.
+    pub fn pending_path_search_actor_ids(&self) -> impl Iterator<Item = u64> + '_ {
+        self.path_batch
+            .iter()
+            .flat_map(|batch| batch.pending.iter().map(|&(id, _)| id))
+    }
+
     /// The end of the live object pass: its answers expire.
     pub(crate) fn finish_batched_path_searches(&mut self) {
         if let Some(batch) = self.path_batch.as_mut() {
@@ -924,7 +933,7 @@ impl Simulation {
             speed_type: snap.speed_type,
             movement_zone: snap.movement_zone,
             crushers: (snap.regular_crusher, snap.omni_crusher),
-            locomotor: snap.locomotor.as_ref().map(|loco| loco.active_kind()),
+            locomotor: snap.locomotor_kind,
             allow_zone_hierarchy: snap.allow_zone_hierarchy,
             threat_coefficient: self.foot_path_threat_coefficient(request.entity_id).bits(),
             owner: actor.owner(),

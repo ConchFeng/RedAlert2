@@ -53,8 +53,8 @@ pub(crate) fn exit_sell_mode_without_buildings(
 /// Original StripAI 0x006A8D07..0x006A8D7A admits completed Building objects
 /// on tabs0/1, independently of which tab is selected. The Defense predicate
 /// also includes ready Supers; the shared gadget owner supplies phase/timing.
-/// The scroll roll moves one row per simulation frame; the view is rebuilt
-/// from the moved row by the idle tick that follows.
+/// The scroll roll moves one row per simulation frame; a changed row rebuilds
+/// the visible strip before the idle tick synchronizes its hit regions.
 pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
     let Some(sim) = state
         .match_state
@@ -81,7 +81,7 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
     let (tick, frame) = (sim.session().tick(), sim.session().binary_frame() as i32);
     let presentation = &mut state.match_state.match_presentation;
     // StripClass::AI scrolls before its tab poll, once per Sidebar Action.
-    if let Some(rows) = presentation
+    let scrolled = if let Some(rows) = presentation
         .sidebar_projection
         .view()
         .map(|view| view.layout.side2_tile_count)
@@ -89,8 +89,10 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
         let visits = tick.saturating_sub(presentation.sidebar_gadget_state.last_sim_tick);
         presentation
             .sidebar_projection
-            .step_pending_scroll(rows, visits);
-    }
+            .step_pending_scroll(rows, visits)
+    } else {
+        false
+    };
     update_tab_flashes_for_owner(
         &mut presentation.sidebar_gadget_state,
         ready,
@@ -98,6 +100,9 @@ pub(crate) fn update_sidebar_gadget_state(state: &mut AppState) {
         tick,
         frame,
     );
+    if scrolled {
+        crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
+    }
 }
 
 /// StripClass::AI @ 0x006A8B30 calls SuperClass::ShouldFlashTab @

@@ -1,6 +1,6 @@
 //! One reporting point for all successfully submitted surface frames.
 
-pub(crate) fn present(output: wgpu::SurfaceTexture) {
+pub(crate) fn present(output: crate::render::gpu::GpuFrame) {
     #[cfg(target_os = "horizon")]
     let size = (output.texture.width(), output.texture.height());
     output.present();

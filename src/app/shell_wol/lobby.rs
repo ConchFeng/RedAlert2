@@ -48,7 +48,7 @@ const LOBBIES_PERIOD: Duration = Duration::from_millis(53_000);
 /// Refresh `0x55D` disables itself for `SetTimer(0x55D, 3000)`.
 const REFRESH_HOLD: Duration = Duration::from_millis(3000);
 /// `0x00789B60`: `[0xB77DC4] = 7` players.
-const CREATE_MAX_USERS: i32 = 7;
+const CREATE_MAX_USERS: i32 = crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT as i32;
 /// The create result `0x800401F8` shows `TXT_BAD_CHANKEY`.
 const BAD_CHANNEL_KEY: u32 = 0x8004_01F8;
 
@@ -102,6 +102,7 @@ enum Step {
     /// A chat-lobby join; `entry` shows the dialog afterwards.
     JoiningLobby {
         entry: bool,
+        request: Option<OnlineRequest>,
     },
     Ready,
     /// A leave before a join or create (`WOL:LeavingChannel`).
@@ -112,13 +113,98 @@ enum Step {
     Creating {
         observe: bool,
         channel: WolChannel,
+        request: Option<OnlineRequest>,
     },
-    JoiningGame,
+    JoiningGame {
+        request: Option<OnlineRequest>,
+    },
     /// The Buddy List runner's second game-list request for Join.
     FindingGame {
         name: String,
         deadline: Instant,
     },
+}
+
+/// Correlation for the online provider only. The lobby step continues to own
+/// admission; this ID prevents an old HTTP error from ending a later attempt.
+#[derive(Debug, Clone, Copy)]
+struct OnlineRequest {
+    id: u64,
+    deadline: Instant,
+}
+
+impl Step {
+    fn online_request(&self) -> Option<OnlineRequest> {
+        match self {
+            Self::JoiningLobby { request, .. }
+            | Self::JoiningGame { request }
+            | Self::Creating { request, .. } => *request,
+            _ => None,
+        }
+    }
+
+    fn online_request_mut(&mut self) -> Option<&mut Option<OnlineRequest>> {
+        match self {
+            Self::JoiningLobby { request, .. }
+            | Self::JoiningGame { request }
+            | Self::Creating { request, .. } => Some(request),
+            _ => None,
+        }
+    }
+
+    fn bind_online_request(&mut self, id: u64, now: Instant) -> bool {
+        let Some(request) = self.online_request_mut() else {
+            return false;
+        };
+        *request = Some(OnlineRequest {
+            id,
+            deadline: now + LIST_WAIT,
+        });
+        true
+    }
+
+    fn accepts_online_result(&self, id: u64) -> bool {
+        self.online_request()
+            .is_some_and(|request| request.id == id)
+    }
+
+    fn take_leave_continuation(&mut self) -> Option<AfterLeave> {
+        if !matches!(self, Self::Leaving { .. }) {
+            return None;
+        }
+        let Self::Leaving { then, .. } = std::mem::replace(self, Self::Ready) else {
+            unreachable!("checked leaving step");
+        };
+        Some(then)
+    }
+}
+
+/// Bind the transport request to the existing join/create step before sending.
+pub(super) fn bind_online_request(state: &mut AppState, id: u64) -> bool {
+    lobby_mut(state).is_some_and(|lobby| lobby.step.bind_online_request(id, Instant::now()))
+}
+
+/// Whether a response still belongs to the current lobby admission.
+pub(super) fn online_request_pending(state: &AppState, id: u64) -> bool {
+    lobby(state).is_some_and(|lobby| lobby.step.accepts_online_result(id))
+}
+
+/// A rejected online command enters the same reducer as a service callback.
+/// Stale failures cannot close a different attempt, even for the same room.
+pub(super) fn online_request_failed(state: &mut AppState, id: u64, code: u32) -> bool {
+    let Some(lobby) = lobby(state) else {
+        return false;
+    };
+    if !lobby.step.accepts_online_result(id) {
+        return false;
+    }
+    let event = if matches!(lobby.step, Step::Creating { .. }) {
+        WolServiceEvent::Created(Err(code))
+    } else {
+        WolServiceEvent::Joined(Err(code))
+    };
+    service::service_event(state, event);
+    true
 }
 
 #[derive(Debug, Clone)]
@@ -1204,9 +1290,12 @@ fn send_join(state: &mut AppState, channel: WolChannel, key: String, game: bool,
     };
     lobby.pending = Some(channel.clone());
     lobby.step = if game {
-        Step::JoiningGame
+        Step::JoiningGame { request: None }
     } else {
-        Step::JoiningLobby { entry }
+        Step::JoiningLobby {
+            entry,
+            request: None,
+        }
     };
     show_wait(state, "TXT_JOINLOB");
     request(state, WolServiceRequest::JoinChannel { channel, key });
@@ -1268,7 +1357,7 @@ fn leave_finished(state: &mut AppState, left: bool) {
     let Some(lobby) = lobby_mut(state) else {
         return;
     };
-    let Step::Leaving { then, .. } = std::mem::replace(&mut lobby.step, Step::Ready) else {
+    let Some(then) = lobby.step.take_leave_continuation() else {
         if left {
             refill_players(state);
             refill_lobbies(state);
@@ -1430,6 +1519,7 @@ fn send_create(state: &mut AppState, channel: WolChannel, key: String, observe: 
         lobby.step = Step::Creating {
             observe,
             channel: channel.clone(),
+            request: None,
         };
     }
     request(state, WolServiceRequest::CreateChannel { channel, key });
@@ -1710,7 +1800,7 @@ fn send_chat(state: &mut AppState, text: Vec<u16>) {
     let line = match wol_chat::parse_lobby(&text, &commands, &filters, last_pager.is_some()) {
         WolLobbyChatLine::Filter(filter) => {
             // 0x78B3F4/0x78B4DF flip the live DisplayBuddies/DisplayClan
-            // bytes without saving; the next WOL entry re-reads RA2MD.INI.
+            // bytes without saving; the next WOL entry re-reads VERA.INI.
             let live = &mut state.frontend.wol_preferences;
             let on = match filter {
                 WolChatFilter::Buddy => {
@@ -2018,7 +2108,7 @@ fn join_failed_tail(state: &mut AppState, close: bool) {
     if quick_match_runner(state) {
         // Event 5 acts only at stage 0, so `close` is the stage timeout's
         // business; a failed game join returns 0 from 0x00789960.
-        let game = lobby(state).is_some_and(|lobby| matches!(lobby.step, Step::JoiningGame));
+        let game = lobby(state).is_some_and(|lobby| matches!(lobby.step, Step::JoiningGame { .. }));
         if let Some(lobby) = lobby_mut(state) {
             lobby.pending = None;
             lobby.current = None;
@@ -2047,7 +2137,7 @@ fn join_failed_tail(state: &mut AppState, close: bool) {
     let rejoin = lobby.pending.take().is_some();
     lobby.current = None;
     lobby.members.clear();
-    let entry = matches!(lobby.step, Step::JoiningLobby { entry: true });
+    let entry = matches!(lobby.step, Step::JoiningLobby { entry: true, .. });
     lobby.step = Step::Ready;
     lobby.shown = true;
     lobby.covered = false;
@@ -2087,16 +2177,30 @@ fn entry_shown(state: &mut AppState) {
 
 /// `0x007A5E40` (CChatEventSink vt+0x28) for this user, or a result.
 fn joined(state: &mut AppState, result: Result<WolJoined, u32>) {
+    let online = state
+        .frontend
+        .wol
+        .as_ref()
+        .is_some_and(|visit| visit.provider == super::WolProvider::Online);
     let Some(runner) = lobby_mut(state) else {
         return;
     };
-    if runner.pending.is_none() {
+    if runner.pending.is_none()
+        || (online
+            && (!matches!(
+                runner.step,
+                Step::JoiningGame { .. } | Step::JoiningLobby { .. }
+            ) || runner.step.online_request().is_none()))
+    {
         log::debug!("stale WOL join result");
         return;
     }
-    if matches!(runner.step, Step::JoiningGame) && runner.shown {
+    if matches!(runner.step, Step::JoiningGame { .. }) && runner.shown {
         runner.deferred = Some(result);
         return;
+    }
+    if let Some(request) = runner.step.online_request_mut() {
+        *request = None;
     }
     let joined = match result {
         Ok(joined) => joined,
@@ -2107,7 +2211,7 @@ fn joined(state: &mut AppState, result: Result<WolJoined, u32>) {
     };
     let runner = lobby_mut(state).expect("checked");
     runner.pending = None;
-    let entry = matches!(runner.step, Step::JoiningLobby { entry: true });
+    let entry = matches!(runner.step, Step::JoiningLobby { entry: true, .. });
     runner.step = Step::Ready;
     runner.members.clear();
     let listed = joined.members.clone();
@@ -2276,16 +2380,32 @@ fn join_error(state: &mut AppState, code: u32) {
 }
 
 fn created(state: &mut AppState, result: Result<Vec<WolMember>, u32>) {
+    let online = state
+        .frontend
+        .wol
+        .as_ref()
+        .is_some_and(|visit| visit.provider == super::WolProvider::Online);
     let Some(lobby) = lobby_mut(state) else {
         return;
     };
-    let Step::Creating { observe, channel } = lobby.step.clone() else {
+    let Step::Creating {
+        observe,
+        channel,
+        request,
+    } = lobby.step.clone()
+    else {
         log::debug!("stale WOL create result");
         return;
     };
+    if online && request.is_none() {
+        return;
+    }
     let quick_match = lobby.runner == Runner::QuickMatch;
     match result {
         Err(code) => {
+            // The rejected create no longer owns a live admission. Keep the
+            // normal error box/return tail, but ignore a late success callback.
+            lobby.step = Step::Ready;
             close_wait(state);
             let key = if code == BAD_CHANNEL_KEY {
                 "TXT_BAD_CHANKEY"
@@ -3328,6 +3448,19 @@ pub(super) fn poll(state: &mut AppState) -> Option<Instant> {
     let page_open = super::page::page_dialog(state).is_some();
     let lobby = lobby_mut(state)?;
     redraw |= lobby.wait.as_mut().is_some_and(|wait| wait.poll(now));
+    if let Some(request_id) = lobby
+        .step
+        .online_request()
+        .filter(|request| now >= request.deadline && lobby.deferred.is_none())
+        .map(|request| request.id)
+    {
+        // An uncertain HTTP outcome may have joined on the server. Queue a
+        // normal leave behind that command before allowing another attempt.
+        request(state, WolServiceRequest::LeaveChannel);
+        online_request_failed(state, request_id, 0x8000_4005);
+        state.platform.window.request_redraw();
+        return None;
+    }
     match lobby.step {
         Step::ListingLobbies { deadline } if now >= deadline => {
             // 0x0077F120 gave up: the runner's box, then the welcome. The
@@ -3360,6 +3493,7 @@ pub(super) fn poll(state: &mut AppState) -> Option<Instant> {
         _ => {}
     }
     let mut deadlines: Vec<Instant> = Vec::new();
+    deadlines.extend(lobby.step.online_request().map(|request| request.deadline));
     deadlines.extend(
         lobby
             .wait
@@ -3565,6 +3699,30 @@ mod tests {
     use super::*;
 
     #[test]
+    fn online_admission_matches_only_its_current_request_and_bounds_the_wait() {
+        let now = Instant::now();
+        let mut step = Step::JoiningGame { request: None };
+        assert!(step.bind_online_request(7, now));
+        assert!(step.accepts_online_result(7));
+        assert_eq!(
+            step.online_request().unwrap().deadline,
+            now + Duration::from_secs(30)
+        );
+        assert!(step.bind_online_request(8, now));
+        assert!(!step.accepts_online_result(7));
+        assert!(step.accepts_online_result(8));
+        assert!(step.take_leave_continuation().is_none());
+        assert!(
+            step.accepts_online_result(8),
+            "late ChannelLeft must preserve a newer join"
+        );
+        *step.online_request_mut().unwrap() = None;
+        assert!(!step.accepts_online_result(8));
+        step = Step::Ready;
+        assert!(!step.bind_online_request(9, now));
+    }
+
+    #[test]
     fn join_errors_follow_the_on_join_sink() {
         assert_eq!(join_error_reply(0x8004_006C, true), JoinErrorReply::Ignore);
         assert_eq!(
@@ -3707,7 +3865,7 @@ mod tests {
     fn the_created_record_carries_name_users_and_flags() {
         let channel = created_channel("Tester", false, false, 1024, 3, "25,7,0,0,1,x".into());
         assert_eq!(channel.name, "Tester's_game");
-        assert_eq!((channel.kind, channel.max_users), (GAME_CHANNEL, 7));
+        assert_eq!((channel.kind, channel.max_users), (GAME_CHANNEL, 30));
         assert_eq!((channel.game_flags, channel.flags), (3, 0));
         assert_eq!(channel.ex_info, "25,7,0,0,1,x");
         let limited = created_channel("Tester", true, true, 800, 0, String::new());

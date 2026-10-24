@@ -10,11 +10,19 @@
 也已从空 SD 资源目录启动并进入遭遇战。完整战术操作与新版真机验收尚未完成；
 下方早期检查点中的限制以 HANDOFF 顶部当前结论为准。
 
+当前 Switch 客户端由主线程调度共享 Rust 游戏核心和 wgpu/Vulkan 绘制；Rayon
+三线程池用于部分寻路和目标扫描，体素图集用 scoped `std::thread` 分摊姿态光栅化，
+没有独立模拟/渲染线程。2026-10-24
+profile NSP 的 Eden 遭遇战实测约 27 fps、模拟时钟 1.000× 实时；同地图的世界
+实例构造支持性采样较上一检查点约减少 1.47 ms，但两次没有固定随机种子，并非
+严格 A/B。侧栏 gadget 空闲路径的每帧全量重建已移除，具体测量见 HANDOFF；
+最新无诊断 NSP 已在 Eden 启动到主菜单，尚未取得本包的遭遇战读数。
+
 上游 `main` 已同步到 `36d6d3a33`。安装版 NSP 的 `appletInitialize 0x3f59`
 已定位为 NPDM 服务白名单缺项，现改为安装客户端 wildcard 服务权限并重新打包；
 用户已确认新包真机可以正常进入；外部插件 FPS 读数仍待定位。
 
-## 完整客户端入口（接入中）
+## 完整客户端入口
 
 `--client` 直接编译共享 `vera20k` 客户端库，以 Horizon 窗口后端驱动同一个
 `App`，保留完整菜单、对局、输入、音频与存档代码。此入口没有 GPU 探针的
@@ -24,7 +32,9 @@
 python3 build.py --client
 ```
 
-默认交付产物为 `dist/vera20k-client-assets.nsp`，标题 ID
+当前客户端版本为 `0.0.1 beta`，NSP 命名格式为
+`dist/vera20-client-v<VERSION>.nsp`，本版产物为
+`dist/vera20-client-v0.0.1.nsp`，标题 ID
 `0100f52556458000`。运行日志在客体 `sdmc:/switch/vera20k/logs/client.log`，
 错误结果在 `sdmc:/switch/vera20k/client.last-error.txt`；使用现有 master 模拟器
 数据目录。资源优先从包内 RomFS 读取，配置和日志目录为
@@ -51,12 +61,10 @@ python3 build.py --client --nsp \
 `ra2.mix`、`ra2md.mix`（小写文件名）；指定目录的全部文件和子目录原样入包，
 因此请只放需要随包携带的资源。原始资源留在本机，不加入 Git。
 
-资源版产物为 `dist/vera20k-client-assets.nsp`，独立于不含资源的
-`dist/vera20k-client.nsp`；两者标题 ID 相同，不是两个可同时安装的游戏。
-2026-10-24 构建中，本机约 748 MiB 的资源生成 803,046,104 字节（约 766 MiB）的 NSP，
-SHA256 为
-`fd29c9984949ca3c9b0369f0f830b7eeaf35891fc42ae8958eb942ce4141aef0`。
-本次命令也更新 NRO，但 NRO 本身不内置这些资源。
+客户端链接构建默认打入游戏资源，并按 `vera20-client-v<VERSION>.nsp` 命名。
+本版资源内置 NSP 为 803,079,896 字节，SHA256
+`bbccd4d6446900b771473a83ef4aa6c84d5dd311d379d9ec75bad3868651f980`。
+构建也会生成诊断 NRO；NRO 本身不内置这些资源。
 
 客户端挂载 `romfs:/`；没有配置覆盖时优先从包内读取资源，找不到包内资源时
 回退到 `sdmc:/game`。配置、日志和录像保存在
@@ -90,7 +98,9 @@ cc -std=gnu11 -Wall -Wextra -Werror -Iplatform/switch/tests/include \
 
 这些检查验证上报器的状态和字段写入，不能代替真机插件读数验收。
 
-资源打包不会补齐源目录缺少的音乐或影片。本机目录缺少主题音乐资源；
+资源打包不会补齐源目录缺少的音乐或影片。2026-10-25 已向本机资源目录补齐
+`theme.mix`、`thememd.mix`、`movmd03.mix`、`movies01.mix`、`movies02.mix`，
+新资源包中已可查找到主题音乐和首关剧情影片；实际播放仍待真机确认。
 随机地图生成仍有向资源目录写 `RandMap.Sed` / 预览文件的路径，在只读 RomFS
 模式下尚未适配，当前请使用已有地图。
 

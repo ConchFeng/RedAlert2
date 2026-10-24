@@ -127,9 +127,12 @@ impl CampaignStartTarget {
     fn explicit_scenario(self) -> Option<&'static str> {
         match self {
             Self::ExplicitFirstLive(scenario) => Some(scenario),
-            Self::Opening(OpeningTarget::RadarAlert | OpeningTarget::RadarRestored) => {
-                Some("SOV02SMD.MAP")
-            }
+            Self::Opening(
+                OpeningTarget::RadarAlert
+                | OpeningTarget::RadarRestored
+                | OpeningTarget::SovietFortresses(_),
+            ) => Some("SOV02SMD.MAP"),
+            Self::Opening(OpeningTarget::SovietGroups(_)) => Some("SOV07TMD.MAP"),
             Self::Restart(RestartTarget::ObjectiveExpiry) => Some("SOV02SMD.MAP"),
             Self::Restart(RestartTarget::AlternateHomeVictory) => Some("SOV06LMD.MAP"),
             Self::Restart(RestartTarget::InheritedTimerVictory) => Some("SOV01UMD.MAP"),
@@ -217,12 +220,13 @@ impl MoviesCapture {
         target: MoviesTarget,
         output: &Path,
         live_lan: Option<super::LiveLanConfig>,
+        live_online: Option<super::LiveOnlineConfig>,
     ) -> Self {
         Self {
             target,
             lan: if let MoviesTarget::Lan(target) = target {
                 let mut capture = lan::LanCapture::new(target);
-                capture.configure_live(live_lan);
+                capture.configure_live(live_lan, live_online);
                 Some(capture)
             } else {
                 None

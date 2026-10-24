@@ -87,6 +87,11 @@ pub struct PreparedMatchStartup {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PreparedNetworkStartup {
     launch: SkirmishLaunchSession,
+    /// Physical local bytes, independent of the logical map name folded into
+    /// shared scenario state. Cache paths differ legitimately across machines.
+    local_map_source: Option<crate::map::source::LoadedMapSource>,
+    local_map_effective_digest: Option<String>,
+    local_random_map_preview: Option<crate::map::source::LoadedMapSource>,
     pub(crate) seed: MatchSeed,
     mode: crate::app::match_runtime::session::SessionMode,
     host: bool,
@@ -108,6 +113,9 @@ impl PreparedNetworkStartup {
     ) -> Self {
         Self {
             launch,
+            local_map_source: None,
+            local_map_effective_digest: None,
+            local_random_map_preview: None,
             seed: MatchSeed {
                 value: seed,
                 source: MatchSeedSource::AgreedNetworkHost,
@@ -124,6 +132,33 @@ impl PreparedNetworkStartup {
     pub(crate) fn with_carry_over(mut self, record: CampaignCarryOver) -> Self {
         self.carry_over = Some(record);
         self
+    }
+
+    pub(crate) fn with_local_map_source(
+        mut self,
+        source: Option<crate::map::source::LoadedMapSource>,
+        effective_digest: Option<String>,
+    ) -> Self {
+        self.local_map_source = source;
+        self.local_map_effective_digest = effective_digest;
+        self
+    }
+
+    pub(crate) fn with_random_map_preview(
+        mut self,
+        source: Option<crate::map::source::LoadedMapSource>,
+    ) -> Self {
+        self.local_random_map_preview = source;
+        self
+    }
+    pub(crate) fn random_map_preview(&self) -> Option<&crate::map::source::LoadedMapSource> {
+        self.local_random_map_preview.as_ref()
+    }
+    pub(crate) fn effective_map_digest(&self) -> Option<&str> {
+        self.local_map_effective_digest.as_deref()
+    }
+    pub(crate) fn local_map_source(&self) -> Option<&crate::map::source::LoadedMapSource> {
+        self.local_map_source.as_ref()
     }
 
     pub(crate) fn carry_over(&self) -> Option<&CampaignCarryOver> {
@@ -453,6 +488,17 @@ pub enum LoadingStartup {
 }
 
 impl LoadingStartup {
+    pub(crate) fn physical_map_file(&self) -> &str {
+        if let Self::Network(startup) = self
+            && let Some(crate::map::source::LoadedMapSource::Loose { path, .. }) =
+                startup.local_map_source()
+            && let Some(path) = path.to_str()
+        {
+            return path;
+        }
+        self.selected_map_file()
+    }
+
     pub fn selected_map_file(&self) -> &str {
         match self {
             Self::Network(startup) => startup

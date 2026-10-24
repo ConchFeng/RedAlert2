@@ -684,6 +684,7 @@ impl TerrainDrawRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
             pass.set_pipeline(&self.snapshot_pipeline);
             pass.set_bind_group(0, &targets.source, &[]);
@@ -697,6 +698,7 @@ impl TerrainDrawRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
             pass.set_pipeline(&packed.clear);
             pass.set_scissor_rect(rect[0], rect[1], rect[2], rect[3]);
@@ -758,6 +760,7 @@ impl TerrainDrawRenderer {
                 }),
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
             pass.set_pipeline(if writes {
                 &packed.resolve_write

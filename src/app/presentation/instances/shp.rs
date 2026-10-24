@@ -156,8 +156,7 @@ pub(crate) fn build_shp_instances_from_inputs(
                     crate::sim::vision::cell_is_shrouded(sim.fog(), cells, viewer, cell)
                 })
     };
-    let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
-    for stable_id in encounter_order {
+    for &stable_id in sim.display_layers().ordered_ids() {
         let Some(entity) = sim.entities().get(stable_id) else {
             continue;
         };
@@ -321,8 +320,11 @@ pub(crate) fn build_shp_instances_from_inputs(
             image.is_some_and(|image| image != crate::sim::building_art::BuildingImage::Body);
         let unopened_buildup = draws_buildup && !is_building_up && !is_building_down;
         let object_type = rules.and_then(|rules| rules.object(type_str));
-        let art_entry = object_type.and_then(|object| {
-            art_reg.and_then(|registry| registry.resolve_metadata_entry(type_str, &object.image))
+        let art_entry = art_reg.and_then(|registry| {
+            registry.resolve_metadata_entry(
+                type_str,
+                object_type.map_or(type_str, |object| object.image.as_str()),
+            )
         });
         // `BuildingClass::GetCurrentFrame @ 0x0043EF90` reflects a gate's
         // BState-0 frame first, then reflects again for Selling. Pass the same
@@ -513,25 +515,38 @@ pub(crate) fn build_shp_instances_from_inputs(
         let extra_light = rules.map_or(0, |rules| {
             crate::app::presentation::lighting::body_extra_light(entity, rules, sim, cells.as_ref())
         });
-        let tint = shp_body_tint(
-            input.lighting,
-            (pos.rx(), pos.ry()),
-            entity.category(),
-            extra_light,
-        );
+        // Infantry5192C9 retains Object5F69C0 -> Foot4DBDF0's navigation
+        // Cell for both top-light arms51940A/51943F. A destination alone
+        // does not change it: the active locomotor's head/null-current
+        // projection (or Tube exit) owns this read. Physical position still
+        // owns shroud, depth and the extra's side/ground/height queries.
+        let physical_cell = (pos.rx(), pos.ry());
+        let light_cell = if entity.category() == EntityCategory::Infantry {
+            sim.foot_navigation_coordinate(stable_id)
+                .map(|coord| {
+                    (
+                        crate::util::lepton::lepton_to_cell_packed(coord.x) as u16,
+                        crate::util::lepton::lepton_to_cell_packed(coord.y) as u16,
+                    )
+                })
+                // Incomplete pre-bind/headless actors can lack an active
+                // locomotor or Tube descriptor. Preserve their prior physical
+                // cell fallback; a missing light-grid entry still uses1000.
+                .unwrap_or(physical_cell)
+        } else {
+            physical_cell
+        };
+        let tint = shp_body_tint(input.lighting, light_cell, entity.category(), extra_light);
         let selected_palette_light = crate::app::presentation::lighting::body_palette_light(
             input.lighting,
-            (pos.rx(), pos.ry()),
+            light_cell,
             extra_light,
         );
         let palette_light = if entity.category() == EntityCategory::Structure {
-            let obj = rules.and_then(|r| r.object(type_str));
-            let image = obj.map_or(type_str, |o| o.image.as_str());
-            let art = rules.and_then(|r| r.art().resolve_metadata_entry(type_str, image));
             crate::app::presentation::lighting::building_palette_light(
                 input.lighting,
                 (pos.rx(), pos.ry()),
-                art,
+                art_entry,
             )
         } else {
             selected_palette_light
@@ -544,6 +559,8 @@ pub(crate) fn build_shp_instances_from_inputs(
             tint,
             palette_light,
             sim,
+            rules,
+            crate::app::presentation::lighting::TechnoDraw::Shape,
         );
         let colour_word = match rules {
             Some(rules) => {
@@ -570,56 +587,50 @@ pub(crate) fn build_shp_instances_from_inputs(
         // ordinary sprites walk gradient 2. Infantry (`InfantryClass Draw_It`, flags 0x2E00) walks
         // entry 2 from `Get_Z_Adjust - 2`, whose base term also cancels the
         // lift, and never writes.
-        let (z_adjust, z_gradient, zshape_origin) = if entity.category()
-            == EntityCategory::Structure
-        {
-            let object_type = rules.and_then(|r| r.object(type_str));
-            let rules_image: String = object_type
-                .map(|o| o.image.clone())
-                .unwrap_or_else(|| type_str.to_string());
-            let art_entry = art_reg.and_then(|a| a.resolve_metadata_entry(type_str, &rules_image));
-            let normal_z_adjust: i32 = match &door_body {
-                Some((_, _, z_adjust, _)) => *z_adjust,
-                None => art_entry.map_or(0, |a| a.normal_z_adjust),
+        let (z_adjust, z_gradient, zshape_origin) =
+            if entity.category() == EntityCategory::Structure {
+                let normal_z_adjust: i32 = match &door_body {
+                    Some((_, _, z_adjust, _)) => *z_adjust,
+                    None => art_entry.map_or(0, |a| a.normal_z_adjust),
+                };
+                let point_move = building_zshape_point_move(entity, art_entry);
+                let foundation: (u16, u16) = object_type
+                    .map(|o| o.foundation.dimensions())
+                    .unwrap_or((1, 1));
+                let zshape = input.building_zshape && foundation.0 <= ZSHAPE_MAX_FOUNDATION_WIDTH;
+                let origin = native_z::zshape_origin(
+                    (sx.round() as i32, sy.round() as i32),
+                    foundation,
+                    point_move,
+                );
+                (
+                    lifted_z_adjust(lift_px, normal_z_adjust + SHP_DRAW_Z_ADJUST_PX),
+                    native_z::pack_building_z_gradient(
+                        zshape,
+                        entry.is_some_and(|entry| entry.extended),
+                    ),
+                    [origin.0 as f32, origin.1 as f32],
+                )
+            } else {
+                // Unit no-turret SHP branch 0x73CE0D..0x73CE7F, active for SQD:
+                // one complete draw with a7=-16, a8=0. Infantry is excluded by
+                // the adapter. This is distinct from VXL's two-region composite.
+                let bridge_fudge =
+                    super::foot_depth::shp_unit_bridge_fudge_in_runtime(Some(runtime), entity);
+                (
+                    super::foot_depth::shp_z_adjust_in_runtime(Some(runtime), entity)
+                        - if bridge_fudge { 16.0 } else { 0.0 },
+                    pack_z_gradient(
+                        if bridge_fudge {
+                            ZGradient::Flat
+                        } else {
+                            ZGradient::Vertical
+                        },
+                        false,
+                    ),
+                    [0.0, 0.0],
+                )
             };
-            let point_move = building_zshape_point_move(entity, art_entry);
-            let foundation: (u16, u16) = object_type
-                .map(|o| o.foundation.dimensions())
-                .unwrap_or((1, 1));
-            let zshape = input.building_zshape && foundation.0 <= ZSHAPE_MAX_FOUNDATION_WIDTH;
-            let origin = native_z::zshape_origin(
-                (sx.round() as i32, sy.round() as i32),
-                foundation,
-                point_move,
-            );
-            (
-                lifted_z_adjust(lift_px, normal_z_adjust + SHP_DRAW_Z_ADJUST_PX),
-                native_z::pack_building_z_gradient(
-                    zshape,
-                    entry.is_some_and(|entry| entry.extended),
-                ),
-                [origin.0 as f32, origin.1 as f32],
-            )
-        } else {
-            // Unit no-turret SHP branch 0x73CE0D..0x73CE7F, active for SQD:
-            // one complete draw with a7=-16, a8=0. Infantry is excluded by
-            // the adapter. This is distinct from VXL's two-region composite.
-            let bridge_fudge =
-                super::foot_depth::shp_unit_bridge_fudge_in_runtime(Some(runtime), entity);
-            (
-                super::foot_depth::shp_z_adjust_in_runtime(Some(runtime), entity)
-                    - if bridge_fudge { 16.0 } else { 0.0 },
-                pack_z_gradient(
-                    if bridge_fudge {
-                        ZGradient::Flat
-                    } else {
-                        ZGradient::Vertical
-                    },
-                    false,
-                ),
-                [0.0, 0.0],
-            )
-        };
         let Some(parent) = ground_order.object_draw(stable_id, SpriteEncoding::Plain) else {
             continue;
         };
@@ -806,6 +817,8 @@ pub(crate) fn build_shp_instances_from_inputs(
                         tint,
                         selected_palette_light,
                         sim,
+                        rules,
+                        crate::app::presentation::lighting::TechnoDraw::Voxel,
                     );
                 emit_building_turret_vxl(
                     unit_atlas,
@@ -1640,6 +1653,7 @@ fn emit_building_anims(
                     tint,
                     attached_palette,
                     sim,
+                    rules,
                 )
             }
         } else {
@@ -1658,7 +1672,13 @@ fn emit_building_anims(
         // Preserve the existing body's color-word path. The shared pass
         // builder clears it independently for the later shadow.
         let policy = BlitPolicy::z_read(SpriteEncoding::Plain);
-        let palette_light = palette_light.with_colour_word(anim_word(anim_id));
+        // AnimClass::Draw's tint hook (`0x00423420`) ORs the custom shield
+        // tint into the building anim's colour word independently of the
+        // ShouldUseCellDrawer intensity arm.
+        let shield_word = rules.map_or(0, |rules| {
+            crate::app::presentation::lighting::shield_tint(building, sim, rules).0
+        });
+        let palette_light = palette_light.with_colour_word(anim_word(anim_id) | shield_word);
         // DrawIt422CA0 -> 4AED70 retains the Anim's Convert selector. Reducing
         // it to alpha loses the indexed palette/A lookup and packed RGB565
         // blend (spatial_oracle/building_anim_translucency). The inherited
@@ -1812,8 +1832,14 @@ fn emit_unit_terrain_body(
     // Techno7060CC..70610A uses Cell+34 and the common/ground light+10C.
     let palette_light = crate::render::palette_light::PaletteLight::cell(grid, cell, false);
     let tint = grid.terrain_object_tint_for_type(cell, false);
-    let (tint, palette_light) =
-        crate::app::presentation::lighting::techno_effect_light(entity, tint, palette_light, sim);
+    let (tint, palette_light) = crate::app::presentation::lighting::techno_effect_light(
+        entity,
+        tint,
+        palette_light,
+        sim,
+        Some(&runtime.resources.rules),
+        crate::app::presentation::lighting::TechnoDraw::Shape,
+    );
     let depth = compute_sprite_depth_params(
         input.axis.origin_y,
         input.axis.world_height,

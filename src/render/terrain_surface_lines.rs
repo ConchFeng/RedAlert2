@@ -672,6 +672,7 @@ impl TerrainDrawRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+
                 });
                 pass.set_scissor_rect(x, y, w, h);
                 pass.set_pipeline(&self.snapshot_pipeline);
@@ -685,6 +686,7 @@ impl TerrainDrawRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+
                 });
                 pass.set_scissor_rect(x, y, w, h);
                 pass.set_pipeline(&self.surface_lines.pipeline);

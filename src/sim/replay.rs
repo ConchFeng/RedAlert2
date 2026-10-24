@@ -783,11 +783,14 @@ impl ReplayLog {
     }
 
     pub fn write_json(&self, writer: &mut impl std::io::Write) -> Result<()> {
-        let bytes = serde_json::to_vec_pretty(self)
-            .context("Failed to serialize deterministic diagnostic log to JSON")?;
-        writer
-            .write_all(&bytes)
-            .context("Failed to write diagnostic log")
+        use std::io::Write;
+        // Keep every record and hash while bounding the serialization buffer;
+        // a scale match's fixed byte arrays need no per-element indentation.
+        let mut buffered = std::io::BufWriter::new(writer);
+        serde_json::to_writer(&mut buffered, self).context("Failed to write diagnostic log")?;
+        // BufWriter's Drop discards errors. The segment owner must observe a
+        // final write/flush failure so it retains the log and removes the file.
+        buffered.flush().context("Failed to flush diagnostic log")
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -1544,27 +1547,91 @@ mod tests {
         });
         log.record_tick(
             1,
-            vec![CommandEnvelope::new(
-                crate::sim::intern::test_intern("Americans"),
-                1,
-                Command::SetRally {
-                    rx: 10,
-                    ry: 11,
-                    producer_ids: vec![1, 2],
-                },
-            )],
+            vec![
+                CommandEnvelope::new(
+                    crate::sim::intern::test_intern("Americans"),
+                    1,
+                    Command::SetRally {
+                        rx: 10,
+                        ry: 11,
+                        producer_ids: vec![1, 2],
+                    },
+                ),
+                CommandEnvelope::synchronized(
+                    CommandRecord::encode(
+                        0xfe,
+                        2,
+                        7,
+                        &[0xa5; crate::sim::command::COMMAND_RECORD_PAYLOAD_LEN],
+                    )
+                    .unwrap(),
+                    1,
+                ),
+            ],
             Some(999),
         );
         // A tick that did not hash leaves its hash out.
         log.record_tick(2, Vec::new(), None);
-        let json = serde_json::to_string(&log).expect("serialize");
+        log.initial_scenario_services
+            .push(ScenarioServiceInput::Pause);
+        log.ticks[0]
+            .scenario_services
+            .push(ScenarioServiceInput::Resume);
+        let mut bytes = Vec::new();
+        log.write_json(&mut bytes).expect("write diagnostic log");
+        let json = std::str::from_utf8(&bytes).expect("JSON is UTF-8");
         assert_eq!(json.matches("state_hash").count(), 1);
-        let parsed: ReplayLog = serde_json::from_str(&json).expect("deserialize");
+        let parsed: ReplayLog = serde_json::from_slice(&bytes).expect("deserialize");
         assert_eq!(parsed.header.tick_hz, 30);
         assert_eq!(parsed.ticks.len(), 2);
         assert_eq!(parsed.ticks[0].tick, 1);
         assert_eq!(parsed.ticks[0].state_hash, Some(999));
+        assert_eq!(parsed.ticks[0].commands, log.ticks[0].commands);
+        assert_eq!(
+            parsed.initial_scenario_services,
+            log.initial_scenario_services
+        );
+        assert_eq!(
+            parsed.ticks[0].scenario_services,
+            log.ticks[0].scenario_services
+        );
         assert_eq!(parsed.ticks[1].state_hash, None);
+    }
+
+    #[test]
+    fn diagnostic_log_writer_propagates_final_flush_failure() {
+        #[derive(Default)]
+        struct FlushFailure(Vec<u8>);
+        impl std::io::Write for FlushFailure {
+            fn write(&mut self, bytes: &[u8]) -> std::io::Result<usize> {
+                self.0.extend_from_slice(bytes);
+                Ok(bytes.len())
+            }
+            fn flush(&mut self) -> std::io::Result<()> {
+                Err(std::io::Error::other("injected final flush failure"))
+            }
+        }
+        let log = ReplayLog::new(ReplayHeader {
+            pixel_conversion_bounds: Default::default(),
+            version: 1,
+            tick_hz: 30,
+            seed: 42,
+            map_name: "flush.map".to_owned(),
+            rules_hash: 123,
+        });
+        let mut writer = FlushFailure::default();
+        let error = log
+            .write_json(&mut writer)
+            .expect_err("flush failure must reach the segment owner");
+        assert!(
+            serde_json::from_slice::<ReplayLog>(&writer.0).is_ok(),
+            "complete bytes were written before flush failed"
+        );
+        assert!(
+            error
+                .chain()
+                .any(|cause| cause.to_string().contains("injected final flush failure"))
+        );
     }
 
     #[test]

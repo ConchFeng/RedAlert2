@@ -8,13 +8,13 @@ use std::collections::HashMap;
 
 use super::current_cell::CurrentRadarCellAuthority;
 use super::geometry::NativeRadarSurfaceGeometry;
-use super::helpers::{MINIMAP_WIDTH, OverlayPixel, RadarSurfacePixel, TerrainPixel, set_pixel};
+use super::helpers::{MINIMAP_WIDTH, OverlayPixel, RadarSurfacePixel, TerrainPixels, set_pixel};
 use super::projection::{aperture_pixel, rasterize_native_terrain};
 use super::terrain::{NativeRadarCellColors, NativeRadarCellUpdate, NativeRadarTerrainSurface};
 
 pub(crate) struct RadarTerrainUpdateLayers<'a> {
     pub base_rgba: &'a mut Vec<u8>,
-    pub terrain_pixels: &'a [TerrainPixel],
+    pub terrain_pixels: &'a TerrainPixels,
     pub surface_pixels: &'a mut Vec<RadarSurfacePixel>,
     pub overlay_pixels: &'a mut Vec<OverlayPixel>,
     pub native_surface: Option<NativeRadarSurfaceGeometry>,
@@ -121,12 +121,7 @@ pub(super) fn apply_radar_terrain_dirty_cells(
                 override_color: source.map(|(color, _)| color),
             });
         }
-        let Some(terrain_pixel) = layers
-            .terrain_pixels
-            .iter()
-            .find(|pixel| pixel.rx == rx && pixel.ry == ry)
-            .copied()
-        else {
+        let Some(terrain_pixel) = layers.terrain_pixels.cell(rx, ry).copied() else {
             continue;
         };
         if let Some((x, y)) =

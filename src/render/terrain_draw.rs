@@ -252,7 +252,7 @@ impl TerrainDrawRenderer {
                 primitive: Default::default(),
                 depth_stencil: Some(wgpu::DepthStencilState {
                     format: wgpu::TextureFormat::Depth32Float,
-                    depth_write_enabled,
+                    depth_write_enabled: depth_write_enabled,
                     // Manual comparison must precede wrapped storage. Hardware Less
                     // on low16(candidate) is not equivalent for signed candidates.
                     depth_compare: wgpu::CompareFunction::Always,
@@ -690,6 +690,7 @@ impl TerrainDrawRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+
                 });
                 pass.set_pipeline(&self.read_only_snapshot_pipeline);
                 pass.set_bind_group(0, &targets.source, &[]);
@@ -712,6 +713,7 @@ impl TerrainDrawRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+
                 });
                 pass.set_pipeline(pipeline);
                 pass.set_bind_group(0, batch.camera_bind_group(), &[]);
@@ -746,6 +748,7 @@ impl TerrainDrawRenderer {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
+
                 });
                 pass.set_pipeline(&self.read_only_resolve_pipeline);
                 pass.set_bind_group(0, &targets.snapshot, &[]);
@@ -837,6 +840,7 @@ impl TerrainDrawRenderer {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
             pass.set_pipeline(&self.snapshot_pipeline);
             pass.set_bind_group(0, &targets.source, &[]);
@@ -859,6 +863,7 @@ impl TerrainDrawRenderer {
             }),
             timestamp_writes: None,
             occlusion_query_set: None,
+
         });
         pass.set_bind_group(0, batch.camera_bind_group(), &[]);
         pass.set_bind_group(2, &targets.snapshot, &[]);

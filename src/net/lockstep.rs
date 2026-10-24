@@ -93,7 +93,7 @@ pub struct WolStartTiming {
 ///
 /// `game_speed` is `[0xA8B268]` (unsigned bound: anything outside 0..=5,
 /// negatives included, takes the slowest row); `pings` are the eight dwords
-/// at `0xB7790C`, reduced to a signed maximum starting from 0 so negative
+/// at `0xB7790C` (all admitted peers in VERA's extended roster), reduced to a signed maximum starting from 0 so negative
 /// (unknown) pings are ignored. `channel_owner` is true when the first channel
 /// user row with flag bit 0 (`0xB77908` rows, +0) has a nickname (+0x24)
 /// equal to the local one under ASCII case-insensitive `_stricmp 0x7C8D20`;
@@ -104,7 +104,11 @@ pub struct WolStartTiming {
 /// the clear of `0xA8B574[0xD0]`, current speed `0xA8EB60 = game_speed`,
 /// the `0x841F30..3C` writes and `0xA8ED84 = 0`.
 /// Original gamemd.exe controls: tools/storage_oracle/wol_shell.py, timing.
-pub fn wol_start_timing(game_speed: i32, pings: [i32; 8], channel_owner: bool) -> WolStartTiming {
+pub fn wol_start_timing(
+    game_speed: i32,
+    pings: impl IntoIterator<Item = i32>,
+    channel_owner: bool,
+) -> WolStartTiming {
     // Jump table 0x79561C; `ja` at 0x794F8B is unsigned.
     let (max_ahead, owner_frame_rate) = speed_frame_budget(game_speed);
     let frame_send_rate = if matches!(game_speed, 0 | 1) { 10 } else { 5 };
@@ -359,8 +363,7 @@ impl SynchronizedCommandQueue {
     /// adjustment, which is the value the session owner must commit. A timing
     /// update that widens neither unsigned negotiated value clears the window.
     ///
-    /// VERIFIED: gamemd.exe `EventClass__Execute @ 0x004C800C` case `0x20`
-    /// publishes the adjusted window consumed by `FUN_0064C380 @ 0x0064C380`.
+    /// Uses the production EventClass4C800C / Execute_DoList64C380 owner.
     #[cfg(any(test, feature = "test-support"))]
     pub fn apply_timing_update(
         &mut self,
@@ -371,27 +374,18 @@ impl SynchronizedCommandQueue {
         proposed_frame_send_rate: NonZeroU8,
         scenario_subtracts_ten: bool,
     ) -> u16 {
-        let adjusted_max_ahead = if scenario_subtracts_ten {
-            proposed_max_ahead.wrapping_sub(10)
-        } else {
-            proposed_max_ahead
-        };
-
-        if adjusted_max_ahead > previous_max_ahead
-            || proposed_frame_send_rate > previous_frame_send_rate
-        {
-            let rate = i32::from(proposed_frame_send_rate.get());
-            let end = event_frame
-                .wrapping_add(i32::from(adjusted_max_ahead))
-                .wrapping_add(rate.wrapping_sub(1))
-                .wrapping_div(rate)
-                .wrapping_mul(rate);
-            self.do_list.set_retime_window(event_frame, end);
-        } else {
-            self.do_list.set_retime_window(0, 0);
-        }
-
-        adjusted_max_ahead
+        let mut window = self.do_list.retime_window();
+        let adjusted = window.apply_timing_update(
+            event_frame,
+            previous_max_ahead,
+            previous_frame_send_rate,
+            proposed_max_ahead,
+            proposed_frame_send_rate,
+            scenario_subtracts_ten,
+        );
+        let (start, end) = window.bounds();
+        self.do_list.set_retime_window(start, end);
+        adjusted
     }
 
     /// Append one locally issued command in issue order. Retail silently drops
@@ -728,6 +722,16 @@ mod tests {
     }
 
     #[test]
+    fn online_timing_includes_the_thirtieth_peer_measurement() {
+        let mut pings = vec![0; 30];
+        pings[29] = 1001;
+        let timing = super::wol_start_timing(2, pings, true);
+        assert_eq!(timing.latency_fudge, 2);
+        assert!(timing.set_timing.is_some());
+        assert_eq!(timing.max_ahead, 30);
+    }
+
+    #[test]
     fn wol_start_timing_matches_original_start_game_now_block() {
         let corpus = crate::test_fixture::json("tools/storage_oracle/wol_shell.json");
         let cases = corpus["timing"].as_array().unwrap();
@@ -743,7 +747,7 @@ mod tests {
             let pings: Vec<i32> = case["pings"].as_array().unwrap().iter().map(int).collect();
             let result = super::wol_start_timing(
                 int(&case["game_speed"]),
-                pings.try_into().unwrap(),
+                pings,
                 case["channel_owner"].as_bool().unwrap(),
             );
             let set_timing = case["set_timing"]

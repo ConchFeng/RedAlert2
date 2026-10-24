@@ -13,20 +13,46 @@ const FRAME_TIMER_WINDOW: usize = 60;
 ///
 /// The spans are wall time from `presentation::render::render_game`; this meter
 /// only averages them, so a single slow frame cannot mislead the report.
-#[cfg(feature = "telemetry-dashboard")]
+#[cfg(any(feature = "telemetry-dashboard", target_os = "horizon"))]
 #[derive(Clone, Copy, Default)]
 pub(crate) struct RenderTimingMeter {
     frames: u32,
     sums: [Duration; 7],
+    #[cfg(target_os = "horizon")]
+    next_log: Option<Instant>,
 }
 
-#[cfg(feature = "telemetry-dashboard")]
+#[cfg(any(feature = "telemetry-dashboard", target_os = "horizon"))]
 impl RenderTimingMeter {
     /// Fold one finished render into the totals.
     pub(crate) fn record(&mut self, phases: crate::app::presentation::render::RenderPhases) {
         self.frames = self.frames.saturating_add(1);
         for (sum, span) in self.sums.iter_mut().zip(phases.spans()) {
             *sum += span;
+        }
+        #[cfg(target_os = "horizon")]
+        {
+            let now = Instant::now();
+            let next_log = *self
+                .next_log
+                .get_or_insert_with(|| now + Duration::from_secs(10));
+            if now >= next_log {
+                let [world, debug, shroud, ui, sidebar, upload, other] =
+                    self.mean_ms().unwrap_or_default();
+                log::info!(
+                    target: "switch::perf",
+                    "Render CPU average over {} frames: world={world:.2}ms \
+                     debug={debug:.2}ms shroud={shroud:.2}ms ui={ui:.2}ms \
+                     sidebar={sidebar:.2}ms upload={upload:.2}ms other={other:.2}ms \
+                     total={:.2}ms",
+                    self.frames,
+                    world + debug + shroud + ui + sidebar + upload + other,
+                );
+                *self = Self {
+                    next_log: Some(now + Duration::from_secs(10)),
+                    ..Default::default()
+                };
+            }
         }
     }
 
@@ -45,6 +71,7 @@ impl RenderTimingMeter {
     }
 
     /// The wire form: per-render means, or `None` before the first render.
+    #[cfg(feature = "telemetry-dashboard")]
     pub(crate) fn report(&self) -> Option<crate::sim::telemetry::RenderTimingReport> {
         let means = self.mean_ms()?;
         Some(crate::sim::telemetry::RenderTimingReport {
@@ -132,7 +159,7 @@ pub(crate) struct DiagnosticsState {
     pub(crate) parity_digest_sink: Option<crate::sim::parity_digest::ParityDigestSink>,
     /// Rolling frame-time statistics for map observation metadata.
     pub(crate) frame_timer: FrameTimer,
-    #[cfg(feature = "telemetry-dashboard")]
+    #[cfg(any(feature = "telemetry-dashboard", target_os = "horizon"))]
     pub(crate) render_timing: RenderTimingMeter,
     /// The last render breakdown with samples. A hidden window stops rendering,
     /// and report samples close the live window, so the dashboard keeps the
@@ -189,7 +216,7 @@ impl DiagnosticsState {
             debug_show_foot_path: false,
             parity_digest_sink,
             frame_timer: FrameTimer::new(),
-            #[cfg(feature = "telemetry-dashboard")]
+            #[cfg(any(feature = "telemetry-dashboard", target_os = "horizon"))]
             render_timing: Default::default(),
             #[cfg(feature = "telemetry-dashboard")]
             render_report_cache: None,

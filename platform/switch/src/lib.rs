@@ -36,16 +36,52 @@ mod gpu;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod gpu_frontend;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
+mod live_frontend;
+#[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod render;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod retail_objects;
 #[cfg(all(target_os = "horizon", feature = "gpu"))]
 mod sidebar_frontend;
-#[cfg(all(target_os = "horizon", feature = "gpu"))]
-mod live_frontend;
 
 use std::path::Path;
 use vera20k_core::{assets::mix_archive::MixArchive, assets::mix_hash::mix_hash};
+
+// getrandom 0.3.x custom backend for Horizon: delegates to csrngGetRandomBytes.
+// Required whenever getrandom_backend="custom" is set (Switch client build).
+#[cfg(all(target_os = "horizon", getrandom_backend = "custom"))]
+#[unsafe(no_mangle)]
+unsafe extern "Rust" fn __getrandom_v03_custom(
+    dest: *mut u8,
+    len: usize,
+) -> Result<(), getrandom::Error> {
+    unsafe extern "C" {
+        fn csrngGetRandomBytes(out: *mut u8, size: usize) -> u32;
+    }
+    let rc = unsafe { csrngGetRandomBytes(dest, len) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(getrandom::Error::UNEXPECTED)
+    }
+}
+
+// The HTTPS provider uses getrandom 0.2; it needs the same platform entropy.
+#[cfg(target_os = "horizon")]
+fn platform_getrandom_02(dest: &mut [u8]) -> Result<(), getrandom_02::Error> {
+    unsafe extern "C" {
+        fn csrngGetRandomBytes(out: *mut u8, size: usize) -> u32;
+    }
+    let rc = unsafe { csrngGetRandomBytes(dest.as_mut_ptr(), dest.len()) };
+    if rc == 0 {
+        Ok(())
+    } else {
+        Err(getrandom_02::Error::UNSUPPORTED)
+    }
+}
+
+#[cfg(target_os = "horizon")]
+getrandom_02::register_custom_getrandom!(platform_getrandom_02);
 
 #[cfg(any(target_os = "horizon", test))]
 fn retail_probe(directory: &Path) -> Result<Vec<String>, Box<dyn std::error::Error>> {

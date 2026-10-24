@@ -315,6 +315,9 @@ pub struct BaseReservationState {
     min_y: i32,
     width: i32,
     height: i32,
+    /// Primary vector House+5720 (items5724, count5730), maintained by
+    /// Mark455F10/Clear4561F0 and consumed by FindBaseBuildingSite5060B0.
+    /// The separate defense-candidate vector+5738 is not this authority.
     perimeter_cells: Vec<u32>,
 }
 
@@ -339,6 +342,12 @@ impl BaseReservationState {
     pub(crate) fn update_bounds(&mut self, start_x: i32, start_y: i32, width: i32, height: i32) {
         Self::update_axis(&mut self.min_x, &mut self.width, start_x, width);
         Self::update_axis(&mut self.min_y, &mut self.height, start_y, height);
+    }
+
+    /// Original HouseClass::AI_ScanBasePerimeter508BA2..508BCC replaces
+    /// the four committed bounds after appending all generated plan nodes.
+    pub(crate) fn commit_perimeter_expansion(&mut self, bounds: (i32, i32, i32, i32)) {
+        (self.min_x, self.min_y, self.width, self.height) = bounds;
     }
 
     pub(crate) fn append_perimeter_cell_if_absent(&mut self, packed_cell: u32) {
@@ -2292,6 +2301,19 @@ impl HouseState {
     /// `HouseClass__Update @ 0x004F8440` inlines the same branch shape.
     pub const fn is_controlled_by_human(&self, game_mode_nonzero: bool) -> bool {
         self.is_human || (!game_mode_nonzero && self.player_control)
+    }
+
+    /// HouseClass's power (AI_AssessPower508CBD..508CF0), radar
+    /// (UpdateTacticalRadarAvailability508ECD..508EF1) and SpySat
+    /// (Update_SpySat508FA2..508FDF) scans share this discovery admission.
+    /// Source: original gamemd instructions. Noncampaign scans admit hidden
+    /// providers, including the current player's; campaign computer Houses
+    /// do too. Only controlled campaign Houses require Techno+41B.
+    pub(crate) const fn building_services_require_discovery(
+        &self,
+        game_mode_nonzero: bool,
+    ) -> bool {
+        !game_mode_nonzero && self.is_controlled_by_human(game_mode_nonzero)
     }
 
     /// The cell the house bases itself around: the alternate base centre

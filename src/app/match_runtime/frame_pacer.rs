@@ -62,16 +62,26 @@ pub(crate) fn wall_clock_ms() -> u64 {
     }
 }
 
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub(crate) struct LocalFramePacer {
+    /// A display-limited platform needs a clock for the normally untimed
+    /// fastest setting too; otherwise its Logic cadence follows its presents.
+    pace_fastest: bool,
     /// Start bucket of the last admitted frame. Presentation interpolation and
     /// diagnostics read this, so it always holds a real admission time.
     last_frame_start_bucket: Option<u32>,
+    last_frame_start_ms: Option<u32>,
     /// Earliest bucket at which the next frame may run. Distinct from the
     /// interpolation origin: a present that took several pacing windows leaves
     /// this behind the wall clock, and the owed frames are admitted without
     /// stretching game time.
     next_admit_bucket: Option<u32>,
+}
+
+impl Default for LocalFramePacer {
+    fn default() -> Self {
+        Self::new()
+    }
 }
 
 /// App-owned elapsed-time clock used by the end-of-match score dialog.
@@ -215,24 +225,44 @@ impl ScenarioElapsedClock {
 
 impl LocalFramePacer {
     pub(crate) const fn new() -> Self {
+        Self::with_fastest_pacing(cfg!(target_os = "horizon"))
+    }
+
+    const fn with_fastest_pacing(pace_fastest: bool) -> Self {
         Self {
+            pace_fastest,
             last_frame_start_bucket: None,
+            last_frame_start_ms: None,
             next_admit_bucket: None,
         }
     }
 
+    /// Buckets one admitted frame consumes, or `None` for an untimed setting.
+    fn window_buckets(&self, game_speed: u8) -> Option<u32> {
+        if game_speed == 0 && !self.pace_fastest {
+            return None;
+        }
+        // Fastest runs at the first timed window, matching a 60 Hz PC present.
+        Some(
+            game_speed
+                .clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED)
+                .into(),
+        )
+    }
+
     /// Read the same bucket interval used by `should_admit`, for diagnostics.
-    pub(crate) fn budget_ms(&self, game_speed: u8) -> Option<f32> {
-        (game_speed != 0).then(|| {
-            f32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED))
-                * FRAME_BUCKET_MS as f32
-        })
+    pub(crate) fn budget_ms(&self, game_speed: u8, network_fps: Option<(u16, u32)>) -> Option<f32> {
+        if let Some((fps, delay)) = network_fps {
+            return Some(network_interval_ms(fps).saturating_add(delay) as f32);
+        }
+        self.window_buckets(game_speed)
+            .map(|buckets| buckets as f32 * FRAME_BUCKET_MS as f32)
     }
 
     /// Logic frames per second the pacer admits at this speed, for diagnostics.
     /// A match clock that advances slower than this is running in slow motion.
     pub(crate) fn target_logic_rate(&self, game_speed: u8) -> f64 {
-        self.budget_ms(game_speed)
+        self.budget_ms(game_speed, None)
             .map_or(0.0, |budget_ms| 1000.0 / f64::from(budget_ms))
     }
 
@@ -243,26 +273,41 @@ impl LocalFramePacer {
     /// catch-up restores the frame count at a low present rate. Untimed
     /// scenarios fall back to the deterministic tooling step.
     pub(crate) fn frame_tick_ms(&self, game_speed: u8) -> u32 {
-        if game_speed == 0 {
-            return crate::app::types::SIM_TICK_MS;
-        }
-        u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED))
-            * FRAME_BUCKET_MS as u32
+        self.window_buckets(game_speed)
+            .map_or(crate::app::types::SIM_TICK_MS, |buckets| {
+                buckets * FRAME_BUCKET_MS as u32
+            })
     }
 
     /// Read-only presentation phase of the existing bucket-paced frame.
     /// Use the pacer's bucket origin, not the end of a potentially expensive
     /// simulation/render preparation, to avoid restarting visual time late.
     pub(crate) fn interpolation_elapsed_ms(&self, now_ms: u64) -> Option<u32> {
-        self.last_frame_start_bucket
-            .map(|bucket| (now_ms as u32).wrapping_sub(bucket << FRAME_BUCKET_SHIFT))
+        self.last_frame_start_ms.map(|ms| {
+            (now_ms as u32).wrapping_sub((ms >> FRAME_BUCKET_SHIFT) << FRAME_BUCKET_SHIFT)
+        })
     }
 
-    pub(crate) fn should_admit(&self, now_ms: u64, game_speed: u8, paused: bool) -> bool {
+    pub(crate) fn should_admit(
+        &self,
+        now_ms: u64,
+        game_speed: u8,
+        network_fps: Option<(u16, u32)>,
+        paused: bool,
+    ) -> bool {
         if paused {
             return false;
         }
-        if game_speed == 0 {
+        // MainTick55D4FB chooses 1000/FPS for network games, and
+        // MainThrottle55E1BC consumes that millisecond timer. Offline pacing
+        // retains its distinct 16ms bucket clock (55E2B4).
+        if let Some((fps, delay)) = network_fps {
+            return self.last_frame_start_ms.is_none_or(|last| {
+                (now_ms as u32).wrapping_sub(last) as i32
+                    >= network_interval_ms(fps).saturating_add(delay) as i32
+            });
+        }
+        if self.window_buckets(game_speed).is_none() {
             return true;
         }
         let Some(next_bucket) = self.next_admit_bucket else {
@@ -281,8 +326,13 @@ impl LocalFramePacer {
     /// game time. Retail ties one Logic pass to one present, which is
     /// indistinguishable at 60 Hz; below that it runs the match in slow motion.
     pub(crate) fn record_admitted_frame(&mut self, frame_start_ms: u64, game_speed: u8) {
+        self.last_frame_start_ms = Some(frame_start_ms as u32);
         let now_bucket = frame_bucket(frame_start_ms);
-        let required = u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
+        let Some(required) = self.window_buckets(game_speed) else {
+            self.last_frame_start_bucket = Some(now_bucket);
+            self.next_admit_bucket = None;
+            return;
+        };
         self.last_frame_start_bucket = Some(now_bucket);
         self.next_admit_bucket = Some(match self.next_admit_bucket {
             // One admission consumes exactly one window, so the debt left by a
@@ -296,6 +346,7 @@ impl LocalFramePacer {
     /// Forget the prior pacing window so the next unpaused frame runs now.
     pub(crate) fn reset_for_immediate_frame(&mut self) {
         self.last_frame_start_bucket = None;
+        self.last_frame_start_ms = None;
         self.next_admit_bucket = None;
     }
 
@@ -304,19 +355,29 @@ impl LocalFramePacer {
     /// This is for explicit single-step/capture work. Normal match entry and
     /// modal resume use `reset_for_immediate_frame`.
     pub(crate) fn reanchor(&mut self, now_ms: u64, game_speed: u8) {
+        self.last_frame_start_ms = Some(now_ms as u32);
         let now_bucket = frame_bucket(now_ms);
-        let required = u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED));
+        let required = self.window_buckets(game_speed).unwrap_or(1);
         self.last_frame_start_bucket = Some(now_bucket);
         self.next_admit_bucket = Some(now_bucket.wrapping_add(required));
     }
 
     #[cfg(test)]
     fn next_deadline_ms(&self, game_speed: u8) -> Option<u64> {
-        if game_speed == 0 {
+        if self.window_buckets(game_speed).is_none() {
             return None;
         }
         let next_bucket = self.next_admit_bucket?;
         Some(u64::from(next_bucket) * FRAME_BUCKET_MS)
+    }
+}
+
+fn network_interval_ms(frames_per_second: u16) -> u32 {
+    // MainTick55D499 has the explicit FPS0 fallback of33 milliseconds.
+    if frames_per_second == 0 {
+        33
+    } else {
+        1000 / u32::from(frames_per_second)
     }
 }
 
@@ -330,8 +391,53 @@ pub(crate) fn wall_clock_bucket() -> u32 {
 }
 
 #[cfg(test)]
+#[path = "frame_pacer_movement_tests.rs"]
+mod movement_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn network_fps_uses_millisecond_timer_and_resets_for_rematch() {
+        let mut pacer = LocalFramePacer::new();
+        pacer.record_admitted_frame(17, 1);
+        assert!(!pacer.should_admit(38, 0, Some((45, 0)), false));
+        assert!(pacer.should_admit(39, 6, Some((45, 0)), false));
+        assert_eq!(pacer.budget_ms(0, Some((45, 0))), Some(22.0));
+        assert!(!pacer.should_admit(68, 0, Some((45, 30)), false));
+        assert!(pacer.should_admit(69, 0, Some((45, 30)), false));
+        assert!(!pacer.should_admit(49, 0, Some((0, 0)), false));
+        assert!(pacer.should_admit(50, 0, Some((0, 0)), false));
+        pacer.record_admitted_frame(u64::from(u32::MAX - 7), 1);
+        assert!(pacer.should_admit(8, 6, Some((60, 0)), false));
+        pacer.reset_for_immediate_frame();
+        assert!(pacer.should_admit(8, 6, Some((30, 0)), false));
+    }
+
+    #[test]
+    fn fastest_on_a_limited_display_has_the_same_logic_cadence_as_speed_one() {
+        let mut limited = LocalFramePacer::with_fastest_pacing(true);
+        let mut desktop = LocalFramePacer::with_fastest_pacing(false);
+        assert_eq!(limited.budget_ms(0, None), Some(16.0));
+        assert_eq!(desktop.budget_ms(0, None), None);
+        assert_eq!(limited.frame_tick_ms(0), limited.frame_tick_ms(1));
+        limited.record_admitted_frame(0, 0);
+        desktop.record_admitted_frame(0, 0);
+        assert!(!limited.should_admit(0, 0, None, false));
+        assert!(desktop.should_admit(0, 0, None, false));
+        assert!(limited.should_admit(40, 0, None, false));
+        limited.record_admitted_frame(40, 0);
+        assert!(
+            limited.should_admit(40, 0, None, false),
+            "a second Logic frame is owed"
+        );
+        limited.record_admitted_frame(40, 0);
+        assert!(!limited.should_admit(40, 0, None, false));
+        assert!(!limited.should_admit(100, 0, None, true));
+        limited.reset_for_immediate_frame();
+        assert!(limited.should_admit(100, 0, None, false));
+    }
 
     #[test]
     fn render_interpolation_phase_uses_pacing_bucket_and_wraps_with_uptime() {
@@ -390,21 +496,21 @@ mod tests {
             let mut pacer = LocalFramePacer::new();
             pacer.record_admitted_frame(32, speed);
             let deadline = 32 + u64::from(speed) * FRAME_BUCKET_MS;
-            assert!(!pacer.should_admit(deadline - 1, speed, false));
-            assert!(pacer.should_admit(deadline, speed, false));
+            assert!(!pacer.should_admit(deadline - 1, speed, None, false));
+            assert!(pacer.should_admit(deadline, speed, None, false));
             assert_eq!(pacer.next_deadline_ms(speed), Some(deadline));
         }
     }
 
     #[test]
     fn frame_tick_matches_the_pacing_window_at_every_speed() {
-        let pacer = LocalFramePacer::new();
+        let pacer = LocalFramePacer::with_fastest_pacing(false);
         assert_eq!(pacer.frame_tick_ms(0), crate::app::types::SIM_TICK_MS);
         for (speed, expected_ms) in (1..=6).zip([16, 32, 48, 64, 80, 96]) {
             assert_eq!(pacer.frame_tick_ms(speed), expected_ms);
             assert_eq!(
                 Some(pacer.frame_tick_ms(speed) as f32),
-                pacer.budget_ms(speed)
+                pacer.budget_ms(speed, None)
             );
         }
     }
@@ -414,7 +520,7 @@ mod tests {
         let mut pacer = LocalFramePacer::new();
         pacer.record_admitted_frame(u64::from(u32::MAX - 7), 1);
 
-        assert!(!pacer.should_admit(u64::from(u32::MAX) + 1, 1, false));
+        assert!(!pacer.should_admit(u64::from(u32::MAX) + 1, 1, None, false));
     }
 
     #[test]
@@ -424,52 +530,63 @@ mod tests {
         // the anchor forward by two windows at once.
         let mut pacer = LocalFramePacer::new();
         pacer.record_admitted_frame(0, 1);
-        assert!(pacer.should_admit(33, 1, false));
+        assert!(pacer.should_admit(33, 1, None, false));
         pacer.record_admitted_frame(33, 1);
         assert!(
-            pacer.should_admit(33, 1, false),
+            pacer.should_admit(33, 1, None, false),
             "the window the present consumed is still owed"
         );
         pacer.record_admitted_frame(33, 1);
-        assert!(!pacer.should_admit(33, 1, false));
+        assert!(!pacer.should_admit(33, 1, None, false));
         // One admission consumes exactly one window, so a long stall leaves a
         // finite backlog instead of one huge jump.
         pacer.record_admitted_frame(97, 1);
         assert_eq!(pacer.next_deadline_ms(1), Some(64));
     }
 
-    #[test]
-    fn twenty_five_hz_presents_still_run_sixty_logic_frames() {
+    fn run_twenty_five_presents(pace_fastest: bool, game_speed: u8) -> (usize, u32) {
         // Horizon can present at 25 Hz while the match must keep its 60 Hz
         // Logic clock. Each present services its own admission and then drains
         // up to four owed frames, as render_frame does after presenting.
-        let mut pacer = LocalFramePacer::new();
+        let mut pacer = LocalFramePacer::with_fastest_pacing(pace_fastest);
         let mut logic_frames = 0;
         let mut represented_ms = 0;
         for present in 0..25 {
             let now_ms = present * 40;
-            if pacer.should_admit(now_ms, 1, false) {
-                pacer.record_admitted_frame(now_ms, 1);
+            if pacer.should_admit(now_ms, game_speed, None, false) {
+                pacer.record_admitted_frame(now_ms, game_speed);
                 logic_frames += 1;
-                represented_ms += pacer.frame_tick_ms(1);
+                represented_ms += pacer.frame_tick_ms(game_speed);
+            }
+            // catch_up_match_runtime leaves a desktop's untimed setting alone.
+            if !pace_fastest && game_speed == 0 {
+                continue;
             }
             for _ in 0..4 {
-                if !pacer.should_admit(now_ms, 1, false) {
+                if !pacer.should_admit(now_ms, game_speed, None, false) {
                     break;
                 }
-                pacer.record_admitted_frame(now_ms, 1);
+                pacer.record_admitted_frame(now_ms, game_speed);
                 logic_frames += 1;
-                represented_ms += pacer.frame_tick_ms(1);
+                represented_ms += pacer.frame_tick_ms(game_speed);
             }
         }
+        (logic_frames, represented_ms)
+    }
 
+    #[test]
+    fn twenty_five_hz_presents_still_run_full_logic_rate() {
+        // An untimed desktop setting follows its presents; on a 25 Hz port that
+        // is 25 Logic frames a second, which is the reported half-speed move.
+        assert_eq!(run_twenty_five_presents(false, 0).0, 25);
+        let (logic_frames, represented_ms) = run_twenty_five_presents(true, 0);
         assert_eq!(
             logic_frames, 61,
-            "one simulated second at 25 fps must run the 61 frames due from buckets 0..=60"
+            "paced fastest must run the 61 frames due from buckets 0..=60"
         );
         assert!(
-            represented_ms.abs_diff(1_000) <= pacer.frame_tick_ms(1) * 2,
-            "the admitted frames must carry about one second, got {represented_ms} ms"
+            represented_ms.abs_diff(1_000) <= 32,
+            "paced fastest must carry about one second, got {represented_ms} ms"
         );
     }
 
@@ -480,7 +597,7 @@ mod tests {
             let mut represented_ms = 0;
             for present in 0..25 {
                 let now_ms = present * 40;
-                while pacer.should_admit(now_ms, speed, false) {
+                while pacer.should_admit(now_ms, speed, None, false) {
                     pacer.record_admitted_frame(now_ms, speed);
                     represented_ms += pacer.frame_tick_ms(speed);
                 }

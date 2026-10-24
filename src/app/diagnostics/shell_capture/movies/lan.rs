@@ -76,10 +76,19 @@ impl Drop for OwnedTransferFile {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LanTarget {
+    OnlineHost,
+    OnlineGuest,
+    OnlineTimeoutHost,
+    OnlineQuitHost,
+    /// Runs through the real300-frame prefix and remains in the live match
+    /// until the external test driver kills it or blackholes its UDP route.
+    OnlineFailureGuest,
     LiveHost,
     LiveGuest,
     LiveTimeoutHost,
     LiveQuitHost,
+    LiveDesyncHost,
+    LiveDesyncGuest,
     BattleHost,
     BattleGuest,
     Lobby,
@@ -202,10 +211,17 @@ pub enum LanTarget {
 }
 
 pub(crate) const LAN_CHECKPOINTS: &[(&str, LanTarget)] = &[
+    ("online-live-host", LanTarget::OnlineHost),
+    ("online-live-guest", LanTarget::OnlineGuest),
+    ("online-live-timeout-host", LanTarget::OnlineTimeoutHost),
+    ("online-live-quit-host", LanTarget::OnlineQuitHost),
+    ("online-live-failure-guest", LanTarget::OnlineFailureGuest),
     ("lan-live-host", LanTarget::LiveHost),
     ("lan-live-guest", LanTarget::LiveGuest),
     ("lan-live-timeout-host", LanTarget::LiveTimeoutHost),
     ("lan-live-quit-host", LanTarget::LiveQuitHost),
+    ("lan-live-desync-host", LanTarget::LiveDesyncHost),
+    ("lan-live-desync-guest", LanTarget::LiveDesyncGuest),
     ("lan-battle-host", LanTarget::BattleHost),
     ("lan-battle-guest", LanTarget::BattleGuest),
     ("lan-0xbb-steady", LanTarget::Lobby),
@@ -295,13 +311,42 @@ pub(crate) const LAN_CHECKPOINTS: &[(&str, LanTarget)] = &[
     ),
 ];
 impl LanTarget {
+    pub(crate) fn online(self) -> bool {
+        matches!(
+            self,
+            Self::OnlineHost
+                | Self::OnlineGuest
+                | Self::OnlineTimeoutHost
+                | Self::OnlineQuitHost
+                | Self::OnlineFailureGuest
+        )
+    }
+    pub(crate) fn online_failure(self) -> bool {
+        matches!(
+            self,
+            Self::OnlineTimeoutHost | Self::OnlineQuitHost | Self::OnlineFailureGuest
+        )
+    }
+    pub(crate) fn online_guest(self) -> bool {
+        matches!(self, Self::OnlineGuest | Self::OnlineFailureGuest)
+    }
+    pub(crate) fn desync_failure(self) -> bool {
+        matches!(self, Self::LiveDesyncHost | Self::LiveDesyncGuest)
+    }
     pub(crate) fn live(self) -> bool {
         matches!(
             self,
-            Self::LiveHost
+            Self::OnlineHost
+                | Self::OnlineGuest
+                | Self::OnlineTimeoutHost
+                | Self::OnlineQuitHost
+                | Self::OnlineFailureGuest
+                | Self::LiveHost
                 | Self::LiveGuest
                 | Self::LiveTimeoutHost
                 | Self::LiveQuitHost
+                | Self::LiveDesyncHost
+                | Self::LiveDesyncGuest
                 | Self::BattleHost
                 | Self::BattleGuest
         )
@@ -432,14 +477,8 @@ enum LanPhase {
     Ally(u8),
     /// Taunt step `n` (one per frame).
     Taunt(u8),
-    /// The host's chooser is opening for Create Random Map.
-    RandomMapChooser,
-    /// `0x105` over BC: Generate, then Use Map once generated.
-    RandomMapDialog {
-        generate_pressed: bool,
-    },
-    /// Use Map pressed: waiting for BC to settle with the random map.
-    RandomMapReturn,
+    /// Normal Create Random Map -> Generate -> Use Map input.
+    RandomMap,
     /// The peer resumed at `tick`: waiting for 0xEA to close and a frame.
     Resumed {
         tick: u64,
@@ -472,6 +511,7 @@ pub(super) struct LanCapture {
     offline_selection: Option<(i32, usize)>,
     /// The random-map route has committed `RandMap.Sed` to BC.
     random_map_committed: bool,
+    random_map_input: Option<RandomMapInput>,
     random_map_host: Option<ControlledRandomMap>,
     /// The Cooperative route has used its campaign row on BC.
     cooperative_committed: bool,
@@ -479,8 +519,14 @@ pub(super) struct LanCapture {
     cooperative_first_map: Option<String>,
 }
 impl LanCapture {
-    pub(super) fn configure_live(&mut self, config: Option<super::super::LiveLanConfig>) {
-        if self.target.live() {
+    pub(super) fn configure_live(
+        &mut self,
+        config: Option<super::super::LiveLanConfig>,
+        online: Option<super::super::LiveOnlineConfig>,
+    ) {
+        if self.target.online() {
+            self.live = online.map(|config| live::LiveLanCapture::new_online(self.target, config));
+        } else if self.target.live() {
             self.live = config.map(|config| live::LiveLanCapture::new(self.target, config));
         }
     }
@@ -500,6 +546,7 @@ impl LanCapture {
             loading_wait_reported_at: None,
             offline_selection: None,
             random_map_committed: false,
+            random_map_input: None,
             random_map_host: None,
             cooperative_committed: false,
             cooperative_first_map: None,
@@ -512,6 +559,12 @@ impl LanCapture {
         }
     }
     pub(super) fn timeout(&self) -> Duration {
+        if self.target.online()
+            || self.target.desync_failure()
+            || matches!(self.target, LanTarget::LiveHost | LanTarget::LiveGuest)
+        {
+            return Duration::from_secs(2400);
+        }
         if self.target.live() {
             // Only the extended diagnostic opening gets more wall time;
             // network and production deadlines remain their ordinary owners.
@@ -658,7 +711,8 @@ impl LanCapture {
         Ok(launch)
     }
     fn publish_setup(&self, state: &mut AppState, launch: SkirmishLaunchSession) -> Result<()> {
-        let mut vacancies = [NetworkVacancy::Open; 8];
+        let mut vacancies =
+            [NetworkVacancy::Open; crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT];
         vacancies[7] = NetworkVacancy::Closed;
         setup::service_event(
             state,
@@ -752,6 +806,8 @@ impl LanCapture {
                 official: true,
                 byte_length: random_map.sed.len() as i32,
                 digest: random_map.digest.clone(),
+                source_sha256: String::new(),
+                effective_digest: String::new(),
             });
         }
         let values = &self.inputs["host_options"];
@@ -771,6 +827,8 @@ impl LanCapture {
                 .as_str()
                 .context("native advertised digest")?
                 .into(),
+            source_sha256: String::new(),
+            effective_digest: String::new(),
         })
     }
     fn assert_map_absent(&self, state: &AppState) -> Result<PathBuf> {
@@ -1059,7 +1117,9 @@ impl LanCapture {
     fn prepare_controlled_random_map(&mut self, state: &mut AppState) -> Result<()> {
         struct Silent;
         impl crate::app::loading::pump::LoadingProgressSink for Silent {
-            fn milestone(&mut self, _percent: u32) {}
+            fn milestone(&mut self, _percent: u32) -> anyhow::Result<()> {
+                Ok(())
+            }
         }
         let host_dir = Self::isolated_root(state)?.join(CONTROLLED_HOST_DIR);
         fs::create_dir_all(&host_dir)?;
@@ -1302,6 +1362,7 @@ impl LanCapture {
             path,
             payload_len,
             source_sha256,
+            ..
         } = source
         else {
             bail!("transferred map was not parsed from the delivered loose file")
@@ -1731,7 +1792,8 @@ impl LanCapture {
                     }
                     LanTarget::HostRandomMap if !self.random_map_committed => {
                         setup_button(state, crate::ui::multiplayer_setup::CHOOSE_MAP)?;
-                        self.phase = LanPhase::RandomMapChooser;
+                        self.random_map_input = Some(RandomMapInput::new(None));
+                        self.phase = LanPhase::RandomMap;
                     }
                     target if target.cooperative_host() && !self.cooperative_committed => {
                         self.offline_selection = Some(offline_selection(state));
@@ -3252,7 +3314,11 @@ impl LanCapture {
                     self.inputs["host_name"].as_str().unwrap_or_default(),
                     self.inputs["peer_name"].as_str().unwrap_or_default(),
                 ];
-                ensure!(page.rows == names, "0xEA rows {:?}", page.rows);
+                ensure!(
+                    page.rows.iter().map(|row| row.name.as_str()).eq(names),
+                    "0xEA rows {:?}",
+                    page.rows
+                );
                 let label = |key: &str| App::csf_label(state, key, key);
                 let countdown = page.countdown.clone().unwrap_or_default();
                 ensure!(
@@ -3301,7 +3367,9 @@ impl LanCapture {
                     })
                     .context("0xEA has no loaded hit geometry")?;
                 self.route.push(json!({"frame":frame,"action":"0xEA opened",
-                    "waited_ms":waited.as_millis(),"tick":tick,"rows":page.rows,
+                    "waited_ms":waited.as_millis(),"tick":tick,
+                    "rows":page.rows.iter().map(|row| row.name.as_str()).collect::<Vec<_>>(),
+                    "row_sources":page.rows.iter().map(|row| row.source_index).collect::<Vec<_>>(),
                     "countdown":countdown,"list":listed}));
                 let vote_template = label("TXT_RECONNECT_KICK_RECEIVED");
                 match self.target {
@@ -3782,73 +3850,12 @@ impl LanCapture {
                     self.phase = LanPhase::Returned;
                 }
             }
-            LanPhase::RandomMapChooser
-                if rendered == PresentedShell::NetworkSetup
-                    && MoviesCapture::slide_settled(state, ShellSlideKind::ChooseMap)
-                    && state
-                        .frontend
-                        .skirmish_shell_state
-                        .choose_map_modal
-                        .as_ref()
-                        .is_some_and(|modal| modal.statics.is_terminal()) =>
-            {
-                let point = super::super::skirmish::CREATE_RANDOM_MAP_POINT;
-                random_map_click(state, point, true);
-                ensure!(
-                    state.frontend.shell_exit.is_some(),
-                    "Create Random Map did not start the chooser's teardown slide"
-                );
-                self.event(frame, "chooser Create Random Map");
-                self.phase = LanPhase::RandomMapDialog {
-                    generate_pressed: false,
-                };
-            }
-            LanPhase::RandomMapDialog { generate_pressed }
-                if state.frontend.shell_first_paint_slide.is_none()
-                    && state.frontend.shell_exit.is_none()
-                    && state.frontend.shell_slide_active_shell
-                        == Some(ShellSlideKind::RandomMap)
-                    && state
-                        .frontend
-                        .skirmish_shell_state
-                        .random_map_setup_modal
-                        .as_ref()
-                        .is_some_and(|setup| setup.statics.is_terminal()) =>
-            {
-                let generated = state
-                    .frontend
-                    .skirmish_shell_state
-                    .random_map_setup_modal
-                    .as_ref()
-                    .is_some_and(|setup| setup.generated && !setup.generating);
-                if !generate_pressed {
-                    random_map_click(
-                        state,
-                        super::super::skirmish::RANDOM_MAP_GENERATE_POINT,
-                        false,
-                    );
-                    self.event(frame, "0x105 Generate Map");
-                    self.phase = LanPhase::RandomMapDialog {
-                        generate_pressed: true,
-                    };
-                } else if generated {
-                    random_map_click(
-                        state,
-                        super::super::skirmish::RANDOM_MAP_USE_MAP_POINT,
-                        false,
-                    );
-                    self.event(frame, "0x105 Use Map");
-                    self.phase = LanPhase::RandomMapReturn;
-                }
-            }
-            LanPhase::RandomMapReturn
-                if rendered == PresentedShell::NetworkSetup
-                    && setup_settled(state, true)
-                    && state
-                        .frontend
-                        .skirmish_shell_state
-                        .random_map_setup_modal
-                        .is_none() =>
+            LanPhase::RandomMap
+                if self
+                    .random_map_input
+                    .as_mut()
+                    .context("random map input")?
+                    .after_present(state, frame, &mut self.route)? =>
             {
                 let launch = state.match_state.session.network_setup().context("BC")?;
                 ensure!(
@@ -4490,6 +4497,137 @@ fn lobby_settled(state: &AppState) -> bool {
     MoviesCapture::slide_settled(state, ShellSlideKind::LanLobby)
         && state.frontend.shell_page_title.is_terminal()
 }
+/// Shared production input sequence for both native LAN movies and real
+/// network runs. The generator and its accepted artifacts remain app-owned.
+struct RandomMapInput {
+    phase: u8,
+    players: Option<usize>,
+}
+impl RandomMapInput {
+    fn new(players: Option<usize>) -> Self {
+        Self { phase: 0, players }
+    }
+    fn after_present(
+        &mut self,
+        state: &mut AppState,
+        frame: u32,
+        route: &mut Vec<Value>,
+    ) -> Result<bool> {
+        match self.phase {
+            0 if MoviesCapture::slide_settled(state, ShellSlideKind::ChooseMap)
+                && state
+                    .frontend
+                    .skirmish_shell_state
+                    .choose_map_modal
+                    .as_ref()
+                    .is_some_and(|modal| modal.statics.is_terminal()) =>
+            {
+                random_map_click(state, super::super::skirmish::CREATE_RANDOM_MAP_POINT, true);
+                ensure!(
+                    state.frontend.shell_exit.is_some(),
+                    "Create Random Map did not close chooser"
+                );
+                route.push(json!({"frame":frame,"action":"chooser Create Random Map"}));
+                self.phase = 1;
+            }
+            1 | 2
+                if state.frontend.shell_first_paint_slide.is_none()
+                    && state.frontend.shell_exit.is_none()
+                    && state.frontend.shell_slide_active_shell
+                        == Some(ShellSlideKind::RandomMap)
+                    && state
+                        .frontend
+                        .skirmish_shell_state
+                        .random_map_setup_modal
+                        .as_ref()
+                        .is_some_and(|modal| modal.statics.is_terminal()) =>
+            {
+                if self.phase == 1 {
+                    if let Some(players) = self.players {
+                        ensure!(
+                            (2..=8).contains(&players),
+                            "random maps support two to eight starts"
+                        );
+                        let layout =
+                            crate::app::frontend::shell_layout::random_map_setup_layout(state);
+                        let slider = layout.control_rects[5];
+                        let x = (slider.x..slider.x + slider.w)
+                            .find(|&x| {
+                                crate::ui::skirmish_shell::PLAYERS_RANGE.value_at_in(
+                                    x,
+                                    slider,
+                                    layout.scale,
+                                ) == players as i32
+                            })
+                            .context("random map player slider position")?;
+                        random_map_click(state, (x, slider.y + slider.h / 2), false);
+                        ensure!(
+                            state
+                                .frontend
+                                .skirmish_shell_state
+                                .random_map_setup_modal
+                                .as_ref()
+                                .is_some_and(|modal| modal.options.num_players == players as i32),
+                            "Players slider did not select the configured count"
+                        );
+                    }
+                    random_map_click(
+                        state,
+                        super::super::skirmish::RANDOM_MAP_GENERATE_POINT,
+                        false,
+                    );
+                    route.push(json!({"frame":frame,"action":"0x105 Generate Map"}));
+                    self.phase = 2;
+                } else if state
+                    .frontend
+                    .skirmish_shell_state
+                    .random_map_setup_modal
+                    .as_ref()
+                    .is_some_and(|modal| modal.generated && !modal.generating)
+                {
+                    random_map_click(
+                        state,
+                        super::super::skirmish::RANDOM_MAP_USE_MAP_POINT,
+                        false,
+                    );
+                    route.push(json!({"frame":frame,"action":"0x105 Use Map"}));
+                    self.phase = 3;
+                }
+            }
+            3 if matches!(
+                state.frontend.shell_slide_active_shell,
+                Some(ShellSlideKind::NetworkSetup(_))
+            ) && state
+                .frontend
+                .skirmish_shell_state
+                .random_map_setup_modal
+                .is_none()
+                && state.frontend.shell_exit.is_none()
+                && state.frontend.shell_first_paint_slide.is_none()
+                && state
+                    .frontend
+                    .multiplayer_setup
+                    .as_ref()
+                    .is_some_and(|ui| ui.statics.is_terminal()) =>
+            {
+                ensure!(
+                    state
+                        .match_state
+                        .session
+                        .network_setup()
+                        .and_then(|launch| launch.selected_map_file.as_deref())
+                        .is_some_and(|file| file
+                            .eq_ignore_ascii_case(crate::map::skirmish_scenarios::RANDMAP_SED)),
+                    "Use Map did not select RandMap.Sed"
+                );
+                self.phase = 4;
+            }
+            _ => {}
+        }
+        Ok(self.phase == 4)
+    }
+}
+
 /// A press and release at `point` through the chooser's (or `0x105`'s)
 /// production handlers, with the pointer moved there first.
 fn random_map_click(state: &mut AppState, point: (i32, i32), chooser: bool) {
@@ -4543,12 +4681,8 @@ fn lobby_button(state: &mut AppState, id: u16) -> Result<()> {
 }
 fn setup_button(state: &mut AppState, id: u16) -> Result<()> {
     let rect = setup_input::layout(state)
-        .page
-        .buttons
-        .into_iter()
-        .find(|b| b.id == id)
-        .context("setup button")?
-        .rect;
+        .control_rect(id)
+        .context("setup button")?;
     setup_click(state, rect);
     Ok(())
 }

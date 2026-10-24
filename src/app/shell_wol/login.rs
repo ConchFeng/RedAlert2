@@ -65,7 +65,11 @@ pub(super) fn open(state: &mut AppState) {
     let Some(visit) = state.frontend.wol.as_mut() else {
         return;
     };
-    let login = WolLoginState::open(&mut state.frontend.wol_account, &visit.credentials);
+    let login = if visit.provider == super::WolProvider::Online {
+        WolLoginState::open_online(&mut state.frontend.wol_account)
+    } else {
+        WolLoginState::open(&mut state.frontend.wol_account, &visit.credentials)
+    };
     visit.page = WolPage::Login(Box::new(login));
     open_login_art(state);
     let _ = App::ensure_skirmish_shell_chrome(state);
@@ -111,7 +115,17 @@ fn dispatch(state: &mut AppState, action: WolLoginAction) {
         }
         // 0x00773E90 needs the registry URL `Manage` and an HTMLPath; a
         // retail install has neither and it returns.
-        WolLoginAction::Manage => {}
+        WolLoginAction::Manage => {
+            if let Some(visit) = state.frontend.wol.as_mut()
+                && visit.provider == super::WolProvider::Online
+            {
+                visit.create_account = true;
+                App::leave_shell_dialog(
+                    state,
+                    shell_transition::ShellExitThen::WolLoginClose(LOGIN),
+                );
+            }
+        }
     }
 }
 

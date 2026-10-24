@@ -8,7 +8,7 @@
 
 use std::collections::HashSet;
 use std::path::Path;
-#[cfg(feature = "telemetry-dashboard")]
+#[cfg(any(feature = "telemetry-dashboard", feature = "horizon-frame-profile"))]
 use std::time::Instant;
 
 use crate::app::AppState;
@@ -22,7 +22,7 @@ use crate::render::unit_atlas;
 use crate::sim::production;
 use crate::sim::replay::ScenarioServiceInput;
 use crate::sim::trigger_runtime::TriggerEffect;
-use crate::sim::world::{FrameEffects, LifecycleOutput, SimFireEvent, SimFrameOutput, TickLane};
+use crate::sim::world::{FrameEffects, LifecycleOutput, SimFrameOutput, TickLane};
 use crate::ui::game_screen::GameScreen;
 
 /// Directory for Rust-only deterministic diagnostic logs.
@@ -800,6 +800,12 @@ fn advance_in_game_runtime_mode(
     startup_admitted: bool,
     main_tick_pumps_audio: bool,
 ) -> bool {
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_started = Instant::now();
+    #[cfg(feature = "horizon-frame-profile")]
+    let mut profile_stages: Option<(std::time::Duration, Instant)> = None;
+    #[cfg(feature = "horizon-frame-profile")]
+    let mut profile_post_phases = [std::time::Duration::ZERO; 10];
     // ExecuteDoList64CD0C is a blocking message box inside this frame. Even
     // exact-step diagnostics must not admit another Logic pass while it waits.
     if super::network_failure::pending(state) {
@@ -830,10 +836,11 @@ fn advance_in_game_runtime_mode(
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
             // Pure timing consult; pause/menu blocking belongs to the decision.
+            let network_fps = super::network_match::frame_budget(state);
             state
                 .platform
                 .frame_pacer
-                .should_admit(now_ms, game_speed, false)
+                .should_admit(now_ms, game_speed, network_fps, false)
         }
         RuntimeAdvanceMode::ExactOneStep => false,
     };
@@ -913,14 +920,28 @@ fn advance_in_game_runtime_mode(
         .scroll_input
         .then(|| crate::app::input::camera::poll_mouse_scroll(state));
     if decision.run_sim {
+        #[cfg(feature = "horizon-frame-profile")]
+        let profile_before_sim = Instant::now();
         let tick_lane = decision.tick_lane;
         let resume = if resume_wait {
             FrameResume::NetworkWait
         } else {
             FrameResume::None
         };
+        let network_paced = super::network_match::frame_budget(state).is_some();
+        if decision.admitted_by_pacer && !resume_wait && network_paced {
+            state
+                .platform
+                .frame_pacer
+                .record_admitted_frame(wall_ms, game_speed);
+        }
         let frame_committed =
             advance_one_simulation_frame(state, tick_lane, mouse_scroll, frame_tick_ms, resume);
+        #[cfg(feature = "horizon-frame-profile")]
+        {
+            let after = Instant::now();
+            profile_stages = Some((after - profile_before_sim, after));
+        }
         if crate::app::App::house_outcome_wait_pending(state) {
             return false;
         }
@@ -932,6 +953,8 @@ fn advance_in_game_runtime_mode(
         if frame_committed && state.diag.telemetry_active() {
             state.match_state.telemetry_tick_rate.record(Instant::now());
         }
+        #[cfg(feature = "horizon-frame-profile")]
+        let profile_sidebar_started = Instant::now();
         crate::app::presentation::sidebar_render::advance_sidebar_credits_after_frame(
             state,
             frame_committed,
@@ -945,32 +968,22 @@ fn advance_in_game_runtime_mode(
                 .match_presentation
                 .sidebar_projection
                 .cameo_recheck_pending();
-            // Native Strip AI6A8CF3 requests redraw throughout the authored
-            // flash window, even with no input. Reuse the one projection owner
-            // only in these windows; ordinary idle ticks do not enumerate cameos.
-            let flashing = state
-                .match_state
-                .sim_runtime
-                .as_ref()
-                .is_some_and(|runtime| {
-                    state
-                        .match_state
-                        .match_presentation
-                        .sidebar_projection
-                        .cameo_redraw_requested(runtime.simulation.session().binary_frame() as i32)
-                });
             // StripDraw6A9540 asks each entry's availability and reads its
             // Factory while drawing, so the drawn state follows the simulation
             // even when no pass, input or flash window rebuilt the projection
             // this frame.
-            if recheck || flashing {
+            if recheck {
                 // The rebuilt view takes the same drawn state.
                 crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
             } else {
                 crate::app::presentation::sidebar_render::refresh_sidebar_cameo_draw_state(state);
             }
         }
-        if frame_committed && decision.admitted_by_pacer {
+        #[cfg(feature = "horizon-frame-profile")]
+        {
+            profile_post_phases[0] += profile_sidebar_started.elapsed();
+        }
+        if frame_committed && decision.admitted_by_pacer && !network_paced {
             let RuntimeAdvanceMode::WallClock { now_ms } = mode else {
                 unreachable!("only wall-clock admission records the frame pacer");
             };
@@ -985,6 +998,8 @@ fn advance_in_game_runtime_mode(
 
     // MainThrottle55E33B publishes Logic visits per60 wall-clock buckets,
     // including the path where the pacer admitted no simulation frame.
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_presentation_started = Instant::now();
     let wall_ms = state.radar_presentation_ms();
     state
         .match_state
@@ -992,16 +1007,52 @@ fn advance_in_game_runtime_mode(
         .detail
         .borrow_mut()
         .throttle_tail(wall_ms);
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_after_throttle = {
+        let now = Instant::now();
+        profile_post_phases[4] += now - profile_presentation_started;
+        now
+    };
 
     // Ordered native source/global operations were applied with the frame
     // output. Reconcile the detail option and any explicit tool mutations.
     refresh_cell_lighting(state);
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_after_lighting = {
+        let now = Instant::now();
+        profile_post_phases[5] += now - profile_after_throttle;
+        now
+    };
 
     crate::app::presentation::building_anim::update_radar_state(state);
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_after_radar = {
+        let now = Instant::now();
+        profile_post_phases[6] += now - profile_after_lighting;
+        now
+    };
     crate::app::presentation::building_anim::update_power_bar_anim(state, wall_ms);
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_after_power = {
+        let now = Instant::now();
+        profile_post_phases[7] += now - profile_after_radar;
+        now
+    };
     crate::app::presentation::sidebar_gadgets::update_sidebar_gadget_state(state);
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_after_gadgets = {
+        let now = Instant::now();
+        profile_post_phases[8] += now - profile_after_power;
+        now
+    };
     // Per-frame gadget idle tick (G22 rows 2/3 drag-off/drag-back tracking).
     crate::app::input::gadget_input::idle_tick(state);
+    #[cfg(feature = "horizon-frame-profile")]
+    {
+        let now = Instant::now();
+        profile_post_phases[9] += now - profile_after_gadgets;
+        profile_post_phases[1] += now - profile_presentation_started;
+    }
     // The audio service is NOT gated on the simulation. gamemd's
     // `AudioSystem::Pump @ 0x00406F70` hangs off `Network_ServiceLoop @
     // 0x0048D080`, whose callers include `Main_Tick` itself (offline, the
@@ -1016,6 +1067,8 @@ fn advance_in_game_runtime_mode(
     // only `Main_Tick @ 0x0055D360`'s scenario-running head rule (retained ==
     // -1 -> `Queue_Song(-2)`; `InGameMusic == 0` -> `Stop(1)` + `Queue(-3)`)
     // belongs to the in-game frame.
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_audio_started = Instant::now();
     let music_now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
     crate::app::presentation::building_anim::drain_sound_events(state);
     let in_game_music = state.persistence.options_profile.in_game_music;
@@ -1026,12 +1079,31 @@ fn advance_in_game_runtime_mode(
     if decision.run_sim && main_tick_pumps_audio {
         pump_audio_service(state, music_now_ms);
     }
+    #[cfg(feature = "horizon-frame-profile")]
+    {
+        profile_post_phases[2] += profile_audio_started.elapsed();
+    }
+    #[cfg(feature = "horizon-frame-profile")]
+    let profile_camera_started = Instant::now();
     if decision.scroll_input {
         crate::app::input::camera::queue_keyboard_scroll(state);
     }
     if decision.tactical_mutation {
         crate::app::input::camera::animate_zoom(state);
         update_building_placement_preview(state);
+    }
+    #[cfg(feature = "horizon-frame-profile")]
+    {
+        profile_post_phases[3] += profile_camera_started.elapsed();
+    }
+    #[cfg(feature = "horizon-frame-profile")]
+    if let Some((simulation, after_simulation)) = profile_stages {
+        record_runtime_profile(
+            simulation,
+            Instant::now() - after_simulation,
+            Instant::now() - profile_started,
+            profile_post_phases,
+        );
     }
     decision.run_sim
 }
@@ -1087,6 +1159,12 @@ fn advance_one_simulation_frame(
     resume: FrameResume,
 ) -> bool {
     let resuming = resume != FrameResume::None;
+    // MainTick55D3DA..55DE3A: a House outcome modal can suspend Logic before
+    // Queue_AI. Keep its start with the live channel until that boundary, then
+    // take it once; subsequent network-wait polls do not add samples.
+    if !resuming && let Some(live) = state.match_state.live_network.as_mut() {
+        live.begin_processing(super::frame_pacer::wall_clock_ms() as u32);
+    }
     let mut refresh_atlases_after_tick = false;
     // Trigger definitions are runtime-bound (F07), so a live runtime is the
     // only activity source; the old trigger-only fixture mode is unrepresentable.
@@ -1119,6 +1197,12 @@ fn advance_one_simulation_frame(
         let local_owner_name = crate::app::input::commands::preferred_local_owner_name(state);
         let sound_listener = crate::app::presentation::building_anim::sound_listener(state);
         let session_mode = state.match_state.session_mode();
+        let logic_frame_rate = state
+            .match_state
+            .match_presentation
+            .detail
+            .borrow()
+            .frame_rate();
         let other_local_pause = state.match_state.paused();
         let rules_owner = state.process_assets.native_rules();
         let initial_save = if !resuming && tick_lane == TickLane::Ordinary {
@@ -1126,7 +1210,6 @@ fn advance_one_simulation_frame(
         } else {
             None
         };
-        let mut drained_fire_events: Vec<SimFireEvent> = Vec::new();
         let mut drained_lifecycle_outputs: Vec<LifecycleOutput> = Vec::new();
         let mut drained_combat_lights = Vec::new();
         let mut frame_overlay_updates = Vec::new();
@@ -1147,7 +1230,7 @@ fn advance_one_simulation_frame(
             sim.hash_state_every(crate::sim::replay::PLAY_HASH_INTERVAL);
             // Report points need the ledger whether or not a dashboard is
             // attached; `publish_if_due` only runs with a client.
-            #[cfg(feature = "telemetry-dashboard")]
+            #[cfg(any(feature = "telemetry-dashboard", feature = "horizon-frame-profile"))]
             sim.set_frame_profiling(true);
             // Delay-zero AnimClass construction can emit StartSound during the
             // final map-load sweep. Keep it until this first tactical drain;
@@ -1164,6 +1247,20 @@ fn advance_one_simulation_frame(
             // F07: the runtime is the one production frame API — bound
             // resources, no caller-substitutable inputs.
             let mut output = {
+                let command_observations = std::cell::RefCell::new(
+                    state
+                        .match_state
+                        .match_diagnostics
+                        .command_observations_mut(),
+                );
+                let observing_commands = command_observations.borrow().is_some();
+                let command_applied = |sim: &crate::sim::world::Simulation,
+                                       record: &crate::sim::command::CommandRecord,
+                                       applied: bool| {
+                    if let Some(log) = command_observations.borrow_mut().as_deref_mut() {
+                        log.record(sim, record, applied);
+                    }
+                };
                 let sidebar = std::cell::RefCell::new(
                     &mut state.match_state.match_presentation.sidebar_projection,
                 );
@@ -1215,18 +1312,28 @@ fn advance_one_simulation_frame(
                         minimap.admit_radar_event(request, tick, Some(rules))
                     })
                 };
+                let has_radar = &mut state.match_state.match_presentation.has_radar;
+                let radar_anim = &mut state.match_state.match_presentation.radar_anim;
+                let mut set_tactical_radar = |available| {
+                    *has_radar = available;
+                    radar_anim
+                        .as_mut()
+                        .and_then(|radar| radar.set_has_radar(available))
+                };
                 let boundary = super::frame_effects::FrameClientBoundary::new(
                     playback,
                     local_owner_name.as_deref(),
                     &mut state.match_state.match_audio.sound_events,
                     &mut admit_radar,
                 )
+                .with_tactical_radar(&mut set_tactical_radar)
                 .with_planning(
                     &mut state.match_state.input.planning,
                     &mut state.match_state.input.selection_state,
                 )
                 .with_network_session(&mut state.match_state.session)
                 .with_live_network(state.match_state.live_network.as_mut())
+                .with_logic_frame_rate(logic_frame_rate)
                 .with_scenario_pause(
                     &mut state.match_state.match_presentation.scenario_pause,
                     &elapsed_clock,
@@ -1235,11 +1342,17 @@ fn advance_one_simulation_frame(
                 )
                 .with_outcome_wait(&mut state.match_state.scenario_outcome);
                 let effects = FrameEffects::for_sound(&boundary)
+                    .with_tactical_radar(&boundary)
                     .with_local_planning(&boundary)
                     .with_network_commands(&boundary)
                     .with_outcome_wait(&boundary)
                     .with_production_strip(&production_visits, &clear_production_request)
                     .with_before_logic(&before_logic);
+                let effects = if observing_commands {
+                    effects.with_command_applied(&command_applied)
+                } else {
+                    effects
+                };
                 match resume {
                     FrameResume::ChecksumModal => rt.resume_after_network_failure(effects),
                     FrameResume::NetworkWait => rt.resume_network_wait(effects),
@@ -1284,10 +1397,27 @@ fn advance_one_simulation_frame(
                         .game_options()
                         .game_speed
                         .clamp(0, 6) as u8;
-                    let mut timing = state
-                        .match_state
-                        .telemetry_timing
-                        .summarize(state.platform.frame_pacer.budget_ms(speed));
+                    let mut timing = state.match_state.telemetry_timing.summarize(
+                        state.platform.frame_pacer.budget_ms(
+                            speed,
+                            rt.simulation
+                                .session()
+                                .network_command_timing()
+                                .map(|timing| {
+                                    (
+                                        timing.frames_per_second(),
+                                        state.match_state.live_network.as_ref().map_or(0, |live| {
+                                            live.pacing_delay_millis(
+                                                rt.simulation
+                                                    .session()
+                                                    .network_max_ahead_frames()
+                                                    .unwrap_or(0),
+                                            )
+                                        }),
+                                    )
+                                }),
+                        ),
+                    );
                     timing.fps = state.diag.frame_timer.fps();
                     timing.tick_hz = state
                         .match_state
@@ -1313,7 +1443,6 @@ fn advance_one_simulation_frame(
                 overlay_removals,
                 sound_events: frame_sound_events,
                 sound_events_delivered,
-                fire_events: frame_fire_events,
                 combat_lights,
                 lighting_events,
                 multiplayer_checksum,
@@ -1381,8 +1510,6 @@ fn advance_one_simulation_frame(
                 }
                 sim.prepare_fog_view_for(owner);
             }
-            // Fire events position the weapon report sounds.
-            drained_fire_events = frame_fire_events;
             // The radar event array is the local client's (RadarClass). A
             // match without a minimap renderer has no such client, so nothing
             // is admitted and the radar-gated EVA lines stay silent.
@@ -1462,7 +1589,7 @@ fn advance_one_simulation_frame(
             state,
             &drained_lifecycle_outputs,
         );
-        // Trigger Focus/lock effects precede TacticalAI in this Logic visit.
+        // Authored Team/trigger Focus and lock effects precede TacticalAI in this Logic visit.
         // Coordinates were resolved by simulation before its final hash.
         apply_trigger_effects(state, &trigger_effects);
         // Scroll_Map (0x4A9840 -> 0x6D8530) accumulates mouse requests;
@@ -1514,12 +1641,12 @@ fn advance_one_simulation_frame(
                 state
                     .match_state
                     .input
-                    .apply_building_placement_output(&cursor_clear, local_house);
+                    .apply_lifecycle_output(&cursor_clear, local_house);
             }
             if state
                 .match_state
                 .input
-                .apply_building_placement_output(&output, local_house)
+                .apply_lifecycle_output(&output, local_house)
             {
                 update_building_placement_preview(state);
             }
@@ -1652,11 +1779,6 @@ fn advance_one_simulation_frame(
                 | LifecycleOutput::ClearRedraw { .. } => {}
             }
         }
-        crate::app::presentation::fire_effects::queue_weapon_report_sounds(
-            state,
-            &drained_fire_events,
-        );
-
         // Black-cell census, on a schedule rather than a keypress: nobody hits a debug key
         // at the exact moment they notice the artifact. Spread-out ticks give a time series,
         // which separates "still exploring" from "these cells will never be revealed" — a
@@ -1738,7 +1860,119 @@ fn advance_one_simulation_frame(
     {
         refresh_entity_atlases(state);
     }
+    #[cfg(feature = "horizon-frame-profile")]
+    log_simulation_profile(state);
     frame_committed
+}
+
+#[cfg(feature = "horizon-frame-profile")]
+fn log_simulation_profile(state: &mut AppState) {
+    use std::fmt::Write as _;
+
+    const SAMPLE_FRAMES: u64 = 100;
+    let Some(runtime) = state.match_state.sim_runtime.as_mut() else {
+        return;
+    };
+    let Some(report) = runtime.simulation.frame_profile().report() else {
+        return;
+    };
+    if report.frames < SAMPLE_FRAMES {
+        return;
+    }
+    let mut phases = String::new();
+    for (name, millis) in crate::sim::frame_profile::PHASE_KEYS
+        .iter()
+        .zip(report.phases_ms)
+    {
+        if !phases.is_empty() {
+            phases.push(' ');
+        }
+        let _ = write!(phases, "{name}={millis:.3}");
+    }
+    log::info!(
+        target: "switch::perf",
+        "Simulation frame average over {} frames: total={:.2}ms peak={:.2}ms \
+         logic={:.2}ms objects={:.2}ms vision={:.2}ms tail={:.2}ms unmarked={:.2}ms \
+         phases=[{phases}]",
+        report.frames,
+        report.mean_frame_ms,
+        report.peak_frame_ms,
+        report.logic_ms,
+        report.objects_ms,
+        report.vision_ms,
+        report.tail_ms,
+        report.unmarked_ms,
+    );
+    runtime.simulation.reset_frame_profile();
+}
+
+#[cfg(feature = "horizon-frame-profile")]
+fn record_runtime_profile(
+    simulation: std::time::Duration,
+    post_simulation: std::time::Duration,
+    total: std::time::Duration,
+    post_phases: [std::time::Duration; 10],
+) {
+    const SAMPLE_FRAMES: u32 = 100;
+    #[derive(Default)]
+    struct Timing {
+        frames: u32,
+        simulation: std::time::Duration,
+        post_simulation: std::time::Duration,
+        total: std::time::Duration,
+        sidebar: std::time::Duration,
+        presentation: std::time::Duration,
+        audio: std::time::Duration,
+        camera: std::time::Duration,
+        other: std::time::Duration,
+        presentation_phases: [std::time::Duration; 6],
+    }
+    thread_local! {
+        static TIMING: std::cell::RefCell<Timing> =
+            std::cell::RefCell::new(Timing::default());
+    }
+    TIMING.with_borrow_mut(|timing| {
+        timing.frames += 1;
+        timing.simulation += simulation;
+        timing.post_simulation += post_simulation;
+        timing.total += total;
+        timing.sidebar += post_phases[0];
+        timing.presentation += post_phases[1];
+        timing.audio += post_phases[2];
+        timing.camera += post_phases[3];
+        timing.other += post_simulation.saturating_sub(post_phases[..4].iter().copied().sum());
+        for (sum, phase) in timing.presentation_phases.iter_mut().zip(&post_phases[4..]) {
+            *sum += *phase;
+        }
+        if timing.frames < SAMPLE_FRAMES {
+            return;
+        }
+        let scale = 1.0 / f64::from(timing.frames);
+        log::info!(
+            target: "switch::perf",
+            "Runtime CPU average over {} frames: simulation_app_call={:.2}ms \
+             post_simulation={:.2}ms sidebar={:.2}ms presentation={:.2}ms \
+             audio={:.2}ms camera={:.2}ms other={:.2}ms total={:.2}ms",
+            timing.frames,
+            timing.simulation.as_secs_f64() * 1000.0 * scale,
+            timing.post_simulation.as_secs_f64() * 1000.0 * scale,
+            timing.sidebar.as_secs_f64() * 1000.0 * scale,
+            timing.presentation.as_secs_f64() * 1000.0 * scale,
+            timing.audio.as_secs_f64() * 1000.0 * scale,
+            timing.camera.as_secs_f64() * 1000.0 * scale,
+            timing.other.as_secs_f64() * 1000.0 * scale,
+            timing.total.as_secs_f64() * 1000.0 * scale,
+        );
+        let [throttle, lighting, radar, power, gadgets, idle] = timing
+            .presentation_phases
+            .map(|sum| sum.as_secs_f64() * 1000.0 * scale);
+        log::info!(
+            target: "switch::perf",
+            "Presentation CPU average: throttle={throttle:.3}ms lighting={lighting:.3}ms \
+             radar={radar:.3}ms power={power:.3}ms gadgets={gadgets:.3}ms idle={idle:.3}ms",
+        );
+        *timing = Timing::default();
+    });
 }
 
 /// Refresh the presentation-owned light transaction from the committed runtime.

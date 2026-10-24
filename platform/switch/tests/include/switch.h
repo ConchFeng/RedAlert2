@@ -50,6 +50,10 @@ Result threadStart(Thread *);
 Result threadClose(Thread *);
 u64 armGetSystemTick(void);
 u64 armGetSystemTickFreq(void);
+Result svcSetResourceLimitLimitValue(Handle, int, u64);
+bool envIsSyscallHinted(u8 id);
+void smExit(void);
+Result smInitialize(void);
 
 Result test_dispatch(Service *, u32, const void *, size_t, void *, Dispatch);
 #define serviceDispatch(service, command, ...) \

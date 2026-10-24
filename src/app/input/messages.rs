@@ -513,6 +513,15 @@ fn post_grey_row(state: &mut AppState, text: &str, localize: bool, silent: bool)
     );
 }
 
+pub(super) fn post_command_backpressure(state: &mut AppState) {
+    post_grey_row(
+        state,
+        "Commands are still being sent. Try again shortly.",
+        false,
+        true,
+    );
+}
+
 /// Post a row whose `text` is a CSF key.
 fn post_localized_message(state: &mut AppState, post: &crate::ui::messages::MessagePost<'_>) {
     post_message(state, post, true);

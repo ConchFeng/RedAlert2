@@ -194,6 +194,7 @@ impl Gpu {
                 depth_stencil_attachment: None,
                 timestamp_writes: None,
                 occlusion_query_set: None,
+
             });
             pass.set_pipeline(&pipeline);
             pass.set_bind_group(0, &camera_group, &[]);

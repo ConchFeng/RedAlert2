@@ -16,6 +16,11 @@ use anyhow::Result;
 use winit::event_loop::EventLoop;
 
 fn main() -> Result<()> {
+    if let Some(result) =
+        vera20k::app::frontend::launch::try_game_data_check(std::env::args_os().skip(1))
+    {
+        std::process::exit(result?);
+    }
     // A launch from the macOS app bundle or the Linux AppImage works in the
     // app's data folder. Enter it before the logger opens logs/ there.
     let app_bundle = vera20k::app::app_bundle::enter_data_folder();
@@ -45,7 +50,7 @@ fn main() -> Result<()> {
         vera20k::rules::PHOBOS_ENABLED
     );
     log::info!(
-        "NPatch support compiled in: {} (placeholder)",
+        "NPatch support compiled in: {}",
         vera20k::rules::NPATCH_ENABLED
     );
     if let Some(path) = &log_path {
@@ -76,7 +81,7 @@ fn run(app_bundle: bool) -> Result<()> {
 
     // Native claims its single-instance gate before it creates a window: a
     // second copy raises and restores the running one and exits, so the two
-    // never both write RA2MD.INI on quit. Capture modes are automation-only and
+    // never both write VERA.INI on quit. Capture modes are automation-only and
     // are deliberately left ungated so parallel captures still run —
     // VERA-internal exemption, native has no capture mode.
     let _instance_guard = match &launch_mode {

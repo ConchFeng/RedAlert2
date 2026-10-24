@@ -106,6 +106,10 @@ pub(crate) struct EntityDamageEvent {
     /// to reproduce the native near-center Iron Curtain isolation scan; it is
     /// deliberately false for direct-receiver calls.
     pub(crate) near_center_ic_isolation_eligible: bool,
+    /// The native ground collector was visiting a spread cell after index0.
+    /// Such records are filtered by an armed transaction but cannot arm it.
+    /// Airborne and primary-cell records leave this false.
+    pub(crate) adjacent_ground_cell_record: bool,
     pub(crate) damage_writeback: Option<DamageWriteback>,
 }
 
@@ -135,6 +139,7 @@ impl EntityDamageEvent {
                 arg6: false,
             },
             near_center_ic_isolation_eligible: false,
+            adjacent_ground_cell_record: false,
             damage_writeback: None,
         }
     }
@@ -157,6 +162,7 @@ impl EntityDamageEvent {
             distance_leptons,
             receiver_flags,
             near_center_ic_isolation_eligible: false,
+            adjacent_ground_cell_record: false,
             damage_writeback: None,
         }
     }
@@ -280,6 +286,41 @@ pub(super) fn prepare_infantry_receiver(
     prepared
 }
 
+/// `HouseClass::GetArmorMultForType @ 0x0050BD30` and the STRONGER rank
+/// divisor for one receiver: the native defence-divide input. The Phobos
+/// shield pre-stage and the receiver share it, so both divide the same damage.
+pub(crate) fn receiver_divisors(
+    target: &crate::sim::game_entity::GameEntity,
+    target_type: Option<&crate::rules::object_type::ObjectType>,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &crate::sim::houses::Houses,
+) -> damage::DefenceDivisors {
+    let house_type_armor = houses.get(&target.owner()).map_or(1.0, |house| {
+        target_type.map_or(1.0, |object| {
+            rules.country_armor_mult_for_type(interner.resolve(house.house_type_id()), object)
+        })
+    });
+    let rank_armor = target_type
+        .is_some_and(|object| {
+            super::veterancy::has_weapon_ability(
+                target.veterancy.rank_kind(),
+                object,
+                crate::rules::object_type::Ability::Stronger,
+            )
+        })
+        .then(|| {
+            crate::util::native_x87::NativeF64Bits::from_bits(rules.general.veteran_armor.to_bits())
+        });
+    damage::DefenceDivisors {
+        house_type_armor: crate::util::native_x87::NativeF32Bits::from_bits(
+            house_type_armor.to_bits(),
+        ),
+        unit_armor: target.crate_multipliers.armor(),
+        rank_armor,
+    }
+}
+
 /// Build the native ReceiveDamage value ABI for one ordered area or direct
 /// receiver record and run the shared receiver exactly once. The returned
 /// signed HP delta is the only health input consumed by `commit_damage_events`.
@@ -293,6 +334,37 @@ pub(super) fn resolve_receive_damage(
     scenario_no_damage: bool,
     current_tick: u64,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+) -> Option<ResolvedReceiveDamage> {
+    resolve_receive_damage_with_input(
+        event,
+        entities,
+        rules,
+        interner,
+        houses,
+        alliances,
+        scenario_no_damage,
+        current_tick,
+        terrain,
+        event.damage,
+        false,
+    )
+}
+
+/// [`resolve_receive_damage`] with the Phobos shield stage's surviving damage
+/// substituted for the caller-owned receiver input. `skip_low_damage_check`
+/// mirrors `0x7019D8` when the shield wrote a zero packet.
+pub(super) fn resolve_receive_damage_with_input(
+    event: &EntityDamageEvent,
+    entities: &EntityStore,
+    rules: &RuleSet,
+    interner: &StringInterner,
+    houses: &crate::sim::houses::Houses,
+    alliances: &HouseAllianceMap,
+    scenario_no_damage: bool,
+    current_tick: u64,
+    terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    receiver_input: i32,
+    skip_low_damage_check: bool,
 ) -> Option<ResolvedReceiveDamage> {
     let distance_leptons = event.distance_leptons;
     let receiver_flags = event.receiver_flags;
@@ -348,8 +420,8 @@ pub(super) fn resolve_receive_damage(
         .source_house
         .or_else(|| source.map(|entity| entity.owner()));
     // The concrete Infantry head already ran before Foot's prefix. Its signed
-    // result is Techno's original-sign snapshot for the IC/FS gate.
-    let receiver_input = event.damage;
+    // result is Techno's original-sign snapshot for the IC/FS gate; the Phobos
+    // shield stage may have replaced it with the surviving damage.
 
     let allied = |asker: InternedId, other: InternedId| {
         crate::map::houses::is_allied_with(
@@ -365,7 +437,11 @@ pub(super) fn resolve_receive_damage(
         current_hp: target.health.current(),
         object_immune: target_type.is_some_and(|object| object.immune),
     };
-    let type_immune = target_type.is_some_and(|object| object.type_immune)
+    // 70192B/701933 skip the entire defender/TypeImmune block for forced
+    // damage and healing, before readiness is considered at701ADB.
+    let type_immune = !receiver_flags.ignore_defenses
+        && receiver_input >= 0
+        && target_type.is_some_and(|object| object.type_immune)
         && source.is_some_and(|source| {
             source.type_ref() == target.type_ref() && source.owner() == target.owner()
         });
@@ -409,33 +485,12 @@ pub(super) fn resolve_receive_damage(
         psychedelic: warhead.psychedelic,
         psionics_immune: target_type.is_some_and(|object| object.immune_to_psionics),
         target_is_building,
+        skip_low_damage_check,
     };
     // `HouseClass::GetArmorMultForType @ 0x0050BD30` on the target's owner:
     // its HouseType's per-category float. The difficulty and country
     // `Armor=` product (`House+0x1A0`) is never read here.
-    let house_type_armor = houses.get(&target.owner()).map_or(1.0, |house| {
-        target_type.map_or(1.0, |object| {
-            rules.country_armor_mult_for_type(interner.resolve(house.house_type_id()), object)
-        })
-    });
-    let rank_armor = target_type
-        .is_some_and(|object| {
-            super::veterancy::has_weapon_ability(
-                target.veterancy.rank_kind(),
-                object,
-                crate::rules::object_type::Ability::Stronger,
-            )
-        })
-        .then(|| {
-            crate::util::native_x87::NativeF64Bits::from_bits(rules.general.veteran_armor.to_bits())
-        });
-    let divisors = damage::DefenceDivisors {
-        house_type_armor: crate::util::native_x87::NativeF32Bits::from_bits(
-            house_type_armor.to_bits(),
-        ),
-        unit_armor: target.crate_multipliers.armor(),
-        rank_armor,
-    };
+    let divisors = receiver_divisors(target, target_type, rules, interner, houses);
     // `arg6` stays on the ordered call: its Unit-class consumer is the crew
     // block, which the concrete death reads from the killing event.
     let outcome = damage::receive::receive_damage(
@@ -494,20 +549,51 @@ pub(crate) fn wave_post_object_damage(
     scenario_no_damage: bool,
     current_tick: u64,
     terrain: Option<&crate::map::resolved_terrain::ResolvedTerrainGrid>,
+    #[cfg(feature = "phobos")] simulation: Option<&crate::sim::world::Simulation>,
 ) -> Option<i32> {
     let event = prepare_infantry_receiver(event, entities, rules, interner, terrain);
-    resolve_receive_damage(
-        &event,
-        entities,
-        rules,
-        interner,
-        houses,
-        alliances,
-        scenario_no_damage,
-        current_tick,
-        terrain,
-    )
-    .and_then(|resolved| resolved.outcome.post_object_damage)
+    // The shield hook writes its surviving value into the caller pointer
+    // before Techno's body; preview the stage without committing it, because
+    // the receiver commit that follows applies the absorption exactly once.
+    #[cfg(feature = "phobos")]
+    let shield_remaining = simulation.and_then(|simulation| {
+        crate::sim::shield::preview_receive_damage(simulation, rules, &event, event.damage)
+    });
+    #[cfg(not(feature = "phobos"))]
+    let shield_remaining: Option<i32> = None;
+    let resolved = match shield_remaining {
+        Some(remaining) => resolve_receive_damage_with_input(
+            &event,
+            entities,
+            rules,
+            interner,
+            houses,
+            alliances,
+            scenario_no_damage,
+            current_tick,
+            terrain,
+            remaining,
+            remaining == 0,
+        ),
+        None => resolve_receive_damage(
+            &event,
+            entities,
+            rules,
+            interner,
+            houses,
+            alliances,
+            scenario_no_damage,
+            current_tick,
+            terrain,
+        ),
+    };
+    match shield_remaining {
+        // A later Techno body write, when there is one, wins over the shield's.
+        Some(remaining) => {
+            resolved.map(|resolved| resolved.outcome.post_object_damage.unwrap_or(remaining))
+        }
+        None => resolved.and_then(|resolved| resolved.outcome.post_object_damage),
+    }
 }
 
 /// TechnoClass::ReceiveDamage builds the anger-node increment from the final
@@ -567,13 +653,15 @@ pub(super) fn postmortem_duration_for_event(
 }
 
 /// `Apply_area_damage` (`0x00489280`)'s isolation pre-scan (`0x0048993E..0x00489968`):
-/// an Iron Curtained receiver under 85 leptons without the Force Shield byte arms it.
+/// an airborne or primary-cell Iron Curtained receiver under 85 leptons,
+/// without the Force Shield byte, arms it. Adjacent ground records cannot.
 fn event_arms_ic_isolation(
     event: &EntityDamageEvent,
     entities: &EntityStore,
     current_tick: u64,
 ) -> bool {
     event.near_center_ic_isolation_eligible
+        && !event.adjacent_ground_cell_record
         && event.distance_leptons < 85
         && entities.get(event.target_id).is_some_and(|target| {
             // 0x0048994E: vt+0x160 IsIronCurtained (0x0041BF40). Every

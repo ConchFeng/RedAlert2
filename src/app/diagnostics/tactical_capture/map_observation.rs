@@ -4217,9 +4217,10 @@ impl TacticalCaptureSession {
             }).collect();
             // Location, Cell content, Display and Logic are independent native
             // memberships. Observe the retained owner even when Occupy_List
-            // placed no Cell member; this never constructs or marks an object.
+            // placed no Cell member, and foreign-anchor members reached here;
+            // this never constructs or marks an object.
             let terrain_instances: Vec<_> = sim.terrain_objects().objects().values()
-                .filter(|object| object.cell() == at).map(|object| {
+                .filter(|object| object.cell() == at || member_ids.contains(&object.stable_id())).map(|object| {
                     let mut row = terrain_row(object);
                     row["lifecycle"] = json!(object.lifecycle());
                     row["cell_member"] = json!(member_ids.contains(&object.stable_id()));
@@ -5018,7 +5019,7 @@ mod tests {
         // Actual presentation composites advance this owner without any Logic
         // tick. Numeric/native goldens belong to the renderer's own tests.
         for _ in 0..14 {
-            beams.composite(60, viewport);
+            beams.composite(60, viewport, |_| true);
         }
         let draws = beams.draws().to_vec();
         assert!(!draws.is_empty());
@@ -5044,7 +5045,7 @@ mod tests {
         );
         assert_eq!(serde_json::to_value(beams.observation()).unwrap(), retained);
         assert_eq!(beams.draws(), draws.as_slice());
-        beams.composite(60, viewport);
+        beams.composite(60, viewport, |_| true);
         let expired =
             serde_json::to_value(MapRadiationBeamObservation::capture(&beams).unwrap()).unwrap();
         assert!(expired["live"].as_array().unwrap().is_empty());

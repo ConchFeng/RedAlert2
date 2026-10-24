@@ -180,7 +180,7 @@ impl Gpu {
             // Use the production owner's standard WGPU_BACKEND override so
             // the same native readbacks can exercise Windows DX12 explicitly.
             backends: wgpu::Backends::PRIMARY.with_env(),
-            ..Default::default()
+            ..wgpu::InstanceDescriptor::default()
         });
         let adapter = block_on(instance.request_adapter(&Default::default()))
             .expect("explicit GPU check needs an adapter");
@@ -467,6 +467,7 @@ pub(crate) fn clear(
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
+
     });
 }
 pub(crate) fn sprite(position: [f32; 2], size: [f32; 2], z_adjust: f32) -> SpriteInstance {
@@ -1824,6 +1825,7 @@ pub(crate) fn seed_depth_grid(
         }),
         timestamp_writes: None,
         occlusion_query_set: None,
+
     });
     pass.set_pipeline(&pipeline);
     pass.set_bind_group(0, &binding, &[]);

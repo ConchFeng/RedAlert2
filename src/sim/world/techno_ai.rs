@@ -18,11 +18,13 @@ mod aircraft_guard;
 mod building_missile;
 mod building_missions;
 mod building_retaliation;
+mod foot_patrol;
 #[cfg(any(test, feature = "test-support"))]
 pub(crate) use building_missions::PendingBuildingFire;
 pub(crate) use building_missions::PrismSupport;
 pub(crate) use building_missions::queue_and_commence;
 pub use building_missions::{BuildingDelayedFire, DelayedFire};
+pub(crate) use foot_patrol::PatrolPost;
 mod mission_handlers;
 mod scan_batch;
 mod target_scan;
@@ -704,7 +706,15 @@ fn techno_ai_shell(
         sim.update_building_damage_fire(id, rules);
         turret_rotate_sample = sim.sample_building_turret_rotation(id, rules);
     }
-    if sim.temporal_ai_prologue(id, rules, ctx, &mut outcome.bridge_state_changed) {
+    let temporal_frozen =
+        sim.temporal_ai_prologue(id, rules, ctx, &mut outcome.bridge_state_changed);
+    // Phobos `ShieldClass::AI_Temporal` pauses recovery during the Temporal
+    // prologue; frozen leaves never reach the normal `ShieldClass::AI` at
+    // `TechnoClass_AI @ 0x6F9E50+0x5`. The shield owner handles that paused
+    // visit or the normal recovery visit after this frame's warp update.
+    #[cfg(feature = "phobos")]
+    crate::sim::shield::tick(sim, id, rules);
+    if temporal_frozen {
         return;
     }
     // Unit7363C9..7363DE precedes Hunt/Ready/Foot AI, after the existing
@@ -1430,7 +1440,8 @@ pub(crate) fn ai_alive(substrate: &ObjectSubstrate, id: u64) -> bool {
 }
 
 /// `TechnoClass::AI_Update`'s leading common steps, in native order: the
-/// Iron Curtain tint stage (`0x006F9EAF`, [`iron_tint_step`]), the berserk
+/// Gattling loop position (`0x006F9EA8`), Iron Curtain tint stage
+/// (`0x006F9EAF`, [`iron_tint_step`]), the berserk
 /// countdown (`0x006F9F0D`, [`berserk_step`]), the
 /// promotion sample (`0x006FA054`) and drain blocks (`0x006FA14B..0x006FA224`),
 /// followed by rocking, target validity, charge turret and the Door clock.
@@ -1452,6 +1463,21 @@ fn techno_common_steps(
     //the stock head. EMP expiry itself must not invent a future-power sweep.
     #[cfg(feature = "ares")]
     sim.update_ares_emp_operability(id, rules, effects);
+    // Techno6F9E70..6F9EA8 re-drives +4A4 at Location before mission
+    // Stop/Release. A zero gain must stop a live loop before Guard can
+    // release it to decay at the previous gain.
+    if let Some(entity) = sim.substrate.entities.get(id)
+        && sim
+            .object_type(entity.type_ref(), rules)
+            .is_some_and(|object| object.is_gattling)
+    {
+        effects.update_looping_sound(
+            sim,
+            rules,
+            crate::sim::combat::gattling::gattling_sound_owner(id),
+            Simulation::movement_sound_world(entity),
+        );
+    }
     iron_tint_step(&sim.session, &mut sim.scenario_rng, &mut sim.substrate, id);
     // Techno6F9EBB follows the tint head and precedes veterancy/drain work.
     // A queued voice probes its handle only when this actor really reaches
@@ -1462,6 +1488,22 @@ fn techno_common_steps(
     // Building Update froze this sample before Temporal and its common AI.
     if let Some(sample) = turret_rotate_sample {
         sim.visit_turret_rotate_sound(id, sample, rules, effects);
+        // Techno6FA027..6FA04F: every Turret-enabled visit re-drives
+        // +488 at the live Location after its controls and latch writes.
+        // A zero gain must stop it before this visit's later C4 expiry,
+        // or another object's hit, can release a still-audible decay.
+        if let Some(entity) = sim.substrate.entities.get(id)
+            && sim
+                .object_type(entity.type_ref(), rules)
+                .is_some_and(|object| object.has_turret)
+        {
+            effects.update_looping_sound(
+                sim,
+                rules,
+                super::turret_rotate_sound::turret_rotate_sound_owner(id),
+                Simulation::movement_sound_world(entity),
+            );
+        }
     }
     veterancy_promotion_step(
         &mut sim.interner,
@@ -1808,11 +1850,15 @@ fn allied_target_drop_step(sim: &mut Simulation, id: u64, rules: &RuleSet) {
     let target_building = target.category() == EntityCategory::Structure;
     let occupiable = infantry
         && target_building
-        && target.passenger_role.cargo().is_some_and(|cargo| {
-            crate::sim::passenger::can_dock_occupier_garrison(
-                entity, target, obj, target_obj, cargo, rules, sim,
-            )
-        });
+        && crate::sim::passenger::can_dock_occupier_garrison(
+            entity,
+            target,
+            obj,
+            target_obj,
+            target.passenger_role.occupants(),
+            rules,
+            sim,
+        );
     let engineer = infantry && obj.engineer;
     let overpowers = target_building
         && target_obj.overpowerable
@@ -2134,6 +2180,10 @@ fn techno_common_post(sim: &mut Simulation, id: u64, rules: &RuleSet, _effects: 
     flash_step(&mut sim.substrate, id, sim.session.binary_frame());
 
     sim.update_damage_spark_after_ai(id, rules);
+    // Techno6FAF01..6FAF07 invokes virtual+4A0(0), after damage sparks and
+    // before EMP. Its simulation discovery prelude is independent of radar
+    // presentation, viewport admission and rendering cadence.
+    sim.update_techno_discovery_from_shroud(id);
     // Installed Ares6FAF0D ->10053DF0, after the ordinary Techno tail.
     // No global frame sweep: limbo/skipped/dead visits never reach this slot.
     #[cfg(feature = "ares")]
@@ -3209,6 +3259,7 @@ mod tests {
             trigger_tag: None,
             recruitable_a: true,
             recruitable_b: true,
+            group: -1,
             structure_upgrades: [None, None, None],
             structure_ai_sellable: false,
             structure_ai_repairable: false,
@@ -3508,11 +3559,11 @@ mod tests {
             let _ = sim.advance_tick(&[], Some(rules), Some(&grid), None, 67);
         }
         assert!(
-            sim.substrate
-                .entities
-                .get(1)
-                .and_then(|house| house.passenger_role.cargo())
-                .is_some_and(|cargo| cargo.passengers() == [2]),
+            sim.substrate.entities.get(1).is_some_and(|house| house
+                .passenger_role
+                .occupants()
+                .ids()
+                == [2]),
             "precondition: Capture admitted the occupant"
         );
         (

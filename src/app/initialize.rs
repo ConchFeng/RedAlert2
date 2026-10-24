@@ -120,11 +120,11 @@ where
     LoadProfile: FnOnce(&Path, &RetailStartupOptions) -> RetailOptionsLoad,
 {
     if capture_dimensions.is_some() {
-        RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
+        RetailOptionsLoad::without_settings(&RetailStartupOptions::default())
     } else if let Some(ra2_dir) = ra2_dir {
         load_profile(ra2_dir, startup_options)
     } else {
-        RetailOptionsLoad::without_ra2md(startup_options)
+        RetailOptionsLoad::without_settings(startup_options)
     }
 }
 
@@ -187,14 +187,32 @@ impl App {
         // automation lane, so it uses exact defaults and its explicit
         // dimensions instead of ingesting operator argv/profile screen state.
         let mut main_menu_shell_error = None;
-        let game_config = startup_asset_or_error(GameConfig::load(), &mut main_menu_shell_error);
+        let mut personal_rules = crate::rules::personal_rules::PersonalRules::default();
+        let game_config = startup_asset_or_error(
+            GameConfig::load().and_then(|config| {
+                if capture_dimensions.is_none() {
+                    crate::app::persistence::profile_file::import_legacy(&config.paths).map_err(
+                        |error| anyhow::Error::new(error).context("Could not prepare VERA.INI"),
+                    )?;
+                    let bytes = crate::app::persistence::rules_profile::load_or_create(
+                        config.paths.settings_dir(),
+                    )
+                    .context("Could not prepare VERARULES.INI")?;
+                    personal_rules =
+                        crate::rules::personal_rules::PersonalRules::from_bytes(&bytes)
+                            .context("Could not read VERARULES.INI")?;
+                }
+                Ok(config)
+            }),
+            &mut main_menu_shell_error,
+        );
         let options_load = select_startup_options_load(
             capture_dimensions,
             &startup_options,
             game_config
                 .as_ref()
                 .map(|config| config.paths.settings_dir()),
-            RetailOptionsLoad::from_ra2md,
+            RetailOptionsLoad::from_settings,
         );
         let profile_screen = options_load.startup_shell_screen;
         let mut options_profile = options_load.retained_profile;
@@ -286,7 +304,8 @@ impl App {
         if let Some(icon) = &retail_icon {
             icon.set_dock_icon();
         }
-        let gpu: GpuContext = GpuContext::new(window.clone())?;
+        let gpu: GpuContext =
+            GpuContext::new(window.clone(), event_loop.owned_display_handle(), capture)?;
         let batch_renderer: BatchRenderer = BatchRenderer::new(&gpu);
         #[cfg(target_os = "horizon")]
         let depth_view: wgpu::TextureView = gpu.create_depth_texture();
@@ -518,7 +537,8 @@ impl App {
                 .as_ref()
                 .map(|config| config.ini.clone())
                 .unwrap_or_default(),
-        );
+        )
+        .with_personal_rules(personal_rules);
         process_assets.csf = startup_csf;
         let (startup_rules, startup_rules_projection) = startup_asset_manager
             .as_ref()
@@ -924,6 +944,7 @@ impl App {
                 campaign_art: None,
                 load_saved_game: None,
                 wol: None,
+                online_cleanup: Default::default(),
                 wol_account: Default::default(),
                 wol_test_credentials: Vec::new(),
                 network_options: None,
@@ -1416,7 +1437,7 @@ mod tests {
         assert!(!profile_loader_called.get());
         assert_eq!(
             options_load,
-            RetailOptionsLoad::without_ra2md(&RetailStartupOptions::default())
+            RetailOptionsLoad::without_settings(&RetailStartupOptions::default())
         );
         assert_eq!(
             startup_window_projection(options_load.startup_shell_screen, capture_dimensions),

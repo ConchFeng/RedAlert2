@@ -37,7 +37,7 @@ use crate::map::entities::EntityCategory;
 #[cfg(any(test, feature = "test-support"))]
 use crate::map::houses::HouseAllianceMap;
 use crate::map::resolved_terrain::ResolvedTerrainGrid;
-use crate::rules::locomotor_type::{MovementZone, SpeedType};
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone, SpeedType};
 use crate::sim::cell_rect::PlayfieldBounds;
 #[cfg(any(test, feature = "test-support"))]
 use crate::sim::entity_store::EntityStore;
@@ -144,7 +144,7 @@ pub use facing_class::FacingClass;
 
 #[cfg(any(test, feature = "test-support"))]
 pub use drive_locomotion::{DriveLocomotionRuntime, ShipLocomotionRuntime};
-#[cfg(any(test, feature = "test-support"))]
+#[cfg(test)]
 pub(crate) use foot_speed::owner_current_speed_from_fraction;
 pub use foot_speed::owner_speed_bonus;
 pub use foot_speed::{SpeedRules, owner_current_speed};
@@ -181,7 +181,7 @@ pub(super) struct MoverSnapshot {
     pub movement_zone: MovementZone,
     pub omni_crusher: bool,
     pub regular_crusher: bool,
-    pub locomotor: Option<locomotor::LocomotorState>,
+    pub locomotor_kind: Option<LocomotorKind>,
     /// Native AStar hierarchy admission reads the stored TechnoClass+0x3D5
     /// byte. False under live MapClass authority bypasses hierarchy and runs
     /// the plain cell A*; headless fixtures without authority retain hierarchy.
@@ -283,3 +283,6 @@ mod foot_timer_migration_tests;
 
 #[cfg(test)]
 mod drop_as_bomb_oracle_tests;
+
+#[cfg(test)]
+mod paratrooper_crush_tests;

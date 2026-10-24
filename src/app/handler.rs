@@ -18,6 +18,19 @@ fn launcher_options_consumes_escape<T>(dialog: &Option<T>, is_escape: bool) -> b
 }
 
 impl App {
+    /// An event can interrupt WaitUntil before a capture's render cadence.
+    /// Keep that render deadline while still waking for independently due
+    /// lobby/network services. Offscreen frames have no swapchain pacing.
+    fn capture_render_wait_until(
+        &self,
+        now: Instant,
+        service_wake: Option<Instant>,
+    ) -> Option<Instant> {
+        self.capture_render_not_before
+            .filter(|deadline| now < *deadline)
+            .map(|deadline| service_wake.map_or(deadline, |service| deadline.min(service)))
+    }
+
     /// Route the physical keyboard edge before any underlying shell input.
     /// This owns main-menu modal admission; the existing message-box owner
     /// owns its result and teardown.
@@ -1370,7 +1383,7 @@ impl ApplicationHandler for App {
                         if btn_state.is_pressed() {
                             Self::handle_main_menu_shell_mouse_down(state);
                         } else {
-                            Self::handle_main_menu_shell_mouse_up(state, event_loop);
+                            Self::handle_main_menu_shell_mouse_up(state);
                         }
                     }
                 } else if state.frontend.screen == GameScreen::InGame {
@@ -1410,11 +1423,22 @@ impl ApplicationHandler for App {
                 if state.frontend.screen == GameScreen::InGame
                     && !state.match_state.paused()
                     && !state.match_state.network_wait.dialog_open()
+                    && !crate::app::input::campaign_input::is_locked(state)
                 {
+                    // Optional player setting: over the battlefield the wheel changes the view
+                    // distance tier, anchored on the tactical centre. Over the
+                    // sidebar and the bottom strip it keeps gamemd's native
+                    // SidebarUp/SidebarDown routing.
+                    if state.persistence.options_profile.mouse_wheel_zoom
+                        && crate::app::input::camera::cursor_over_battlefield(state)
+                    {
+                        crate::app::input::camera::cycle_view_distance(state, lines);
+                        state.platform.window.request_redraw();
+                        return;
+                    }
                     // Every wheel notch scrolls the active build strip by one
-                    // row, wherever the cursor is. gamemd routes the wheel
-                    // message straight to the SidebarUp / SidebarDown commands
-                    // and has no world zoom for it to reach.
+                    // row. gamemd routes the wheel message straight to the
+                    // SidebarUp / SidebarDown commands and has no world zoom.
                     dispatch::sidebar_wheel_scroll(state, lines);
                 }
             }
@@ -1458,6 +1482,28 @@ impl ApplicationHandler for App {
         } else {
             None
         };
+        if self.shell_capture.is_some() || self.tactical_capture.is_some() {
+            // A callback already queued by the platform can arrive after the
+            // completed one-shot capture requested exit. Never render it again.
+            if self
+                .shell_capture
+                .as_ref()
+                .is_some_and(|session| session.is_finished())
+                || self
+                    .tactical_capture
+                    .as_ref()
+                    .is_some_and(|session| session.is_finished())
+            {
+                event_loop.exit();
+                return;
+            }
+            if let Some(deadline) =
+                self.capture_render_wait_until(Instant::now(), shell_scroll_wake)
+            {
+                event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
+                return;
+            }
+        }
         if let (Some(state), Some(session)) = (self.state.as_mut(), self.tactical_capture.as_mut())
         {
             if let Err(err) = Self::render_frame(state, event_loop, None, Some(&mut *session)) {
@@ -1467,17 +1513,15 @@ impl ApplicationHandler for App {
                 return;
             }
             if !session.is_finished() {
-                event_loop.set_control_flow(ControlFlow::WaitUntil(session.next_wake_deadline()));
+                let deadline = session.next_wake_deadline();
+                self.capture_render_not_before = Some(deadline);
+                event_loop.set_control_flow(ControlFlow::WaitUntil(
+                    shell_scroll_wake.map_or(deadline, |service| deadline.min(service)),
+                ));
             }
         } else if let (Some(state), Some(session)) =
             (self.state.as_mut(), self.shell_capture.as_mut())
         {
-            // Windows may deliver another wait callback after exit was requested.
-            // The completed one-shot bundle must not enter rendering again.
-            if session.is_finished() {
-                event_loop.exit();
-                return;
-            }
             if let Err(err) = Self::render_frame(state, event_loop, Some(&mut *session), None) {
                 log::error!("Shell capture render: {err:#}");
                 session.fail(format!("shell capture render failed: {err:#}"));
@@ -1486,6 +1530,7 @@ impl ApplicationHandler for App {
             }
             if !session.is_finished() {
                 let mut deadline = session.next_wake_deadline();
+                self.capture_render_not_before = Some(deadline);
                 if let Some(wave_deadline) =
                     crate::app::frontend::shell_transition::main_menu_presented_wake_deadline(state)
                 {
@@ -1493,6 +1538,9 @@ impl ApplicationHandler for App {
                 }
                 if let Some(animation_deadline) = Self::campaign_score_animation_deadline(state) {
                     deadline = deadline.min(animation_deadline);
+                }
+                if let Some(service) = shell_scroll_wake {
+                    deadline = deadline.min(service);
                 }
                 event_loop.set_control_flow(ControlFlow::WaitUntil(deadline));
             }
@@ -1551,6 +1599,30 @@ impl ApplicationHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn capture_render_deadline_survives_early_service_wakes_and_admits_when_due() {
+        use std::time::Duration;
+
+        let mut app = App::default();
+        let rendered_at = Instant::now();
+        assert_eq!(app.capture_render_wait_until(rendered_at, None), None);
+
+        let deadline = rendered_at + Duration::from_millis(8);
+        app.capture_render_not_before = Some(deadline);
+        let service = rendered_at + Duration::from_millis(1);
+        assert_eq!(
+            app.capture_render_wait_until(rendered_at, Some(service)),
+            Some(service)
+        );
+        assert_eq!(app.capture_render_wait_until(service, None), Some(deadline));
+        assert_eq!(app.capture_render_not_before, Some(deadline));
+        assert_eq!(app.capture_render_wait_until(deadline, None), None);
+        assert_eq!(
+            app.capture_render_wait_until(deadline + Duration::from_secs(1), None),
+            None
+        );
+    }
 
     #[test]
     fn launcher_options_escape_is_consumed_without_replacing_the_parent() {

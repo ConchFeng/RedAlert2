@@ -151,12 +151,28 @@ pub(crate) fn paint_wol_login_children(
         scale,
     );
     paint.texts.push(text(
-        &label("GUI:RememberAccount"),
+        &if login.policy == crate::ui::wol_login::LoginPolicy::Online {
+            "Session only (not saved)".to_owned()
+        } else {
+            label("GUI:RememberAccount")
+        },
         crate::ui::skirmish_shell::checkbox_text_rect(layout.remember, scale),
         ShellAlign::V_CENTER,
         wol_button_label_rgb(login.remember_enabled),
         SHELL_CONTROL_TEXT_DEPTH,
     ));
+    if login.policy == crate::ui::wol_login::LoginPolicy::Online {
+        let rect = scale.derive_rect(layout.remember, |rect| {
+            RectPx::new(rect.x - 100, rect.y + 30, 380, 36)
+        });
+        paint.texts.push(text(
+            "Name: 1-24 letters, digits, _ or -\nPassword: 12-128 characters",
+            rect,
+            ShellAlign::V_CENTER,
+            SHELL_LABEL_TEXT_RGB,
+            SHELL_CONTROL_TEXT_DEPTH,
+        ));
+    }
 
     if let Some(popup) = crate::app::shell_wol::combo_popup(login, layout) {
         push_popup_instances(

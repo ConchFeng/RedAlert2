@@ -1,6 +1,6 @@
 [package]
 name = "vera20k"
-version = "0.2.0"
+version = "0.2.2"
 edition = "2024"
 description = "Vera20k Engine — a from-scratch Rust engine for Red Alert 2: Yuri's Revenge"
 autobins = false
@@ -13,7 +13,7 @@ publish = false
 # asset tools and the game binary). The core manifest sits in `src/`, so rustc
 # still names every source file `src/...`.
 [workspace]
-members = ["src"]
+members = ["src", "services/relay-protocol", "services/relay"]
 # Plain `cargo build`/`cargo test --lib` cover both crates.
 default-members = [".", "src"]
 
@@ -43,6 +43,9 @@ required-features = ["telemetry-dashboard"]
 default = ["dev-overlays"]
 # The standalone Switch workspace supplies the Horizon winit and audio backends.
 horizon-client = []
+# Opt-in Horizon-only frame ledger. Shipped Switch builds leave it off; the
+# standalone Switch profiler build forwards core's telemetry feature.
+horizon-frame-profile = ["vera20k-core/telemetry"]
 # Optional gameplay extensions. Neither default nor shipping builds enable this.
 ares = ["vera20k-core/ares"]
 # Optional Phobos extensions, independent of the Ares capability; neither
@@ -55,7 +58,7 @@ npatch = ["vera20k-core/npatch"]
 # rely on it (literal Ctrl+Shift+M/N quicksave/quickload).
 dev-overlays = ["vera20k-core/dev-overlays"]
 # Optional read-only local browser dashboard, absent from default/shipping builds.
-telemetry-dashboard = ["vera20k-core/telemetry", "dep:getrandom", "dep:sha1"]
+telemetry-dashboard = ["vera20k-core/telemetry", "dep:sha1"]
 # Explicit offline trainer and per-unit event hooks. Never enabled by the
 # dashboard alone or the default/shipping feature set.
 debug-tools = ["telemetry-dashboard", "dev-overlays", "vera20k-core/debug-tools"]
@@ -64,8 +67,12 @@ debug-tools = ["telemetry-dashboard", "dev-overlays", "vera20k-core/debug-tools"
 # The GPU-free engine. Its dev features follow this package's.
 vera20k-core = { path = "src" }
 
+# Verified HTTPS lobby requests, independent of simulation.
+ureq = { version = "3.5", default-features = false, features = ["rustls", "json"] }
+base64 = "0.22"
+
 # OS session credentials and RFC6455 handshake; no simulation RNG or command intake.
-getrandom = { version = "=0.3.4", optional = true }
+getrandom = { version = "=0.3.4" }
 sha1 = { version = "=0.10.6", optional = true }
 
 # --- GPU rendering ---

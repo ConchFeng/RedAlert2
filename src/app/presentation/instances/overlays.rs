@@ -288,12 +288,16 @@ pub(crate) fn build_display_effect_instances(
         input.render_size[1] as f32 / z2,
     );
     let projection_viewport = [input.tactical[2] as f32 / z2, input.tactical[3] as f32 / z2];
-    let parachute_type = input
-        .rules
-        .general
-        .parachute_shp
-        .as_deref()
-        .and_then(|name| sim.interner().get(name));
+    // NPSE Paradrop C2FA75/C2F939 attaches either retained canopy type.
+    let parachute_types = [
+        input.rules.general.parachute_shp.as_deref(),
+        if crate::rules::NPATCH_ENABLED {
+            input.rules.general.vehicle_parachute.as_deref()
+        } else {
+            None
+        },
+    ]
+    .map(|name| name.and_then(|name| sim.interner().get(name)));
     let local_owner = input.local_owner;
     for &stable_id in sim.display_layers().ordered_ids() {
         if let Some(light) = sim.building_spotlight(stable_id, input.rules) {
@@ -337,8 +341,10 @@ pub(crate) fn build_display_effect_instances(
         };
         // Paradrop creates a retained Anim, whose GetCoords resolves its
         // owner-relative75-lepton lift. Draw it at its own Display encounter.
-        let is_parachute =
-            parachute_type.is_some_and(|ty| parachute_canopy_owner(anim, ty).is_some());
+        let is_parachute = parachute_types
+            .into_iter()
+            .flatten()
+            .any(|ty| parachute_canopy_owner(anim, ty).is_some());
         let type_name: &str = sim.interner().resolve(anim.type_id());
         let config = input.rules.art().anim_runtime_config(type_name);
         if config
@@ -451,11 +457,6 @@ pub(crate) fn build_display_effect_instances(
         let Ok(frame) = u16::try_from(anim.runtime().current_frame.wrapping_add(start)) else {
             continue;
         };
-        let tint = if is_parachute {
-            [1.0; 3]
-        } else {
-            input.lighting.anim_tint_at((rx, ry), config)
-        };
         let remap_color =
             crate::render::sprite_atlas::anim_remap_color(anim, sim.interner(), input.house_colors);
         let palette_light = crate::app::presentation::lighting::anim_palette_light(
@@ -484,6 +485,18 @@ pub(crate) fn build_display_effect_instances(
             house_color: remap_color.unwrap_or(HouseColorIndex(0)),
         };
         let entry = atlas.get(&key);
+        // DrawIt422CA0's D4 instance Convert carries its palette/FC into
+        // the ordinary native blitter. Sparse FC absence means ctor1000;
+        // it is not a reason to choose the compatibility material.
+        let instance_scheme = remap_color.is_some()
+            && !anim.use_cell_drawer()
+            && entry.is_some_and(|entry| entry.source_palette != 0)
+            && super::anim_draw::ordinary_anim_type(type_name, config);
+        let tint = if is_parachute || instance_scheme {
+            [1.0; 3]
+        } else {
+            input.lighting.anim_tint_at((rx, ry), config)
+        };
         let Some(flags) = anim_instance_flags(
             config,
             anim.draw_flags(),
@@ -500,7 +513,7 @@ pub(crate) fn build_display_effect_instances(
         // Ordinary DrawIt422CA0 -> 4AED70 carries Convert's selector into
         // the packed RGB565 blitter, rather than alpha-blending the source.
         // Original full draw controls: spatial_oracle/anim_translucency.
-        let (alpha, draw_state) = if remap_color.is_none()
+        let (alpha, draw_state) = if (remap_color.is_none() || instance_scheme)
             && super::anim_draw::ordinary_anim_type(type_name, config)
         {
             (
@@ -664,7 +677,7 @@ pub(super) fn presentation_anim_frame_count(
 }
 
 /// The object a canopy hangs on: an owner-attached anim of the
-/// `[General] Parachute=` type.
+/// retained `Parachute=` or NPSE `VehicleParachute=` type.
 fn parachute_canopy_owner(
     anim: &crate::sim::anim_class::AnimObject,
     parachute_type: crate::sim::intern::InternedId,
@@ -739,6 +752,11 @@ struct CellOverlayInputs<'a> {
     viewport: [f32; 2],
     origin_y: f32,
     world_height: f32,
+    /// Translucent fog: walls are objects, so they leave the draw plan when the
+    /// local viewer does not see their cell.
+    viewer: Option<crate::sim::intern::InternedId>,
+    fog: Option<&'a crate::sim::vision::FogState>,
+    fog_of_war: bool,
 }
 
 /// Cell_ContentRendering @ 0x006D6D10 -> DrawOverlay_Body @ 0x0047F6A0 for
@@ -776,10 +794,23 @@ fn build_cell_overlay_bodies(input: &CellOverlayInputs<'_>, bodies: &mut Vec<sup
         }
         let overlay_registry = input.registry;
         let overlay_flags = overlay_registry.and_then(|reg| reg.flags(live_overlay_id));
-        let slope_type = input
+        // Walls are owned objects, not scenery: translucent fog keeps terrain,
+        // ore and trees visible but must not expose unseen wall lines.
+        if overlay_flags.is_some_and(|flags| flags.wall)
+            && super::helpers::translucent_fog_conceals_cell(
+                input.viewer,
+                input.fog,
+                entry.rx,
+                entry.ry,
+                input.fog_of_war,
+            )
+        {
+            continue;
+        }
+        let terrain_cell = input
             .terrain
-            .and_then(|terrain| terrain.cell(entry.rx, entry.ry))
-            .map(|cell| cell.slope_type);
+            .and_then(|terrain| terrain.cell(entry.rx, entry.ry));
+        let slope_type = terrain_cell.map(|cell| cell.slope_type);
         let Some((display_overlay_id, live_overlay_data)) = overlay_display_identity(
             live_overlay_id,
             live_overlay_data,
@@ -792,15 +823,14 @@ fn build_cell_overlay_bodies(input: &CellOverlayInputs<'_>, bodies: &mut Vec<sup
             continue;
         };
         let name = if display_overlay_id == live_overlay_id {
-            input.names.get(&live_overlay_id).cloned()
+            input.names.get(&live_overlay_id).map(String::as_str)
         } else {
-            overlay_registry
-                .and_then(|registry| registry.name(display_overlay_id).map(str::to_owned))
+            overlay_registry.and_then(|registry| registry.name(display_overlay_id))
         };
         let Some(name) = name else {
             continue;
         };
-        if !ordinary_overlay_accepts_identity(live_overlay_id, &name) {
+        if !ordinary_overlay_accepts_identity(live_overlay_id, name) {
             continue;
         }
 
@@ -825,15 +855,9 @@ fn build_cell_overlay_bodies(input: &CellOverlayInputs<'_>, bodies: &mut Vec<sup
             0.0
         };
 
-        let z: u8 = input
-            .terrain
-            .and_then(|terrain| terrain.cell(entry.rx, entry.ry))
-            .map_or(0, |cell| cell.level);
+        let z: u8 = terrain_cell.map_or(0, |cell| cell.level);
         let (screen_x, screen_y) = terrain::iso_to_screen(entry.rx, entry.ry, z);
-        let live_flags = input
-            .terrain
-            .and_then(|terrain| terrain.cell(entry.rx, entry.ry))
-            .map_or(0, |cell| cell.bridge_facts.raw_flags);
+        let live_flags = terrain_cell.map_or(0, |cell| cell.bridge_facts.raw_flags);
         let screen_y: f32 = screen_y
             + track_y_offset
             + super::bridges::cell_overlay_y_offset(live_overlay_id, live_flags, live_overlay_data);
@@ -870,7 +894,7 @@ fn build_cell_overlay_bodies(input: &CellOverlayInputs<'_>, bodies: &mut Vec<sup
         // as phantom deck slabs. Frame selection lives in
         // `render::overlay_atlas::resolve_body_frame`.
         let key = rubble_key.unwrap_or_else(|| OverlaySpriteKey {
-            name: name.clone(),
+            name: name.to_owned(),
             frame: i32::from(render_frame),
         });
         let Some(spr) = input.atlas.get(&key) else {
@@ -959,6 +983,25 @@ pub(crate) fn build_overlay_instances(
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
 
+    let (viewer, fog, fog_of_war) =
+        state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .map_or((None, None, false), |runtime| {
+                let sim = &runtime.simulation;
+                let viewer = crate::app::input::commands::preferred_local_owner_name(state)
+                    .as_deref()
+                    .and_then(|name| sim.interner().get(name));
+                (
+                    viewer.filter(|_| {
+                        state.translucent_fog_enabled()
+                            && !state.match_state.sandbox_full_visibility
+                    }),
+                    Some(sim.fog()),
+                    sim.session().game_options().fog_of_war,
+                )
+            });
     build_cell_overlay_bodies(
         &CellOverlayInputs {
             entries: state.match_state.match_presentation.overlays.as_slice(),
@@ -987,6 +1030,9 @@ pub(crate) fn build_overlay_instances(
             viewport: [sw, sh],
             origin_y,
             world_height,
+            viewer,
+            fog,
+            fog_of_war,
         },
         bodies,
     );

@@ -24,7 +24,12 @@ pub(super) fn request_start(state: &mut AppState) -> anyhow::Result<()> {
         "setup is locked"
     );
     // C2 ignores Start while its StartGame request is pending (00B77DEC).
-    if super::super::wol::start_pending(state) {
+    if state
+        .frontend
+        .network_setup_protocol
+        .as_ref()
+        .is_some_and(|protocol| protocol.start_in_progress())
+    {
         return Ok(());
     }
     super::super::remember_setup(state);
@@ -102,7 +107,9 @@ pub(super) fn request_start(state: &mut AppState) -> anyhow::Result<()> {
             );
             return Ok(());
         }
-        if launch.humans.len() >= 7 {
+        // VERA online/LAN clients use the shared thirty-player admission
+        // owner; the original C2 six-user service limit does not apply.
+        if launch.humans.len() > crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT {
             message(state, "TXT_TOO_MANY_PLAYERS", &[]);
             return Ok(());
         }

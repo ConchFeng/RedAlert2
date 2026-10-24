@@ -20,6 +20,8 @@ use std::task::{Context as TaskContext, Poll, Wake, Waker};
 
 use anyhow::{Context, Result, bail};
 #[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
+use winit::event_loop::OwnedDisplayHandle;
+#[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
 use winit::window::Window;
 
 /// A platform window and logical drawable size for wgpu surface creation.
@@ -41,6 +43,64 @@ pub trait NativeWindow: Clone + Send + Sync {
 /// more would fail on hardware that could otherwise run the game, and the request is
 /// clamped to the adapter's own maximum anyway.
 pub(crate) const MAX_USEFUL_TEXTURE_DIM: u32 = 16_384;
+
+/// One production frame, backed by either the window or its hidden capture target.
+pub struct GpuFrame {
+    pub texture: wgpu::Texture,
+    surface: Option<wgpu::SurfaceTexture>,
+}
+
+impl GpuFrame {
+    fn from_surface(surface: wgpu::SurfaceTexture) -> Self {
+        Self {
+            texture: surface.texture.clone(),
+            surface: Some(surface),
+        }
+    }
+
+    pub fn present(self) {
+        if let Some(surface) = self.surface {
+            surface.present();
+        }
+    }
+}
+
+/// Derived render target for an explicitly hidden diagnostic window.
+struct CaptureTarget {
+    texture: wgpu::Texture,
+}
+
+impl CaptureTarget {
+    fn new(device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) -> Self {
+        Self {
+            texture: device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("Hidden Capture Frame"),
+                size: wgpu::Extent3d {
+                    width: config.width,
+                    height: config.height,
+                    depth_or_array_layers: 1,
+                },
+                mip_level_count: 1,
+                sample_count: 1,
+                dimension: wgpu::TextureDimension::D2,
+                format: config.format,
+                usage: config.usage,
+                view_formats: &config.view_formats,
+            }),
+        }
+    }
+
+    fn resize(&mut self, device: &wgpu::Device, config: &wgpu::SurfaceConfiguration) {
+        *self = Self::new(device, config);
+    }
+
+    fn frame(&self) -> GpuFrame {
+        GpuFrame {
+            texture: self.texture.clone(),
+            surface: None,
+        }
+    }
+}
 
 /// Borrowed, serialization-ready identity of the adapter selected for this GPU
 /// context. This is observation only: it mirrors the immutable `AdapterInfo`
@@ -76,7 +136,11 @@ impl<'a> From<&'a wgpu::AdapterInfo> for GpuAdapterObservation<'a> {
 /// Other render modules borrow `device` and `queue` from this struct.
 pub struct GpuContext {
     /// The GPU surface we render to (tied to the window).
-    pub surface: wgpu::Surface<'static>,
+    // Loading progress shares the GPU context with asset uploads. Only this
+    // owner locks the surface, briefly, to acquire or replace a lost swapchain.
+    surface: Mutex<wgpu::Surface<'static>>,
+    instance: wgpu::Instance,
+    window: Arc<dyn wgpu::WindowHandle>,
     /// The logical GPU device — used to create buffers, textures, pipelines.
     pub device: wgpu::Device,
     /// The command queue — used to submit render commands to the GPU.
@@ -87,6 +151,7 @@ pub struct GpuContext {
     pub surface_format: wgpu::TextureFormat,
     /// Exact identity returned by the adapter that backs this context.
     adapter_info: wgpu::AdapterInfo,
+    capture_target: Option<CaptureTarget>,
 }
 
 impl GpuContext {
@@ -94,37 +159,34 @@ impl GpuContext {
     ///
     /// This blocks on async wgpu calls using [`block_on`]. Safe to call from
     /// winit's sync ApplicationHandler::resumed().
+    /// `hidden_capture` is the startup owner's deliberate capture choice, not
+    /// the current visibility/occlusion of a player's ordinary window.
     #[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
-    pub fn new(window: Arc<Window>) -> Result<Self> {
-        block_on(Self::new_async(window))
+    pub fn new(
+        window: Arc<Window>,
+        _display: OwnedDisplayHandle,
+        hidden_capture: bool,
+    ) -> Result<Self> {
+        block_on(Self::new_async(window, hidden_capture))
     }
 
-    /// Initialize wgpu from a platform-owned surface handle.
-    pub fn new_with_native_window<W: NativeWindow>(window: W) -> Result<Self>
-    where
-        W::Handle: 'static,
-    {
-        block_on(Self::new_async(window))
+    /// Initialize the diagnostic native-window entry without a capture target.
+    pub fn new_with_native_window<W: NativeWindow>(window: W) -> Result<Self> {
+        block_on(Self::new_async(window, false))
     }
 
-    /// Async initialization — called by new() via block_on().
-    async fn new_async<W>(window: W) -> Result<Self>
-    where
-        W: NativeWindow,
-        W::Handle: 'static,
-    {
-        // wgpu 27's standard override selects a backend for reproducible
-        // shroud GPU comparisons while retaining primary backends by default.
-        // https://docs.rs/wgpu-types/27.0.1/wgpu_types/struct.Backends.html#method.with_env
-        let instance: wgpu::Instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
+    async fn new_async<W: NativeWindow>(window: W, hidden_capture: bool) -> Result<Self> {
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor {
             backends: wgpu::Backends::PRIMARY.with_env(),
             ..Default::default()
         });
+        let (window_width, window_height) = window.inner_size();
+        let window: Arc<dyn wgpu::WindowHandle> = Arc::new(window.surface_handle());
 
         // Create the surface from our window. The surface is what we draw pixels to.
         log::info!("gpu_surface_create_started");
         let surface: wgpu::Surface<'static> = instance
-            .create_surface(window.surface_handle())
+            .create_surface(window.clone())
             .context("Failed to create wgpu surface from window")?;
         log::info!("gpu_surface_created");
 
@@ -224,35 +286,33 @@ impl GpuContext {
             .find(|f| f.is_srgb())
             .copied()
             .unwrap_or(surface_caps.formats[0]);
-        let (surface_format, view_formats) = if cfg!(feature = "horizon-client")
-            && !swapchain_format.is_srgb()
-        {
-            let srgb_view = match swapchain_format {
-                wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
-                wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
-                format => bail!(
-                    "Horizon client rendering requires an sRGB view of an 8-bit \
+        let (surface_format, view_formats) =
+            if cfg!(feature = "horizon-client") && !swapchain_format.is_srgb() {
+                let srgb_view = match swapchain_format {
+                    wgpu::TextureFormat::Bgra8Unorm => wgpu::TextureFormat::Bgra8UnormSrgb,
+                    wgpu::TextureFormat::Rgba8Unorm => wgpu::TextureFormat::Rgba8UnormSrgb,
+                    format => bail!(
+                        "Horizon client rendering requires an sRGB view of an 8-bit \
                      color surface, adapter selected {format:?} from {:?}",
-                    surface_caps.formats
-                ),
-            };
-            if !downlevel
-                .flags
-                .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
-            {
-                bail!(
-                    "Horizon client rendering requires sRGB surface views, adapter \
+                        surface_caps.formats
+                    ),
+                };
+                if !downlevel
+                    .flags
+                    .contains(wgpu::DownlevelFlags::SURFACE_VIEW_FORMATS)
+                {
+                    bail!(
+                        "Horizon client rendering requires sRGB surface views, adapter \
                      {swapchain_format:?} has downlevel flags {:?}",
-                    downlevel.flags
-                );
-            }
-            (srgb_view, vec![srgb_view])
-        } else {
-            (swapchain_format, Vec::new())
-        };
+                        downlevel.flags
+                    );
+                }
+                (srgb_view, vec![srgb_view])
+            } else {
+                (swapchain_format, Vec::new())
+            };
 
         // Configure the surface with our chosen format and the window's current size.
-        let (window_width, window_height) = window.inner_size();
         let config: wgpu::SurfaceConfiguration = wgpu::SurfaceConfiguration {
             usage: required_surface_usages,
             format: swapchain_format,
@@ -264,6 +324,13 @@ impl GpuContext {
             desired_maximum_frame_latency: 2,
         };
         surface.configure(&device, &config);
+        // wgpu-hal 29.0.4 Metal acquire_texture refuses any macOS NSWindow
+        // without NSWindowOcclusionStateVisible, including deliberately hidden
+        // captures. Render those frames offscreen with the same format/usages;
+        // the normal render, loading, readback and capture-driver paths remain
+        // shared. Ordinary occluded windows retain swapchain skip/recovery.
+        // https://docs.rs/wgpu-hal/29.0.4/src/wgpu_hal/metal/surface.rs.html#126-151
+        let capture_target = hidden_capture.then(|| CaptureTarget::new(&device, &config));
 
         log::info!(
             "GPU initialized: {}x{}, swapchain_format={:?}, render_format={:?}",
@@ -274,12 +341,15 @@ impl GpuContext {
         );
 
         Ok(Self {
-            surface,
+            surface: Mutex::new(surface),
+            instance,
+            window,
             device,
             queue,
             config,
             surface_format,
             adapter_info,
+            capture_target,
         })
     }
 
@@ -298,32 +368,41 @@ impl GpuContext {
         }
         self.config.width = width;
         self.config.height = height;
-        self.surface.configure(&self.device, &self.config);
+        self.surface
+            .get_mut()
+            .unwrap_or_else(PoisonError::into_inner)
+            .configure(&self.device, &self.config);
+        if let Some(target) = &mut self.capture_target {
+            target.resize(&self.device, &self.config);
+        }
         log::debug!("Surface resized to {}x{}", width, height);
     }
 
     /// Take the window's next frame to draw into, or `None` when there is none
     /// this time and the next redraw should try again.
     ///
-    /// A swapchain the driver no longer considers fit for its window shows up
-    /// only here: `SurfaceTexture::present` drops that status, and the only
-    /// other reconfigure is a resize event, which a change that leaves the
-    /// window's size alone never sends. So a stale, lost or failed swapchain is
-    /// reconfigured once and asked again, as wgpu 27's own example does
-    /// (`SurfaceWrapper::acquire`, `examples/features/src/framework.rs` at
-    /// v27.0.1). A frame wgpu marks suboptimal is drawn as it is, as there.
-    pub fn acquire_frame(&self) -> Result<Option<wgpu::SurfaceTexture>, wgpu::SurfaceError> {
-        acquire_with_recovery(
-            || self.surface.get_current_texture(),
-            |error| {
-                log::warn!(
-                    "Surface texture: {error}; reconfiguring the surface at {}x{}",
-                    self.config.width,
-                    self.config.height
-                );
-                self.surface.configure(&self.device, &self.config);
-            },
-        )
+    /// A stale or suboptimal swapchain is reconfigured once and asked again;
+    /// a lost surface is recreated first. Timeout skips this redraw; other
+    /// failures remain errors under the pinned wgpu 27 API.
+    pub fn acquire_frame(&self) -> Result<Option<GpuFrame>> {
+        if let Some(target) = &self.capture_target {
+            return Ok(Some(target.frame()));
+        }
+        let mut surface = self.surface.lock().unwrap_or_else(PoisonError::into_inner);
+        acquire_with_recovery(|recovery| {
+            if let Some(recovery) = recovery {
+                log::warn!("Surface texture: {recovery:?}; recovering the surface");
+                if recovery == SurfaceRecovery::Recreate {
+                    *surface = self
+                        .instance
+                        .create_surface(self.window.clone())
+                        .context("recreate lost wgpu surface")?;
+                }
+                surface.configure(&self.device, &self.config);
+            }
+            Ok(surface.get_current_texture())
+        })
+        .map(|frame| frame.map(GpuFrame::from_surface))
     }
 
     /// Create a depth texture matching the current surface dimensions.
@@ -363,37 +442,28 @@ impl NativeWindow for Arc<Window> {
     }
 }
 
-/// One frame acquisition under [`GpuContext::acquire_frame`]'s rule. A
-/// timeout skips the frame. A stale, lost or failed swapchain is reconfigured
-/// once and asked again; still stale or timed out, the frame is skipped, and
-/// any other failure is the caller's error.
-fn acquire_with_recovery<Frame>(
-    mut acquire: impl FnMut() -> Result<Frame, wgpu::SurfaceError>,
-    reconfigure: impl FnOnce(&wgpu::SurfaceError),
-) -> Result<Option<Frame>, wgpu::SurfaceError> {
-    use wgpu::SurfaceError;
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum SurfaceRecovery {
+    Reconfigure,
+    Recreate,
+}
 
-    let error = match acquire() {
+/// Request at most two frames, recovering before the second acquisition only.
+fn acquire_with_recovery<Frame>(
+    mut acquire: impl FnMut(Option<SurfaceRecovery>) -> Result<Result<Frame, wgpu::SurfaceError>>,
+) -> Result<Option<Frame>> {
+    use wgpu::SurfaceError;
+    let recovery = match acquire(None)? {
         Ok(frame) => return Ok(Some(frame)),
-        Err(error @ SurfaceError::Timeout) => {
-            log::debug!("Surface texture: {error}; skipping this frame");
-            return Ok(None);
-        }
-        Err(
-            error @ (SurfaceError::Outdated
-            | SurfaceError::Lost
-            | SurfaceError::OutOfMemory
-            | SurfaceError::Other),
-        ) => error,
+        Err(SurfaceError::Timeout) => return Ok(None),
+        Err(SurfaceError::Lost) => SurfaceRecovery::Recreate,
+        Err(SurfaceError::Outdated) => SurfaceRecovery::Reconfigure,
+        Err(error) => return Err(error.into()),
     };
-    reconfigure(&error);
-    match acquire() {
+    match acquire(Some(recovery))? {
         Ok(frame) => Ok(Some(frame)),
-        Err(error @ (SurfaceError::Timeout | SurfaceError::Outdated)) => {
-            log::debug!("Surface texture after reconfiguring: {error}; skipping this frame");
-            Ok(None)
-        }
-        Err(error) => Err(error),
+        Err(SurfaceError::Timeout | SurfaceError::Outdated) => Ok(None),
+        Err(error) => Err(error.into()),
     }
 }
 
@@ -448,54 +518,41 @@ mod tests {
 
     use wgpu::SurfaceError::{Lost, Outdated, Timeout};
 
-    use super::{acquire_with_recovery, block_on};
+    use super::{SurfaceRecovery, acquire_with_recovery, block_on};
 
     /// Run one acquisition over `results`, the acquire answers in call order;
     /// returns its outcome and how often it reconfigured the surface.
     fn acquire_over(
         results: Vec<Result<u32, wgpu::SurfaceError>>,
-    ) -> (Result<Option<u32>, wgpu::SurfaceError>, u32) {
+    ) -> (anyhow::Result<Option<u32>>, Vec<SurfaceRecovery>) {
         let mut results = results.into_iter();
-        let mut reconfigures = 0;
-        let outcome = acquire_with_recovery(
-            || results.next().expect("acquired more often than scripted"),
-            |_| reconfigures += 1,
-        );
+        let mut recoveries = Vec::new();
+        let outcome = acquire_with_recovery(|recovery| {
+            recoveries.extend(recovery);
+            Ok(results.next().expect("acquired more often than scripted"))
+        });
         assert!(results.next().is_none(), "scripted answers left unasked");
-        (outcome, reconfigures)
+        (outcome, recoveries)
     }
 
     #[test]
-    fn stale_swapchain_is_reconfigured_and_its_frame_taken() {
-        assert_eq!(acquire_over(vec![Err(Outdated), Ok(7)]), (Ok(Some(7)), 1));
+    fn timeout_skips_without_recovery() {
+        let (frame, recoveries) = acquire_over(vec![Err(Timeout)]);
+        assert_eq!(frame.unwrap(), None);
+        assert!(recoveries.is_empty());
     }
 
     #[test]
-    fn lost_swapchain_is_reconfigured_and_its_frame_taken() {
-        assert_eq!(acquire_over(vec![Err(Lost), Ok(7)]), (Ok(Some(7)), 1));
-    }
-
-    #[test]
-    fn timeout_skips_the_frame_without_reconfiguring() {
-        assert_eq!(acquire_over(vec![Err(Timeout)]), (Ok(None), 0));
-    }
-
-    #[test]
-    fn swapchain_still_stale_after_its_reconfigure_skips_the_frame() {
-        assert_eq!(
-            acquire_over(vec![Err(Outdated), Err(Outdated)]),
-            (Ok(None), 1)
-        );
-    }
-
-    #[test]
-    fn surface_still_lost_after_its_reconfigure_is_an_error() {
-        assert_eq!(acquire_over(vec![Err(Lost), Err(Lost)]), (Err(Lost), 1));
-    }
-
-    #[test]
-    fn ready_frame_is_taken_without_reconfiguring() {
-        assert_eq!(acquire_over(vec![Ok(7)]), (Ok(Some(7)), 0));
+    fn lost_surface_recreates_and_stale_surface_reconfigures_once() {
+        let (frame, recoveries) = acquire_over(vec![Err(Lost), Ok(7)]);
+        assert_eq!(frame.unwrap(), Some(7));
+        assert_eq!(recoveries, vec![SurfaceRecovery::Recreate]);
+        let (frame, recoveries) = acquire_over(vec![Err(Outdated), Err(Outdated)]);
+        assert_eq!(frame.unwrap(), None);
+        assert_eq!(recoveries, vec![SurfaceRecovery::Reconfigure]);
+        let (frame, recoveries) = acquire_over(vec![Err(Lost), Err(Lost)]);
+        assert!(frame.is_err());
+        assert_eq!(recoveries, vec![SurfaceRecovery::Recreate]);
     }
 
     #[test]

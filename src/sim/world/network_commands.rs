@@ -4,7 +4,9 @@
 use super::Simulation;
 use super::queued_command::QueuedCommand;
 use crate::sim::command::CommandRecord;
-use crate::sim::command_queue::NETWORK_LOCAL_MIRROR_LIMIT;
+use crate::sim::command_queue::{
+    NETWORK_COMMAND_CAPACITY, NETWORK_LOCAL_MIRROR_LIMIT, NETWORK_SOURCE_DOLIST_CAPACITY,
+};
 
 /// The immutable post-Logic values of the frame being exchanged. A resumed
 /// wait uses these same values without another Logic or checksum pass.
@@ -59,11 +61,64 @@ pub struct NetworkCommandQueues<'a> {
 }
 
 impl Simulation {
+    /// SessionClass::Am_I_Master697E70, called by ProcessNetwork647B8A.
+    /// LAN697ECD..697F0D selects the first human, undefeated House. WOL's
+    /// explicit publisher697E81..697ECA survives ordinary defeat/Observe;
+    /// DestroyConnection5DAA48..5DAA77 replaces it only after source loss.
+    /// Source: original gamemd.exe instructions at those callers.
+    ///
+    /// The relay has no native direct-peer nomination664440. Its replacement
+    /// is the first remaining admitted human in shared House order, after
+    /// synchronized EXIT/REMOVEPLAYER retires the old timing row. Neither a
+    /// local peer list nor a second cached host participates in this decision.
+    pub fn network_timing_host_house(&self) -> Option<i8> {
+        let timing = self.session.network_command_timing()?;
+        let wol = self.session.game_mode() == crate::sim::scenario_session::ScenarioGameMode::Wol;
+        let eligible = |house_id: i8| {
+            timing.admits_source(house_id)
+                && usize::try_from(house_id)
+                    .ok()
+                    .and_then(|index| self.houses.order().get(index))
+                    .and_then(|owner| self.houses.get(owner))
+                    .is_some_and(|house| {
+                        house.is_human() && !house.left_game() && (wol || !house.is_defeated())
+                    })
+        };
+        if wol && eligible(timing.host_house()) {
+            return Some(timing.host_house());
+        }
+        self.houses
+            .order()
+            .iter()
+            .enumerate()
+            .filter_map(|(index, _)| i8::try_from(index).ok())
+            .find(|&house| eligible(house))
+    }
+
     /// Borrow the existing EventClass queues for a post-Logic network pass.
     /// The caller cannot replace their owners or retain the borrow across a
     /// simulation visit.
     pub fn network_command_queues(&mut self) -> NetworkCommandQueues<'_> {
         NetworkCommandQueues::new(self)
+    }
+
+    pub fn synchronized_network_command_count(&self) -> usize {
+        self.pending_commands.native_len()
+    }
+
+    /// Shared read-only admission fact for the sender and diagnostics. Reading
+    /// this allowance neither reserves mirrors nor changes either command queue.
+    pub fn network_mirror_allowance(&self) -> usize {
+        let synchronized = self.synchronized_network_command_count();
+        if self.session.game_mode().is_network() {
+            let source_house = self.local_command_house().unwrap_or(0);
+            NETWORK_COMMAND_CAPACITY.saturating_sub(synchronized).min(
+                NETWORK_SOURCE_DOLIST_CAPACITY
+                    .saturating_sub(self.pending_commands.native_house_len(source_house)),
+            )
+        } else {
+            NETWORK_LOCAL_MIRROR_LIMIT.saturating_sub(synchronized)
+        }
     }
 }
 
@@ -80,12 +135,51 @@ impl<'a> NetworkCommandQueues<'a> {
         self.sim.session.network_max_ahead_frames()
     }
 
+    pub fn timing(&self) -> Option<&crate::sim::command_queue::NetworkCommandTiming> {
+        self.sim.session.network_command_timing()
+    }
+
+    /// The same canonical publisher used when accepting EVENT_TIMING.
+    pub fn timing_host_house(&self) -> Option<i8> {
+        self.sim.network_timing_host_house()
+    }
+
+    pub fn install_timing(
+        &mut self,
+        host_house: i8,
+        frame_send_rate: std::num::NonZeroU8,
+        houses: impl IntoIterator<Item = i8>,
+    ) {
+        self.sim
+            .session
+            .install_network_command_timing(host_house, frame_send_rate, houses);
+        // Main__PrepareSession52DAC7 resets the prior match's retime window.
+        self.sim.pending_commands.set_retime_window(0, 0);
+    }
+
+    pub fn game_speed(&self) -> i32 {
+        self.sim.session.game_options().game_speed
+    }
+    pub fn fog_of_war(&self) -> bool {
+        self.sim.session.game_options().fog_of_war
+    }
+
+    /// ProcessNetwork647767 / 647DB3 / 647E85 append into the same OutList as
+    /// player commands. Capacity refusal never creates a second pending queue.
+    pub fn issue_timing_record(&mut self, record: CommandRecord) -> bool {
+        self.sim
+            .issue_local_command(crate::sim::command::CommandEnvelope::synchronized(
+                record,
+                self.sim.session.tick(),
+            ))
+    }
+
     pub fn synchronized_len(&self) -> usize {
-        self.sim.pending_commands.native_len()
+        self.sim.synchronized_network_command_count()
     }
 
     pub fn mirror_allowance(&self) -> usize {
-        NETWORK_LOCAL_MIRROR_LIMIT.saturating_sub(self.synchronized_len())
+        self.sim.network_mirror_allowance()
     }
 
     /// Borrow the prefix the native encoder may attempt. A semantic fallback
@@ -97,7 +191,10 @@ impl<'a> NetworkCommandQueues<'a> {
             .sim
             .local_commands
             .iter()
-            .take(self.mirror_allowance())
+            .take(
+                self.mirror_allowance()
+                    .min(crate::sim::command_queue::OUT_LIST_CAPACITY),
+            )
             .enumerate()
         {
             match entry.record() {
@@ -257,6 +354,7 @@ mod tests {
     #[test]
     fn network_commit_preserves_unsent_headers_and_records_only_accepted_mirrors() {
         let mut sim = Simulation::new();
+        let initial_allowance = sim.network_mirror_allowance();
         let records: Vec<_> = [3, 4, 5]
             .into_iter()
             .map(|speed| {
@@ -291,6 +389,8 @@ mod tests {
             Some(&mirror)
         );
         assert_eq!(sim.frame_command_admissions.len(), 1);
+        assert_eq!(sim.synchronized_network_command_count(), 1);
+        assert_eq!(sim.network_mirror_allowance(), initial_allowance - 1);
         assert!(matches!(&sim.frame_command_admissions[0].payload,
             Command::SynchronizedRecord { record } if record == &mirror));
     }

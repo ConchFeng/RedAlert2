@@ -42,7 +42,7 @@ use super::helpers::{
     cell_visibility_color, dim_color, set_pixel, surface_visibility_color,
 };
 pub use super::helpers::{OverlayClassification, default_minimap_rect};
-use super::helpers::{OverlayPixel, TerrainPixel};
+use super::helpers::{OverlayPixel, TerrainPixels};
 #[cfg(test)]
 use super::projection::minimap_screen_point_to_camera_top_left;
 use super::projection::{MinimapPlayfieldProjection, aperture_pixel, generated_primary_copy_frame};
@@ -109,7 +109,7 @@ pub struct MinimapRenderer {
     pub(super) world_origin_y: f32,
     pub(super) world_width: f32,
     pub(super) world_height: f32,
-    terrain_pixels: Vec<TerrainPixel>,
+    terrain_pixels: TerrainPixels,
     /// Exact generated-primary pixels, including each pixel's native inverse
     /// shroud/fog cell and packed terrain color.
     surface_pixels: Vec<RadarSurfacePixel>,
@@ -448,8 +448,10 @@ impl MinimapRenderer {
                     // It retains the legacy per-cell presentation path.
                     &[]
                 };
+                // Every pixel samples the same settled viewer plane this pass.
+                let visibility = fog.by_owner().get(&local_owner);
                 for terrain_pixel in pixels {
-                    let color = match surface_visibility_color(local_owner, fog, terrain_pixel) {
+                    let color = match surface_visibility_color(visibility, terrain_pixel) {
                         Some(color) => color,
                         None => continue,
                     };
@@ -461,7 +463,7 @@ impl MinimapRenderer {
                     }
                 }
                 if self.native_radar_terrain.is_none() {
-                    for terrain_pixel in &self.terrain_pixels {
+                    for terrain_pixel in self.terrain_pixels.iter() {
                         let color = match cell_visibility_color(local_owner, fog, terrain_pixel) {
                             Some(color) => color,
                             None => continue,

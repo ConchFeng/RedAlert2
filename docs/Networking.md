@@ -1,25 +1,34 @@
 # Multiplayer behavior and ownership
 
-VERA20k is reproducing active-retail `gamemd.exe` multiplayer behavior, function
-by function, through the existing gameplay owners. This includes synchronized
-command queues, session setup, UDP transport, reliable delivery, frame pacing,
-checksums, disconnects and cleanup. The audit is unfinished. A working packet
-exchange is not a complete multiplayer game.
+Current macOS and Linux source builds provide LAN and online multiplayer through
+the normal game menus. Both paths use the existing
+owners for session setup, synchronized commands, reliable UDP delivery, frame
+pacing, checksums, disconnects, results and rematches. The function-level
+active-retail `gamemd.exe` parity audit remains separate from runtime validation.
 
 Legacy IPX sockets and the IPX protocol are excluded. Shared behavior in
 IPX-named classes remains relevant. Retail's Network menu constructs the IPX
 interface (`52E3D2`); VERA uses IPv4 UDP for this LAN entry point. That replacement,
 including limited broadcast on port 1234, is an explicit transport adaptation.
-The Internet path, router connections and remaining dependencies still need their
-own active-native evidence and implementation.
+Online play uses the Cloudflare HTTPS lobby and an authenticated UDP gameplay
+relay on DigitalOcean. Relay admission handles client source-address changes;
+clients retain reliable delivery and simulation authority. Matches are between
+VERA20k clients; legacy IPX and gamemd wire compatibility are not supported.
 
 ## Current production path
 
 The Network menu enters the LAN lobby. The physical service handles discovery,
 join, options, roster, readiness and GO, then transfers the same socket pair into
-the running match. The app keeps servicing global messages during loading and
-frame waits. Gameplay uses the same OutList/DoList owners as offline play; the
-transport does not own a second simulation command queue.
+the running match. The Internet menu's Custom Match path uses normal account
+creation/login, game discovery, host settings and guest acceptance. Its HTTPS
+service supplies match-specific relay credentials before the same loading and
+command handoff. Both paths transfer selected authored maps or generated
+seed/preview data and verify build, rules and effective-map agreement before start.
+
+The app services reliable messages and intermediate progress while loading, and
+continues servicing transport during frame waits. Gameplay uses the same
+OutList/DoList owners as offline play; the transport does not own a second
+simulation command queue.
 
 | Responsibility | Authoritative owner |
 |---|---|
@@ -29,10 +38,12 @@ transport does not own a second simulation command queue.
 | Shared reliable send queue, retransmission and response-time history | `net::reliable` |
 | Global application message admission, acknowledgements and retirement | `net::global` |
 | UDP sockets, datagram checksum and retained raw send attempts | `net::udp` |
-| Native frame-zero barrier, send cadence and command wait | `net::live_commands` |
+| Startup agreement, native send cadence and command wait | `net::live_commands` |
 | LAN packet layouts and options parsing | `net::lan_messages` |
 | Participant membership, admitted endpoints, launch state and checksum history | `app::match_runtime::session::MatchSession` |
-| Discovery projection and physical lobby/setup service | `app::lan_service` |
+| Discovery projection and physical LAN lobby/setup service | `app::lan_service` |
+| Online account, lobby and relay-admission adapter | `app::shell_wol::live_service` |
+| Shared map source, generated staging and verified transfer admission | `map::source`, `app::shell_network_setup::maps` |
 | Setup UI, map admission and pending handoff | `app::shell_network_setup` |
 | Production frame boundary and post-Logic continuation | `app::match_runtime::sim_tick` and `sim::world` |
 | Connection dialogs, votes and participant cleanup | `app::match_runtime::network_match` |
@@ -81,35 +92,27 @@ kick, while its departure removes the admitted participant and endpoint.
   visit resets queues, sequence history, observations and lobby timing while
   retaining the portable socket bindings.
 
-Mixed VERA/gamemd matches are not an established capability. Matching packet
-layouts is insufficient: every participating simulation would also need to agree
-on all relevant state and arithmetic.
+## Validation and native audit
 
-## Required remaining work
+Two consecutive online matches passed functional validation with 30 independent
+client processes and more than 20,000 active mobile units per match. The clients
+ran across seven machines: two local macOS clients on one Mac and 28 Linux clients
+cohosted on six VMs. The run covered real Move/Stop input, matching shared
+simulation checksums and hashes, both results screens and lobby returns, a rematch
+in the same client processes, and final Main Menu return.
 
-The active audit follows player-visible chains and their dependencies. Completing
-a ledger row or recording a gap does not complete an unimplemented behavior.
+The Linux clients used software rendering. Sampled host traces showed approximately
+0.74 simulation frames per wall-clock second in each match. These samples
+measure observed simulation progress, not display FPS or the selected TIMING rate.
+This establishes functional scale behavior; smooth, real-time performance remains
+unproven. Exhaustive fault coverage and Windows multiplayer validation are not
+claimed here.
 
-- Complete the command producers beyond the bounded AMCV-to-Power-Plant opening:
-  wider deploy paths, mobile production, building actions, targeting, special
-  weapons and simulation-generated publication.
-- Complete map/preview transfer, random-map and cooperative handoffs, plus the
-  Internet session and router paths. Preserve shared session and transport owners.
-- Establish source filtering, interface selection, extra-socket/router handling
-  and remaining protocol configuration. Service intermediate loading progress
-  while the production loader is working.
-- Exercise loss, duplication, reordering, retry exhaustion, late participants,
-  desync, quit, timeout, kicks and return-to-lobby lifetimes through production
-  clients. More than two participants need independent coverage.
-- Complete the function-level audit with original bodies, active callers and
-  retail data. Justify each exclusion with native evidence.
-- Demonstrate full LAN and Internet matches between independent VERA20k clients
-  on separate machines, matching per-frame checksums and correct failure
-  handling. Cross-platform determinism remains required.
-
-The local MoveFlash renderer and native DoList overflow behavior also remain
-explicit residuals. Safe rejection of unsupported commands and capacity edges
-is not evidence that those gameplay mechanisms are reproduced.
+The native-function audit continues through the existing owners, including wider
+gameplay command producers and cooperative handoffs. Native extra-channel/router
+behavior, interface selection and local MoveFlash drawing retain their separate
+audit scope. VERA's IPv4/relay transport and bounded command admission do not claim
+legacy wire compatibility or exhaustive gamemd behavior.
 
 ## Reproducible validation tools
 
@@ -130,15 +133,18 @@ After building the normal app with `--profile fast`, run the host with
 --cursor-y 300 --output <new-host-directory> --lan-bind 127.0.0.1:32100
 --lan-peer 127.0.0.1:32110`. Run the guest with `lan-live-guest`, a separate output
 directory, and the bind/peer endpoints exchanged. The output manifest's
-`lan.native_checksums` records per-frame checksums. This diagnostic covers a
-bounded Move/Stop scenario; it does not establish a full match or separate-machine
-networking. Validation results belong in the PR and checkpoint, not the tree.
+`lan.rounds[n].runtime.native_checksums` records per-frame checksums for each
+round. The live targets drive real Move/Stop input, results, lobby rematch and
+Main Menu return across two games.
+This loopback example alone does not establish separate-machine or scale coverage.
+Normal players do not need these diagnostic flags. Validation results belong in
+the task's validation records, not the tree.
 
 The `lan-battle-host` and `lan-battle-guest` targets use the same isolated setup
 and endpoints. Both select Americans through setup, deploy their AMCV (host D
 key, guest self-click), and produce a GAPOWR. The input driver holds, resumes,
 cancels with a refund check, then builds and places a fresh product while
 retaining its paid identity. Both clients must observe both completed power
-plants. The manifest retains 1,800 frame checksums and the observed production
-actions. This is a bounded opening check with the same 180-second diagnostic
+plants. The manifest retains 7,200 frame checksums and the observed production
+actions. This is a bounded opening check with a 300-second default diagnostic
 budget; simulation timing and network timeouts still belong to production.

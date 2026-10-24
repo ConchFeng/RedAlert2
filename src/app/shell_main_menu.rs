@@ -89,6 +89,12 @@ impl crate::app::persistence::options::launcher::LauncherPreviewOperations for A
             .interpolation
             .set_enabled(enabled);
     }
+    fn store_mouse_wheel_zoom(&mut self, enabled: bool) {
+        self.persistence.options_profile.mouse_wheel_zoom = enabled;
+        if !enabled {
+            crate::app::input::camera::reset_view_distance(self);
+        }
+    }
     fn store_wol_test_service(&mut self, wol_test_service: bool) {
         // The next Internet visit picks its provider from it.
         self.persistence.options_profile.wol_test_service = wol_test_service;
@@ -121,8 +127,19 @@ impl crate::app::persistence::options::launcher::LauncherParentOperations
     }
 
     fn refresh_detail(&mut self) {
-        // Rust-native display invalidation for native `0x004AE450`. The live
-        // presentation reads the projection above on the requested frame.
+        // Display4AE450 resamples synchronously, before the next Logic visit
+        // can copy a Cell's light into a grapple anim. This local operation
+        // never enters Simulation's replay/sync hash.
+        if let Some(runtime) = self.state.match_state.sim_runtime.as_ref()
+            && let Some(terrain) = runtime.simulation.resolved_terrain()
+        {
+            let presentation = &mut self.state.match_state.match_presentation;
+            presentation.lighting.refresh(
+                terrain,
+                &runtime.simulation,
+                presentation.in_game_options.detail_level,
+            );
+        }
         self.state.platform.window.request_redraw();
     }
 
@@ -484,7 +501,7 @@ impl App {
         crate::app::frontend::shell_layout::score_layout(state)
     }
 
-    /// Continue, the page's only button, through the shared controller.
+    /// Continue and VERA result paging through the shared controller.
     fn score_input(
         state: &mut AppState,
     ) -> (
@@ -493,7 +510,23 @@ impl App {
         (i32, i32),
     ) {
         let layout = Self::score_layout(state);
-        let feed = Self::menu_page_button_feed(&layout.page);
+        let mut feed = Self::menu_page_button_feed(&layout.page);
+        if state
+            .frontend
+            .score_page
+            .as_ref()
+            .is_some_and(|page| page.page_count() > 1)
+        {
+            for id in [
+                crate::ui::score_shell::PREVIOUS_PAGE,
+                crate::ui::score_shell::NEXT_PAGE,
+            ] {
+                feed.push(crate::ui::shell::layout::LaidOutControl {
+                    id,
+                    rect: layout.paging_button(id).expect("paging button"),
+                });
+            }
+        }
         state
             .frontend
             .shell_controller
@@ -526,13 +559,20 @@ impl App {
     /// its slide; the match then ends and the shell resumes.
     pub(super) fn handle_score_shell_mouse_up(state: &mut AppState) {
         let (_, feed, (x, y)) = Self::score_input(state);
-        if state.frontend.shell_controller.on_pointer_up(x, y, &feed)
-            == Some(crate::ui::score_shell::CONTINUE_BUTTON)
-        {
-            Self::leave_shell_dialog(
+        match state.frontend.shell_controller.on_pointer_up(x, y, &feed) {
+            Some(crate::ui::score_shell::CONTINUE_BUTTON) => Self::leave_shell_dialog(
                 state,
                 crate::app::frontend::shell_transition::ShellExitThen::ScoreContinue,
-            );
+            ),
+            Some(
+                id @ (crate::ui::score_shell::PREVIOUS_PAGE | crate::ui::score_shell::NEXT_PAGE),
+            ) => {
+                if let Some(page) = state.frontend.score_page.as_mut() {
+                    page.change_page(id == crate::ui::score_shell::NEXT_PAGE, Instant::now());
+                }
+                state.platform.window.request_redraw();
+            }
+            _ => {}
         }
     }
 
@@ -664,6 +704,9 @@ impl App {
         if let Some(runtime) = state.match_state.sim_runtime.as_mut() {
             runtime.simulation.retire_scenario_started();
         }
+        // The accepted match owns the socket until either exit path returns
+        // it to the visit's shared transport owner, including score Continue.
+        crate::app::lan_service::return_transport(state);
         crate::app::match_runtime::sim_tick::flush_replay_log(state);
         Self::capture_returned_multiplayer_scenario(state);
         state.match_state.startup.clear();
@@ -1124,10 +1167,7 @@ Details: {details}"
         state.frontend.shell_status_line.repaint();
     }
 
-    pub(super) fn handle_main_menu_shell_mouse_up(
-        state: &mut AppState,
-        _event_loop: &ActiveEventLoop,
-    ) {
+    pub(super) fn handle_main_menu_shell_mouse_up(state: &mut AppState) {
         let layout = crate::app::frontend::shell_layout::main_menu_layout(state);
         let feed = Self::main_menu_shell_button_feed(&layout);
         let (x, y) = state.match_state.input.cursor_px();
@@ -1169,11 +1209,7 @@ Details: {details}"
         use crate::ui::shell::layout::LaidOutControl;
         use crate::ui::shell::modal;
         let kind = state.frontend.shell_message_box.as_ref()?.labels.kind();
-        let layout = modal::message_box_layout(
-            kind,
-            state.renderer.gpu.config.width as i32,
-            state.renderer.gpu.config.height as i32,
-        );
+        let layout = crate::app::frontend::shell_layout::shell_message_box_layout(state, kind);
         let mut feed = vec![LaidOutControl {
             id: modal::control::OK,
             rect: layout.ok,
@@ -1235,7 +1271,7 @@ Details: {details}"
         };
         match message_box.purpose {
             // OK -> quit (result 0). Dismiss the confirmation first, persist
-            // settings to RA2MD.INI, then run the graceful cascade (music fade
+            // settings to VERA.INI, then run the graceful cascade (music fade
             // → trailing-voice wait → hard stop → exit) via render_frame instead
             // of exiting immediately. The screen fade-to-black is sub-step 4b-ii-b.
             ShellMessageBoxPurpose::ExitGame

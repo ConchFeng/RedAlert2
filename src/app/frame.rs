@@ -9,6 +9,80 @@ use super::{
     sim_tick,
 };
 
+#[cfg(target_os = "horizon")]
+#[derive(Default)]
+struct HorizonFrameTiming {
+    frames: u32,
+    sums: [std::time::Duration; 10],
+    previous_complete: Option<Instant>,
+    next_log: Option<Instant>,
+}
+
+#[cfg(target_os = "horizon")]
+thread_local! {
+    static HORIZON_FRAME_TIMING: std::cell::RefCell<HorizonFrameTiming> =
+        std::cell::RefCell::new(HorizonFrameTiming::default());
+}
+
+/// Record a completed in-game event-loop iteration. The first row is work
+/// through the main simulation admission; catch-up frames are counted
+/// separately because they run after the present. `total` is the interval
+/// between completed iterations, so the row sum also exposes event-loop or
+/// driver time that is not owned by a named stage.
+#[cfg(target_os = "horizon")]
+fn record_horizon_frame(phases: [std::time::Duration; 9], active: bool) {
+    HORIZON_FRAME_TIMING.with_borrow_mut(|timing| {
+        if !active {
+            *timing = HorizonFrameTiming::default();
+            return;
+        }
+        let now = Instant::now();
+        let total = timing
+            .previous_complete
+            .map_or(std::time::Duration::ZERO, |previous| now - previous);
+        timing.previous_complete = Some(now);
+        timing.frames = timing.frames.saturating_add(1);
+        for (sum, phase) in timing
+            .sums
+            .iter_mut()
+            .zip(phases.into_iter().chain([total]))
+        {
+            *sum += phase;
+        }
+        let next_log = *timing
+            .next_log
+            .get_or_insert_with(|| now + std::time::Duration::from_secs(10));
+        if now < next_log {
+            return;
+        }
+        let scale = 1000.0 / timing.frames.max(1) as f32;
+        let [
+            service,
+            pace,
+            prepare,
+            acquire,
+            encode,
+            submit,
+            present,
+            tail,
+            catch_up,
+            total,
+        ] = timing.sums.map(|sum| sum.as_secs_f32() * scale);
+        log::info!(
+            target: "switch::perf",
+            "Frame CPU average over {} frames: service={service:.2}ms pace={pace:.2}ms \
+             prepare={prepare:.2}ms acquire={acquire:.2}ms encode={encode:.2}ms \
+             submit={submit:.2}ms present={present:.2}ms tail={tail:.2}ms \
+             catch_up={catch_up:.2}ms total={total:.2}ms",
+            timing.frames,
+        );
+        *timing = HorizonFrameTiming {
+            next_log: Some(now + std::time::Duration::from_secs(10)),
+            ..Default::default()
+        };
+    });
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum ShellFramePreludeStep {
     CommitTeardown,
@@ -415,6 +489,8 @@ impl App {
             &mut crate::app::diagnostics::tactical_capture::session::TacticalCaptureSession,
         >,
     ) -> Result<()> {
+        #[cfg(target_os = "horizon")]
+        let horizon_frame_started = Instant::now();
         anyhow::ensure!(
             shell_capture.is_none() || tactical_capture.is_none(),
             "shell and tactical capture cannot share a render"
@@ -427,8 +503,6 @@ impl App {
         if let Some(session) = tactical_capture.as_deref_mut() {
             session.drive_before_render(state)?;
         }
-        crate::app::presentation::interpolation::prepare(state, tactical_capture.is_some());
-        let tooltip_ms = crate::app::input::tooltips::update(state);
         if state
             .frontend
             .startup_splash
@@ -472,6 +546,8 @@ impl App {
             event_loop,
             tactical_capture.is_none() && !shell_capture_owns_simulation,
         );
+        #[cfg(target_os = "horizon")]
+        let horizon_after_service = Instant::now();
         if runtime_pass.quit_requested {
             return Ok(());
         }
@@ -504,12 +580,25 @@ impl App {
             if let Some(last) = state.platform.last_render_start {
                 let remaining = interval.saturating_sub(now.duration_since(last));
                 if !remaining.is_zero() {
-                    std::thread::sleep(remaining.min(std::time::Duration::from_millis(4)));
-                    return Ok(());
+                    let slice = remaining.min(std::time::Duration::from_millis(4));
+                    std::thread::sleep(slice);
+                    // Sleep the exact remainder on the final wake so the
+                    // present lands on the 30 Hz boundary instead of arriving
+                    // up to one 4 ms slice late.
+                    if remaining > slice {
+                        return Ok(());
+                    }
                 }
             }
-            state.platform.last_render_start = Some(now);
+            state.platform.last_render_start = Some(Instant::now());
         }
+        #[cfg(target_os = "horizon")]
+        let horizon_after_pace = Instant::now();
+        // These inputs are only observable on a drawn frame. Collecting
+        // interpolation history and tooltip state on every sub-deadline wake
+        // pollutes the history and costs an entity scan every few milliseconds.
+        crate::app::presentation::interpolation::prepare(state, tactical_capture.is_some());
+        let tooltip_ms = crate::app::input::tooltips::update(state);
         state.diag.frame_timer.sample(Instant::now());
 
         // Native queues/maintains [INTRO] before arming the 0xE2 first-paint
@@ -543,6 +632,8 @@ impl App {
             }
             crate::app::frontend::shell_transition::MainMenuFirstPaintPoll::Acquire => {}
         }
+        #[cfg(target_os = "horizon")]
+        let horizon_before_acquire = Instant::now();
 
         let Some(output) = state
             .renderer
@@ -553,6 +644,8 @@ impl App {
             Self::follow_window_size(state);
             return Ok(());
         };
+        #[cfg(target_os = "horizon")]
+        let horizon_after_acquire = Instant::now();
         let view: wgpu::TextureView = output.texture.create_view(&wgpu::TextureViewDescriptor {
             label: Some("Configured surface render view"),
             format: Some(state.renderer.gpu.surface_format),
@@ -885,7 +978,7 @@ impl App {
                         .copy_to(&mut encoder, &output.texture);
                     render_output
                 };
-                #[cfg(feature = "telemetry-dashboard")]
+                #[cfg(any(feature = "telemetry-dashboard", target_os = "horizon"))]
                 if let Some(phases) = game_output.phases {
                     state.diag.render_timing.record(phases);
                 }
@@ -1036,12 +1129,18 @@ impl App {
         } else {
             None
         };
+        #[cfg(target_os = "horizon")]
+        let horizon_before_submit = Instant::now();
         let submission = state
             .renderer
             .gpu
             .queue
             .submit(std::iter::once(encoder.finish()));
+        #[cfg(target_os = "horizon")]
+        let horizon_after_submit = Instant::now();
         crate::render::present::present(output);
+        #[cfg(target_os = "horizon")]
+        let horizon_after_present = Instant::now();
         // wgpu 27 requires released surface references before reconfiguration;
         // the diagnostic action below may resize the window.
         // https://docs.rs/wgpu/27.0.1/wgpu/struct.Surface.html#method.configure
@@ -1155,12 +1254,34 @@ impl App {
             }
         }
 
-        crate::app::loading::pump::after_loading_frame_presented(state);
+        crate::app::loading::pump::after_loading_frame_presented(
+            state,
+            shell_capture
+                .as_deref()
+                .and_then(|capture| capture.loading_observer()),
+        )?;
         #[cfg(feature = "telemetry-dashboard")]
         crate::app::telemetry_capture::publish_if_due(state);
+        #[cfg(target_os = "horizon")]
+        let horizon_before_catch_up = Instant::now();
         if catch_up_allowed {
             Self::catch_up_match_runtime(state, event_loop);
         }
+        #[cfg(target_os = "horizon")]
+        record_horizon_frame(
+            [
+                horizon_after_service - horizon_frame_started,
+                horizon_after_pace - horizon_after_service,
+                horizon_before_acquire - horizon_after_pace,
+                horizon_after_acquire - horizon_before_acquire,
+                horizon_before_submit - horizon_after_acquire,
+                horizon_after_submit - horizon_before_submit,
+                horizon_after_present - horizon_after_submit,
+                horizon_before_catch_up - horizon_after_present,
+                Instant::now() - horizon_before_catch_up,
+            ],
+            state.frontend.screen == GameScreen::InGame,
+        );
 
         Ok(())
     }
@@ -1176,20 +1297,30 @@ impl App {
     /// The cap keeps a stalled GPU from spending the whole pass on catch-up.
     fn catch_up_match_runtime(state: &mut AppState, event_loop: &ActiveEventLoop) {
         const MAX_CATCH_UP_FRAMES: usize = 4;
-        if state.frontend.screen != GameScreen::InGame {
+        if state.frontend.screen != GameScreen::InGame
+            || crate::app::match_runtime::network_match::frame_budget(state).is_some()
+        {
             return;
         }
         let mut ran = 0usize;
         for _ in 0..MAX_CATCH_UP_FRAMES {
             let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
             let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
-            // An untimed scenario is unpaced by design; it needs no backlog.
-            if game_speed == 0 || state.frontend.screen != GameScreen::InGame {
+            // A desktop's untimed scenario stays unpaced by design. A
+            // display-limited port paces fastest, so it needs the same backlog.
+            if state
+                .platform
+                .frame_pacer
+                .budget_ms(game_speed, None)
+                .is_none()
+                || state.frontend.screen != GameScreen::InGame
+            {
                 break;
             }
             if !state.platform.frame_pacer.should_admit(
                 now_ms,
                 game_speed,
+                None,
                 state.match_state.paused(),
             ) {
                 break;
@@ -1205,10 +1336,15 @@ impl App {
             let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
             let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
             let starved = ran == MAX_CATCH_UP_FRAMES
-                && game_speed != 0
+                && state
+                    .platform
+                    .frame_pacer
+                    .budget_ms(game_speed, None)
+                    .is_some()
                 && state.platform.frame_pacer.should_admit(
                     now_ms,
                     game_speed,
+                    None,
                     state.match_state.paused(),
                 );
             Self::report_catch_up(state, ran, starved);
@@ -1264,10 +1400,17 @@ impl App {
                 let target_rate = state.platform.frame_pacer.target_logic_rate(
                     crate::app::match_runtime::sim_tick::current_game_speed(state),
                 );
+                let present_ms = state.diag.frame_timer.frame_ms_mean();
+                let presents_per_s = if present_ms > 0.0 {
+                    1000.0 / present_ms
+                } else {
+                    0.0
+                };
                 log::info!(
                     "Frame pacer ran {total} extra Logic frames in the last 10 s \
                      ({starved} present(s) still owed after the cap): the pacer admitted \
-                     {ticks} frame(s) in {wall_ms} ms wall ({:.1}/s of its own {:.1}/s target); \
+                     {ticks} frame(s) in {wall_ms} ms wall ({:.1}/s of its own {:.1}/s target, \
+                     {presents_per_s:.1} presents/s at {present_ms:.1} ms); \
                      sim clock advanced {sim_advanced_ms} ms ({:.3}x real time)",
                     ticks as f64 * 1000.0 / wall_ms as f64,
                     target_rate,
