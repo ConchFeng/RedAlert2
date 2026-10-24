@@ -229,6 +229,27 @@ impl LocalFramePacer {
         })
     }
 
+    /// Logic frames per second the pacer admits at this speed, for diagnostics.
+    /// A match clock that advances slower than this is running in slow motion.
+    pub(crate) fn target_logic_rate(&self, game_speed: u8) -> f64 {
+        self.budget_ms(game_speed)
+            .map_or(0.0, |budget_ms| 1000.0 / f64::from(budget_ms))
+    }
+
+    /// Nominal milliseconds represented by one normal wall-clock-paced frame.
+    ///
+    /// This is the same interval `should_admit` uses. Keeping the simulation's
+    /// diagnostic clock in step with it avoids a second, slower timeline when
+    /// catch-up restores the frame count at a low present rate. Untimed
+    /// scenarios fall back to the deterministic tooling step.
+    pub(crate) fn frame_tick_ms(&self, game_speed: u8) -> u32 {
+        if game_speed == 0 {
+            return crate::app::types::SIM_TICK_MS;
+        }
+        u32::from(game_speed.clamp(MIN_TIMED_GAME_SPEED, MAX_TIMED_GAME_SPEED))
+            * FRAME_BUCKET_MS as u32
+    }
+
     /// Read-only presentation phase of the existing bucket-paced frame.
     /// Use the pacer's bucket origin, not the end of a potentially expensive
     /// simulation/render preparation, to avoid restarting visual time late.
@@ -376,6 +397,19 @@ mod tests {
     }
 
     #[test]
+    fn frame_tick_matches_the_pacing_window_at_every_speed() {
+        let pacer = LocalFramePacer::new();
+        assert_eq!(pacer.frame_tick_ms(0), crate::app::types::SIM_TICK_MS);
+        for (speed, expected_ms) in (1..=6).zip([16, 32, 48, 64, 80, 96]) {
+            assert_eq!(pacer.frame_tick_ms(speed), expected_ms);
+            assert_eq!(
+                Some(pacer.frame_tick_ms(speed) as f32),
+                pacer.budget_ms(speed)
+            );
+        }
+    }
+
+    #[test]
     fn native_signed_bucket_subtraction_stalls_at_uptime_rollover() {
         let mut pacer = LocalFramePacer::new();
         pacer.record_admitted_frame(u64::from(u32::MAX - 7), 1);
@@ -411,11 +445,13 @@ mod tests {
         // up to four owed frames, as render_frame does after presenting.
         let mut pacer = LocalFramePacer::new();
         let mut logic_frames = 0;
+        let mut represented_ms = 0;
         for present in 0..25 {
             let now_ms = present * 40;
             if pacer.should_admit(now_ms, 1, false) {
                 pacer.record_admitted_frame(now_ms, 1);
                 logic_frames += 1;
+                represented_ms += pacer.frame_tick_ms(1);
             }
             for _ in 0..4 {
                 if !pacer.should_admit(now_ms, 1, false) {
@@ -423,6 +459,7 @@ mod tests {
                 }
                 pacer.record_admitted_frame(now_ms, 1);
                 logic_frames += 1;
+                represented_ms += pacer.frame_tick_ms(1);
             }
         }
 
@@ -430,6 +467,29 @@ mod tests {
             logic_frames, 61,
             "one simulated second at 25 fps must run the 61 frames due from buckets 0..=60"
         );
+        assert!(
+            represented_ms.abs_diff(1_000) <= pacer.frame_tick_ms(1) * 2,
+            "the admitted frames must carry about one second, got {represented_ms} ms"
+        );
+    }
+
+    #[test]
+    fn twenty_five_hz_presents_represent_one_second_at_every_timed_speed() {
+        for speed in MIN_TIMED_GAME_SPEED..=MAX_TIMED_GAME_SPEED {
+            let mut pacer = LocalFramePacer::new();
+            let mut represented_ms = 0;
+            for present in 0..25 {
+                let now_ms = present * 40;
+                while pacer.should_admit(now_ms, speed, false) {
+                    pacer.record_admitted_frame(now_ms, speed);
+                    represented_ms += pacer.frame_tick_ms(speed);
+                }
+            }
+            assert!(
+                represented_ms.abs_diff(1_000) <= pacer.frame_tick_ms(speed) * 2,
+                "GameSpeed={speed} represented {represented_ms} ms in one second"
+            );
+        }
     }
 
     #[test]

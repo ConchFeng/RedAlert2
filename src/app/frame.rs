@@ -1200,17 +1200,37 @@ impl App {
             ran += 1;
         }
         if ran != 0 {
-            Self::report_catch_up(ran);
+            // Still owed after the cap means this present could not drain the
+            // backlog: the match clock is losing ground against the wall clock.
+            let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
+            let game_speed = crate::app::match_runtime::sim_tick::current_game_speed(state);
+            let starved = ran == MAX_CATCH_UP_FRAMES
+                && game_speed != 0
+                && state.platform.frame_pacer.should_admit(
+                    now_ms,
+                    game_speed,
+                    state.match_state.paused(),
+                );
+            Self::report_catch_up(state, ran, starved);
         }
     }
 
-    /// Report how much slow motion the pacer recovered, at most every ten
-    /// seconds, so a device log shows whether catch-up is actually running.
-    fn report_catch_up(ran: usize) {
+    /// Report the achieved Logic cadence, at most every ten seconds, so a
+    /// device log shows whether catch-up actually keeps the match clock in real
+    /// time. The extra-frame count alone cannot: the same total is reached by a
+    /// drained backlog and by a backlog that outgrows the catch-up cap.
+    fn report_catch_up(state: &AppState, ran: usize, starved: bool) {
         use std::sync::atomic::{AtomicU64, Ordering};
         static TOTALS: AtomicU64 = AtomicU64::new(0);
+        static STARVED: AtomicU64 = AtomicU64::new(0);
         static NEXT_REPORT_MS: AtomicU64 = AtomicU64::new(0);
+        static TICK_BASE: AtomicU64 = AtomicU64::new(u64::MAX);
+        static WALL_MS_BASE: AtomicU64 = AtomicU64::new(u64::MAX);
+        static SIM_MS_BASE: AtomicU64 = AtomicU64::new(u64::MAX);
         TOTALS.fetch_add(ran as u64, Ordering::Relaxed);
+        if starved {
+            STARVED.fetch_add(1, Ordering::Relaxed);
+        }
         let now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
         let next = NEXT_REPORT_MS.load(Ordering::Relaxed);
         if now_ms >= next
@@ -1219,7 +1239,41 @@ impl App {
                 .is_ok()
         {
             let total = TOTALS.swap(0, Ordering::Relaxed);
-            log::info!("Frame pacer ran {total} extra Logic frames in the last 10 s");
+            let starved = STARVED.swap(0, Ordering::Relaxed);
+            // The player-visible clock is the admitted-frame count: scenario time,
+            // animation and ROF counters all advance one step per frame. A rate well
+            // under the target is slow motion; the starved count says whether the
+            // catch-up cap caused it — zero means the sim is current and the cost is
+            // elsewhere, non-zero means Logic itself cannot keep up at this rate.
+            let session = state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| rt.simulation.session());
+            let tick = session.map_or(0, |session| session.tick());
+            let sim_ms = session.map_or(0, |session| session.total_sim_ms());
+            let tick_base = TICK_BASE.swap(tick, Ordering::Relaxed);
+            let wall_base = WALL_MS_BASE.swap(now_ms, Ordering::Relaxed);
+            let sim_base = SIM_MS_BASE.swap(sim_ms, Ordering::Relaxed);
+            if tick_base == u64::MAX || wall_base == u64::MAX || sim_base == u64::MAX {
+                log::info!("Frame pacer ran {total} extra Logic frames in the last 10 s");
+            } else {
+                let ticks = tick.saturating_sub(tick_base);
+                let wall_ms = now_ms.saturating_sub(wall_base).max(1);
+                let sim_advanced_ms = sim_ms.saturating_sub(sim_base);
+                let target_rate = state.platform.frame_pacer.target_logic_rate(
+                    crate::app::match_runtime::sim_tick::current_game_speed(state),
+                );
+                log::info!(
+                    "Frame pacer ran {total} extra Logic frames in the last 10 s \
+                     ({starved} present(s) still owed after the cap): the pacer admitted \
+                     {ticks} frame(s) in {wall_ms} ms wall ({:.1}/s of its own {:.1}/s target); \
+                     sim clock advanced {sim_advanced_ms} ms ({:.3}x real time)",
+                    ticks as f64 * 1000.0 / wall_ms as f64,
+                    target_rate,
+                    sim_advanced_ms as f64 / wall_ms as f64
+                );
+            }
         }
     }
 }

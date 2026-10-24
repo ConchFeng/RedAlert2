@@ -813,6 +813,7 @@ fn advance_in_game_runtime_mode(
             state,
             TickLane::Ordinary,
             None,
+            SIM_TICK_MS,
             FrameResume::OutcomeWait,
         );
     }
@@ -820,6 +821,12 @@ fn advance_in_game_runtime_mode(
     let frame_stepping = matches!(mode, RuntimeAdvanceMode::WallClock { .. })
         && state.diag.debug_frame_step_requested;
     let game_speed = current_game_speed(state);
+    let frame_tick_ms = match mode {
+        RuntimeAdvanceMode::WallClock { .. } => {
+            state.platform.frame_pacer.frame_tick_ms(game_speed)
+        }
+        RuntimeAdvanceMode::ExactOneStep => SIM_TICK_MS,
+    };
     let pacer_timing_admits = match mode {
         RuntimeAdvanceMode::WallClock { now_ms } => {
             // Pure timing consult; pause/menu blocking belongs to the decision.
@@ -912,7 +919,8 @@ fn advance_in_game_runtime_mode(
         } else {
             FrameResume::None
         };
-        let frame_committed = advance_one_simulation_frame(state, tick_lane, mouse_scroll, resume);
+        let frame_committed =
+            advance_one_simulation_frame(state, tick_lane, mouse_scroll, frame_tick_ms, resume);
         if crate::app::App::house_outcome_wait_pending(state) {
             return false;
         }
@@ -1043,11 +1051,23 @@ fn should_record_replay_tick(
 /// Complete the exact frame suspended by ExecuteDoList's message box. Reuse
 /// every output consumer below; neither input admission nor Logic runs again.
 pub(crate) fn resume_after_network_failure(state: &mut AppState) -> bool {
-    advance_one_simulation_frame(state, TickLane::Ordinary, None, FrameResume::ChecksumModal)
+    advance_one_simulation_frame(
+        state,
+        TickLane::Ordinary,
+        None,
+        SIM_TICK_MS,
+        FrameResume::ChecksumModal,
+    )
 }
 
 pub(crate) fn leave_network_wait(state: &mut AppState) -> bool {
-    advance_one_simulation_frame(state, TickLane::Ordinary, None, FrameResume::NetworkLeave)
+    advance_one_simulation_frame(
+        state,
+        TickLane::Ordinary,
+        None,
+        SIM_TICK_MS,
+        FrameResume::NetworkLeave,
+    )
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -1063,6 +1083,7 @@ fn advance_one_simulation_frame(
     state: &mut AppState,
     tick_lane: TickLane,
     mouse_scroll: Option<(f32, f32)>,
+    tick_ms: u32,
     resume: FrameResume,
 ) -> bool {
     let resuming = resume != FrameResume::None;
@@ -1225,7 +1246,7 @@ fn advance_one_simulation_frame(
                     FrameResume::NetworkLeave => rt.leave_network_wait(effects),
                     FrameResume::OutcomeWait => rt.resume_outcome_wait(effects),
                     FrameResume::None => {
-                        rt.advance_frame(&due_commands, SIM_TICK_MS, tick_lane, effects)
+                        rt.advance_frame(&due_commands, tick_ms, tick_lane, effects)
                     }
                 }
                 .expect("simulation frame failed; prior world mutations remain")
