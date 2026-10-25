@@ -283,7 +283,10 @@ def main():
         nvk = Path(os.environ.get(
             "VERA_SWITCH_NVK_LIB", WORKSPACE / "toolchains/switch/bevy-horizon-reference/nvk/lib"))
         if not (nvk / "libvulkan_bh.a").is_file():
-            raise SystemExit("Missing localized NVK archive; see HANDOFF.md")
+            raise SystemExit(
+                "Missing localized NVK archive; set VERA_SWITCH_NVK_LIB to the "
+                "directory containing libvulkan_bh.a. See README.md."
+            )
         libraries = ["-L", nvk, "-Wl,--start-group", "-lvulkan_bh", "-lexpat", "-lzstd", "-lz",
                      "-lnx", "-Wl,--end-group"]
     else:

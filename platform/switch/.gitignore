@@ -2,6 +2,10 @@
 /dist/
 __pycache__/
 
+# Internal planning and handoff notes stay local.
+/HANDOFF.md
+/PLAN.md
+
 # Retail assets and packaged artifacts stay local.
 /game/
 /retail/

@@ -44,15 +44,7 @@ if $gpu; then
     map_source="$switch_port_root/../../tools/map_observation/examples/ai_dred_bombard.map"
     mkdir -p -- "$(dirname -- "$map_target")"
     install -m 644 -- "$map_source" "$map_target"
-    retail_root="${VERA_RETAIL_DIR:-}"
-    if [[ -z "$retail_root" ]]; then
-        for candidate in "$HOME/Downloads/retail-install/Ra2Game412" "$HOME/RA2"; do
-            if [[ -f "$candidate/ra2md.mix" && -f "$candidate/ra2.mix" ]]; then
-                retail_root="$candidate"
-                break
-            fi
-        done
-    fi
+    retail_root="${VERA_RETAIL_DIR:-$HOME/RA2}"
     if [[ -z "$retail_root" || ! -f "$retail_root/ra2md.mix" || ! -f "$retail_root/ra2.mix" ]]; then
         echo "No Yuri's Revenge retail directory found. Set VERA_RETAIL_DIR to the folder with ra2md.mix and ra2.mix." >&2
         exit 1

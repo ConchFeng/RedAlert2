@@ -1,38 +1,27 @@
 # VERA20k Switch 移植
 
-这是原生 Horizon / 大气层移植入口，独立 Cargo workspace，不改变桌面客户端的依赖和锁文件。
-当前分支：`feature/switch-port`，上游基线：`36d6d3a33`。
+这是原生 Horizon / 大气层移植入口，使用独立 Cargo workspace 构建。
+当前分支为 `feature/switch-port`，客户端版本为 `0.0.2`。本分支也调整了共享
+渲染代码及桌面依赖；Horizon 专用依赖补丁通过生成的 Switch Cargo 配置启用。
 
-当前状态与验证证据见 [HANDOFF.md](HANDOFF.md)，后续执行顺序和验收条件见
-[PLAN.md](PLAN.md)。用户已确认上一版真机有声音；后续交付资源内置 NSP，
-存档使用启动时所选账号的系统 SaveData。
-完整客户端已在 Eden 跑通菜单、战役、遭遇战和电厂生产放置；资源内置 NSP
-也已从空 SD 资源目录启动并进入遭遇战。完整战术操作与新版真机验收尚未完成；
-下方早期检查点中的限制以 HANDOFF 顶部当前结论为准。
+客户端包含菜单、战役、遭遇战、音频和账号 SaveData 支持，仍处于实验阶段。
+菜单与部分对局已有 Eden 冒烟验证，完整战术操作、长时间运行稳定性和真机兼容性
+仍需验证。已知问题包括帧率波动、冻结或闪退报告，以及部分单位显示问题。
 
 本版 Horizon 输入新增 USB Hub 键鼠、右摇杆镜头平移和双指中点拖动地图；
 鼠标键位同时支持中键与前进/后退，滚轮复用现有滚轮语义。剧情影片会从资源根
 读取 UTF-16LE `subtitlemd.txt` / `subtitle.txt`，按影片自身帧时钟绘制字幕。
-`0.0.2` 包已构建并通过包结构校验，但这些功能尚未在 Eden 或真机运行验证；
-零售字幕、MIX 和其他游戏资源仍不入 Git。
+零售字幕、MIX 和其他游戏资源不入 Git。
 
 当前 Switch 客户端由主线程调度共享 Rust 游戏核心和 wgpu/Vulkan 绘制；Rayon
 三线程池用于部分寻路和目标扫描，体素图集用 scoped `std::thread` 分摊姿态光栅化，
-没有独立模拟/渲染线程。2026-10-24
-profile NSP 的 Eden 遭遇战实测约 27 fps、模拟时钟 1.000× 实时；同地图的世界
-实例构造支持性采样较上一检查点约减少 1.47 ms，但两次没有固定随机种子，并非
-严格 A/B。侧栏 gadget 空闲路径的每帧全量重建已移除，具体测量见 HANDOFF；
-最新无诊断 NSP 已在 Eden 启动到主菜单，尚未取得本包的遭遇战读数。
-
-上游 `main` 已同步到 `36d6d3a33`。安装版 NSP 的 `appletInitialize 0x3f59`
-已定位为 NPDM 服务白名单缺项，现改为安装客户端 wildcard 服务权限并重新打包；
-用户已确认新包真机可以正常进入；外部插件 FPS 读数仍待定位。
+没有独立模拟/渲染线程。实际性能取决于地图、资源和运行环境。
 
 ## 完整客户端入口
 
 `--client` 直接编译共享 `vera20k` 客户端库，以 Horizon 窗口后端驱动同一个
 `App`，保留完整菜单、对局、输入、音频与存档代码。此入口没有 GPU 探针的
-60 秒超时。整体编译、链接和菜单到真实对局已通过，剩余验收见 PLAN。
+60 秒超时。整体编译、链接和菜单到对局的流程已有初步验证。
 
 ```bash
 python3 build.py --client
@@ -42,15 +31,15 @@ python3 build.py --client
 `dist/vera20-client-v<VERSION>.nsp`，本版产物为
 `dist/vera20-client-v0.0.2.nsp`，标题 ID
 `0100f52556458000`。运行日志在客体 `sdmc:/switch/vera20k/logs/client.log`，
-错误结果在 `sdmc:/switch/vera20k/client.last-error.txt`；使用现有 master 模拟器
-数据目录。资源优先从包内 RomFS 读取，配置和日志目录为
+错误结果在 `sdmc:/switch/vera20k/client.last-error.txt`。资源优先从包内 RomFS
+读取，配置和日志目录为
 `sdmc:/switch/vera20k`。存档根为 `vera20k-user:/saves`，挂载到所选账号的
 系统 SaveData；NACP 要求选择用户，预设 256 MiB 数据空间和 64 MiB 日志空间。
 随构建生成的 NRO 留作诊断，当前客户端启动要求 NSP 的账号上下文。
 窗口后端来源与当前手柄映射见 [winit-horizon/UPSTREAM.md](winit-horizon/UPSTREAM.md)。
 
-完整客户端的 NSP 主机菜单图标和 NRO 图标统一使用 `icon.jpg`，来自用户提供的
-VERA20K Rust 标志，已转为 256×256 RGB JPEG，2026-10-24 构建已实际使用。
+完整客户端的 NSP 主机菜单图标和 NRO 图标统一使用 `icon.jpg`，
+格式为 256×256 RGB JPEG。
 
 ## 把游戏资源一起打入 NSP
 
@@ -58,7 +47,8 @@ VERA20K Rust 标志，已转为 256×256 RGB JPEG，2026-10-24 构建已实际�
 可显式指定不同资源目录：
 
 ```bash
-cd ~/ws/projects/vera20k-switch/platform/switch
+# 从仓库根目录执行。
+cd platform/switch
 python3 build.py --client --nsp \
   --nsp-assets target/emulator/master-xdg-data/eden/sdmc/game
 ```
@@ -82,7 +72,7 @@ python3 build.py --client --nsp \
 已在独立 Eden 配置下验证：SD 中没有 `game` 目录，NSP 能启动完整主菜单并
 进入 URBAN 遭遇战，完整侧栏和单位可见。首次配置需沿用现有的
 `disable_macro_jit=true` / `disable_macro_hle=true`，同时将各自的
-`\default` 设为 `false`，否则 Eden 会恢复默认值。验证证据见 HANDOFF 顶部。
+`\default` 设为 `false`，否则 Eden 会恢复默认值。
 `run_eden.sh --client` 仍是旧 NRO 诊断入口；验证当前客户端须将 Eden 的 `-g`
 指向上述 NSP，以提供账号存档上下文。
 
@@ -121,11 +111,9 @@ cc -std=gnu11 -Wall -Wextra -Werror -Iplatform/switch/tests/include \
 
 这些检查验证上报器的状态和字段写入，不能代替真机插件读数验收。
 
-资源打包不会补齐源目录缺少的音乐或影片。2026-10-25 已向本机资源目录补齐
+资源打包不会补齐源目录缺少的音乐、影片或字幕。按需准备
 `theme.mix`、`thememd.mix`、`movmd03.mix`、`movies01.mix`、`movies02.mix`，
-并加入 UTF-16LE `subtitlemd.txt`、`subtitle.txt`。新资源包中已核对两份字幕
-的大小和 SHA256，主题音乐和首关剧情影片可查找到；实际播放与字幕显示仍待
-运行确认。
+以及 UTF-16LE `subtitlemd.txt`、`subtitle.txt`。
 随机地图生成仍有向资源目录写 `RandMap.Sed` / 预览文件的路径，在只读 RomFS
 模式下尚未适配，当前请使用已有地图。
 
@@ -134,7 +122,7 @@ cc -std=gnu11 -Wall -Wextra -Werror -Iplatform/switch/tests/include \
 `dist/vera20k-core.nro` 是运行 **原项目 vera20k-core** 的移植探针，
 不是之前独立的 Rust hello-world，也还不是可玩的图形客户端。
 
-Eden 0.2.1 / Vulkan / NVIDIA GTX 1650 已验证：
+早期核心探针已在 Eden 0.2.1 / Vulkan 验证：
 
 - Rust `std`、文件系统、线程、TLS、系统随机数。
 - 生产 MIX 文件加载与文件名查询（Horizon 使用堆内存后备映射）。
@@ -145,7 +133,7 @@ Eden 0.2.1 / Vulkan / NVIDIA GTX 1650 已验证：
 - 原生 libnx 默认窗口、EGL / GLES2 上下文和 1280×720 渐变三角形。
 - 手柄 A 键输入及 `+` 正常退出；独立输入层覆盖面键、肩键、菜单键和十字键。
 - 检查零售资源根 `sdmc:/game` 中两套主 MIX；存在时通过生产 `AssetManager`
-  挂载档案并查找 `rulesmd.ini`。当前测试环境没有资源，因此只验证了缺失分支。
+  挂载档案并查找 `rulesmd.ini`。早期核心探针只验证了资源缺失分支。
 
 主机与 Switch ARM64 的状态哈希一致：
 
@@ -158,30 +146,32 @@ Eden 0.2.1 / Vulkan / NVIDIA GTX 1650 已验证：
 2026-10-22 已通过 FTP 取回真机核心 NSP 报告并执行 `verify.py --format nsp --report ...`：
 上述核心检查、A 键输入和正常退出全部通过，两个状态哈希与主机一致。
 独立 Rust 基础测试 NRO 也已通过真机验证；核心 NRO 与基础测试 NSP 尚未取得真机报告。
-这是历史记录；用户随后要求暂停全部真机操作。当前和新构建只在 Eden 验证。
 
 ## 构建与运行
 
-已有的 SDK 安装沿用 `projects/switch-rust-smoke` 配置，默认位于工作区
-`toolchains/switch/sdk/opt/devkitpro`。本入口额外需要：
+准备 devkitA64、libnx 及 Switch portlibs，并用 `DEVKITPRO` 指向 SDK 根目录。
+本入口还需要：
 
 ```bash
 rustup toolchain install nightly-2026-10-04 --profile minimal --component rust-src,rustfmt,llvm-tools-preview
 ```
 
-上游适配代码位于工作区 `toolchains/switch/bevy-horizon-reference`：
+克隆固定版本的 Horizon 适配代码，并用 `VERA_SWITCH_UPSTREAM` 指定其路径：
 
 ```bash
-git clone https://github.com/JohnUzoka/bevy-horizon.git $HOME/ws/toolchains/switch/bevy-horizon-reference
-git -C $HOME/ws/toolchains/switch/bevy-horizon-reference checkout 3eac779b232ee47cd0eb957676c64386ac7b0f1d
+git clone https://github.com/JohnUzoka/bevy-horizon.git bevy-horizon
+git -C bevy-horizon checkout 3eac779b232ee47cd0eb957676c64386ac7b0f1d
+export VERA_SWITCH_UPSTREAM="$(cd bevy-horizon && pwd)"
 ```
 
-本机以上环境已安装。构建默认优先使用固定版本的
-`toolchains/switch/bevy-horizon-pinned` worktree，保留另一个参考目录中的 NVK 探针改动。
-未创建 pinned 目录时，仍使用上述 `bevy-horizon-reference`，并检查固定提交。
+GPU 和完整客户端构建还需要本地化的 NVK 静态库 `libvulkan_bh.a`。
+用 `VERA_SWITCH_NVK_LIB` 指定库所在目录；驱动及模拟器补丁来源见
+[UPSTREAM.md](UPSTREAM.md)。这些补丁需要单独准备，构建脚本不会自动构建驱动。
+用 `EDEN_APP` 指定 Eden 可执行文件；GPU 和客户端诊断模式需要支持相应补丁的版本。
 
 ```bash
-cd $HOME/ws/projects/vera20k-switch/platform/switch
+# 从仓库根目录执行。
+cd platform/switch
 python3 build.py
 bash run_eden.sh
 ```
@@ -190,15 +180,22 @@ bash run_eden.sh
 `target/emulator/xdg-data/eden/sdmc/switch/vera20k/core-probe-nro.txt`。
 截图在 `target/emulator/evidence/input-layer.png`。
 
-常规核心验证使用已安装的 Eden 0.2.1 发布版，不需要构建模拟器。
-另行构建 Eden master 仅用于排查 NVK 图形兼容性，不是 Vera 构建的前置步骤。
+常规核心验证可使用 Eden 0.2.1 发布版。
+另行构建 Eden master 用于排查 NVK 图形兼容性，不是 Vera 核心构建的前置步骤。
 
 启动脚本使用独立的 Eden 配置。首次运行若该配置没有 `prod.keys`，
 会依次从 `SWITCH_KEYS`、`~/.switch/prod.keys`、默认 Eden 的
 `~/.local/share/eden/keys/prod.keys` 导入本机已有密钥，副本权限为 0600。
 密钥副本保存在被 Git 忽略的 `target/emulator/xdg-data/eden/keys/`。
-若这些位置均无密钥，脚本会明确报错。应用菜单中的 **Eden (Switch Rust Smoke)**
-属于另一个工程，其 NRO 配置现已补齐密钥；该工程的 NSP 仍使用独立测试密钥。
+若这些位置均无密钥，脚本会明确报错。这些是可配置的默认查找位置，不要求特定的
+个人目录结构。密钥内容不应提交到 Git 或随安装包分发。
+
+`--gpu` 和 `--client` 模式从 `VERA_RETAIL_DIR` 读取原版游戏资源，
+未设置时使用通用默认目录 `$HOME/RA2`。例如：
+
+```bash
+VERA_RETAIL_DIR=/path/to/retail bash run_eden.sh --gpu
+```
 
 `build.py --host-test` 在主机执行同一个生产核心探针。
 `build.py --check` 仅执行交叉编译检查。
@@ -210,7 +207,7 @@ bash run_eden.sh
 
 `dist/vera20k-gpu.nro` 通过 Switch 原生 `NWindow` 直接调用项目的
 `src/render/gpu.rs`，不复制 GPU 初始化和取帧实现。
-已在本地 Eden master 中通过 wgpu 27 / NVK 使用生产 `BatchRenderer` 显示
+已在带补丁的 Eden master 中通过 wgpu 27 / NVK 使用生产 `BatchRenderer` 显示
 12 个合成 RGBA 精灵。像素回读覆盖透明边缘、纹理颜色、全部实例以及相机平移和
 2 倍缩放。同一 GPU 探针还从模拟器内的 `temperat.mix` 经生产
 `AssetManager`、`load_theater` 和 `load_tile_images` 加载 INI、三套 PAL 与
@@ -233,7 +230,7 @@ theater slot 内解析，fallback 为 0；其中 234 格使用 `water09.tem`
 
 ```bash
 python3 build.py --gpu
-DISPLAY=:1 SDL_AUDIODRIVER=disk bash run_eden.sh --gpu
+VERA_RETAIL_DIR=/path/to/retail bash run_eden.sh --gpu
 python3 verify.py --probe gpu
 ```
 
@@ -246,7 +243,7 @@ GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 `retail-terrain-live.png`，客户区裁剪为 `retail-terrain-live-crop.png`。
 
 此模式使用带本地 SDL3 生命周期修复、立即数乘法支持的 Eden master，
-并在配置中关闭 macro JIT/HLE；复现见 [HANDOFF.md](HANDOFF.md#nvk-当前进度与模拟器阻塞)。
+并在配置中关闭 macro JIT/HLE；补丁来源见 [UPSTREAM.md](UPSTREAM.md)。
 核心模式仍使用 Eden 0.2.1 发布版。GPU 模式目前只生成 NRO。
 
 **启动模式：** 相册/主页菜单直接启动 NRO 是 `LibraryApplet`，内存与 Vi/NV
@@ -254,7 +251,7 @@ GPU 探针使用独立的 `master-xdg-{data,config}` 配置，报告在
 应用菜单启动已安装的 NSP，或使用标题覆盖/转发器启动 NRO。GPU 初始化后加载
 theater、地图、对象和实时场景时会持续呈现进度条，避免长时间纯黑屏。
 如需保留 Mesa 详细日志，设置 `VERA_MESA_DEBUG=1`；默认不启用。
-当前工作区已将生产 `BatchRenderer` 编译进该入口，实例属性和合成 RGBA
+该入口使用生产 `BatchRenderer`，实例属性和合成 RGBA
 纹理采样与完整绘制已通过。主画面现在直接绘制生产地图加载链生成的地形；
 此前相机数据在片段阶段正确、在顶点阶段为零；
 Horizon NVK 现在通过 `third_party/mesa-switch-graphics-ubo.patch` 的可选路径
@@ -266,7 +263,8 @@ Horizon NVK 现在通过 `third_party/mesa-switch-graphics-ubo.patch` 的可选�
 
 ## 正式 NSP 与 FTP 真机测试
 
-设备密钥已保存在本机 `~/.switch/prod.keys`，权限为 0600。密钥不放入工程或分发包。
+通过 `SWITCH_KEYS` 指定打包所需的设备密钥文件，或使用打包器的默认查找位置
+`~/.switch/prod.keys`。设备密钥不放入工程或分发包。
 
 ```bash
 python3 build.py --nsp
@@ -278,7 +276,8 @@ NSP 的应用 ID 为 `0100f52556455241`，直接包含核心程序，不依赖 S
 仅容许自制包预期的固定密钥/ACID 未签名项。核心 NSP 已安装并通过真机运行验证。
 
 ```bash
-python3 deploy_ftp.py --host <switch-host> --port 5000
+SWITCH_FTP_HOST=your-switch-hostname
+python3 deploy_ftp.py --host "$SWITCH_FTP_HOST" --port 5000
 ```
 
 上传核心和基础 Rust 测试的 NRO/NSP；NRO 放在各自的 `/switch/` 子目录，NSP 放在 `/nsp/`。
@@ -289,7 +288,7 @@ python3 deploy_ftp.py --host <switch-host> --port 5000
 重开 FTP 后下载报告：
 
 ```bash
-python3 deploy_ftp.py --host <switch-host> --port 5000 --fetch-reports
+python3 deploy_ftp.py --host "$SWITCH_FTP_HOST" --port 5000 --fetch-reports
 python3 verify.py --format nro --report target/hardware/reports/core-probe-nro.txt
 python3 verify.py --format nsp --report target/hardware/reports/core-probe-nsp.txt
 ```
@@ -300,10 +299,10 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 
 | 项目 | 当前情况 |
 | --- | --- |
-| devkitA64 / libnx / newlib | 已安装，已链接并在模拟器和真机运行 |
+| devkitA64 / libnx / newlib | 构建前需准备并配置 `DEVKITPRO` |
 | Rust 标准库 / ARM64 libc | 已构建；对 SDK 头文件的 348 项 ABI 对比为 0 不匹配 |
 | MIX、INI、模拟核心 / Rayon | 核心 NSP 已通过模拟器和真机验证；范围为合成资源与空场景 |
-| Switch SDL2 / EGL / GLES 库 | SDK 中已有，目前客户端尚未接入 |
+| Switch SDL2 / EGL / GLES 库 | 早期核心图形探针需要对应 portlibs |
 | Switch 原生窗口 / EGL / GLES2 图形层 | 已在 NRO 和 NSP 的 Eden 运行中画出 1280×720 画面；尚不是 Vera 生产渲染器 |
 | wgpu 27 | 使用 Horizon 补丁、Vulkan-only 配置，已链接并通过生产 `GpuContext`、`BatchRenderer`、TMP 图集与可见地形实例显示合成场景；真实地图和游戏客户端未接入 |
 | rodio 0.22 / cpal 0.17 | 使用 Horizon 补丁后依赖编译检查通过；尚未链接和播放声音 |
@@ -311,7 +310,7 @@ NRO 与 NSP 分别写 `sdmc:/switch/vera20k/core-probe-{nro,nsp}.txt`。
 | Switch NVK 静态驱动 | 已从 Mesa `606441c90e` 交叉编译，生成本地化 `libvulkan_bh.a`；实例、能力枚举、Vi 表面和逻辑设备已通过 |
 | NVK 最小探针 | 本地 Eden master `989768a` 加入低 32 位 `IMUL (imm)` 支持并关闭 macro JIT/HLE 后，旋转三角形、30 秒呈现和自动退出通过 |
 | 原版 RA2 / YR 游戏资源 | 已接入本地 YR 资源；真实主 MIX、TEMPERATE theater 和文件地图地形已通过，游戏对象与完整启动尚未验证 |
-| 真机密钥 | 已取得并存入本机私有目录；正式 NSP 已构建、校验并通过核心真机运行测试 |
+| 设备密钥配置 | 由 `SWITCH_KEYS` 或默认查找位置提供，不随源码分发 |
 
 依赖检查可以复现：
 
@@ -325,21 +324,11 @@ python3 build.py --check-client-deps --without-winit
 
 检查从桌面 Cargo.toml 读取依赖，并锁定桌面 Cargo.lock 中的对应版本。
 上游的 libc、memmap2、wgpu 27、raw-window-handle、cpal 补丁仅通过生成的 Switch
-配置启用，不修改桌面 Cargo.lock。补丁源码和许可来源见 `UPSTREAM.md`。
+配置启用。当前分支的共享渲染 API 和桌面依赖也有调整，桌面平台兼容性需要单独验证。
+补丁源码和许可来源见 `UPSTREAM.md`。
 
 当前堆内存后备映射会把 MIX 整包读入内存；真实资源加载后还需要测量峰值内存。
 此探针不验证大型纹理图集、所有文件操作或真实对局性能。
 
 下一阶段是接入生产地形与 SHP/VXL 渲染，并逐步接通客户端事件、菜单与音频。
 需要原版资源后再执行真实地图加载、渲染和游戏操作验证。
-
-## Git 代理
-
-开发机已有全局 Git HTTP/HTTPS 代理，并设置了同名环境变量。检查配置时
-只确认是否启用，不打印代理凭据：
-
-```bash
-git config --global --get http.proxy >/dev/null && echo "Git proxy configured"
-```
-
-无需把代理地址写进本工程；后续依赖检查默认继承当前 shell 环境。
