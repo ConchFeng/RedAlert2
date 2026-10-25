@@ -13,9 +13,10 @@ use super::{
     LauncherParentResult, LauncherTrackbarId, MOUSE_WHEEL_ZOOM_HELP, MOUSE_WHEEL_ZOOM_LABEL,
     ORIGINAL_SHAPE_HELP, ORIGINAL_SHAPE_LABEL, OptionsDialogState, OptionsPage,
     PhysicalControlFrame, RENDER_INTERPOLATION_HELP, RENDER_INTERPOLATION_LABEL, SHIFT_QUEUE_HELP,
-    SHIFT_QUEUE_LABEL, SIDEBAR_HELP, SIDEBAR_LABEL, SidebarSize, VERA_OPTIONS_HELP,
-    VERA_OPTIONS_LABEL, WOL_TEST_SERVICE_HELP, WOL_TEST_SERVICE_LABEL, YR_ORIGINAL_STYLE_HELP,
-    YR_ORIGINAL_STYLE_LABEL, ZOOM_HELP, ZOOM_LABEL, Zoom,
+    SHIFT_QUEUE_LABEL, SIDEBAR_HELP, SIDEBAR_LABEL, SWITCH_60_FPS_HELP, SWITCH_60_FPS_LABEL,
+    SidebarSize, VERA_OPTIONS_HELP, VERA_OPTIONS_LABEL, WOL_TEST_SERVICE_HELP,
+    WOL_TEST_SERVICE_LABEL, YR_ORIGINAL_STYLE_HELP, YR_ORIGINAL_STYLE_LABEL, ZOOM_HELP, ZOOM_LABEL,
+    Zoom,
 };
 use crate::ui::shell::descriptor::DialogId;
 use crate::ui::shell::geom::{RectPx, ShellScale, center_offset, child_window, dlu_rect};
@@ -242,6 +243,8 @@ impl LauncherOptionsLayout {
                     // Developer Options, in the main page's UI Options band.
                     (LauncherCheckboxId::WolTestService, dlu(93, 188, 140, 10)),
                     (LauncherCheckboxId::FpsCounter, dlu(93, 203, 130, 10)),
+                    #[cfg(target_os = "horizon")]
+                    (LauncherCheckboxId::Switch60Fps, dlu(93, 218, 130, 10)),
                 ],
                 vec![(
                     LauncherButton::Page(OptionsPage::Main),
@@ -440,6 +443,7 @@ impl OptionsDialogState {
             LauncherCheckboxId::ShiftQueue => SHIFT_QUEUE_LABEL,
             LauncherCheckboxId::WolTestService => WOL_TEST_SERVICE_LABEL,
             LauncherCheckboxId::FpsCounter => FPS_COUNTER_LABEL,
+            LauncherCheckboxId::Switch60Fps => SWITCH_60_FPS_LABEL,
         }
     }
 
@@ -490,6 +494,7 @@ impl OptionsDialogState {
             LauncherCheckboxId::ShiftQueue => self.values.shift_queue,
             LauncherCheckboxId::WolTestService => self.values.wol_test_service,
             LauncherCheckboxId::FpsCounter => self.values.fps_counter,
+            LauncherCheckboxId::Switch60Fps => self.values.switch_60_fps,
         }
     }
 
@@ -682,6 +687,7 @@ impl OptionsDialogState {
                     LauncherStatusHelp::Text(WOL_TEST_SERVICE_HELP)
                 }
                 LauncherCheckboxId::FpsCounter => LauncherStatusHelp::Text(FPS_COUNTER_HELP),
+                LauncherCheckboxId::Switch60Fps => LauncherStatusHelp::Text(SWITCH_60_FPS_HELP),
             });
         }
         layout
@@ -1043,6 +1049,8 @@ mod tests {
             (MouseWheelZoom, ui, developer),
             (WolTestService, developer, layout.status_help),
             (FpsCounter, developer, layout.status_help),
+            #[cfg(target_os = "horizon")]
+            (Switch60Fps, developer, layout.status_help),
         ] {
             let rect = checkbox(&layout, id);
             assert!(

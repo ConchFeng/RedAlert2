@@ -556,7 +556,7 @@ pub(crate) fn render_fullscreen_black(
     );
 }
 
-/// Paint the active full-screen movie on black, without a cursor.
+/// Paint the active full-screen movie and subtitles.
 pub(crate) fn render_fullscreen_movie(
     state: &mut AppState,
     encoder: &mut wgpu::CommandEncoder,
@@ -573,6 +573,34 @@ pub(crate) fn render_fullscreen_movie(
         texture: movie.surface().batch_texture(),
         instances: vec![instance],
     }];
+    let subtitle = movie.subtitle_cue().and_then(|cue| {
+        let [x, y, w, h] = screen_rect_for_movie(instance.position, instance.size)?;
+        let scale = subtitle_scale(instance.size[1]);
+        let rect = subtitle_rect(
+            cue.position,
+            [x, y, w, h],
+            scale,
+            state.renderer.bit_font.cell_height(),
+        );
+        let rect = clip_text_rect(
+            rect,
+            state.renderer.gpu.config.width,
+            state.renderer.gpu.config.height,
+        )?;
+        Some(crate::render::shell_paint::paint_labels_at_depth_scaled(
+            &state.renderer.bit_font,
+            &[crate::render::shell_paint::PaintLabel {
+                text: cue.text.as_str().into(),
+                rect,
+                align: subtitle_alignment(cue.position),
+                rgb: cue.color.map(|channel| f32::from(channel) / 255.0),
+                path_a_reveal: None,
+            }],
+            MOVIE_SUBTITLE_DEPTH,
+            scale,
+        ))
+    });
+    let text = subtitle.unwrap_or_default();
     encode_shell_pass(
         state,
         encoder,
@@ -580,10 +608,115 @@ pub(crate) fn render_fullscreen_movie(
         "Play_Movie",
         ShellComposition {
             draws: &draws,
+            text: &text,
+            cursor: software_cursor(state, CURSOR_DEPTH),
             ..ShellComposition::default()
         },
     );
     Ok(())
+}
+
+const MOVIE_SUBTITLE_DEPTH: f32 = 0.0005;
+
+fn clip_text_rect(rect: RectPx, screen_w: u32, screen_h: u32) -> Option<RectPx> {
+    let left = rect.x.max(0).min(screen_w as i32);
+    let top = rect.y.max(0).min(screen_h as i32);
+    let right = (rect.x.saturating_add(rect.w)).max(0).min(screen_w as i32);
+    let bottom = (rect.y.saturating_add(rect.h)).max(0).min(screen_h as i32);
+    (right > left && bottom > top).then(|| RectPx::new(left, top, right - left, bottom - top))
+}
+
+fn screen_rect_for_movie(position: [f32; 2], size: [f32; 2]) -> Option<[i32; 4]> {
+    (size[0] > 0.0 && size[1] > 0.0).then(|| {
+        [
+            position[0].round() as i32,
+            position[1].round() as i32,
+            size[0].round() as i32,
+            size[1].round() as i32,
+        ]
+    })
+}
+
+/// Subtitles are authored in the 800x600 shell's font scale. Keep the same
+/// visual proportion when a 640x480 or fitted movie is presented.
+fn subtitle_scale(movie_height: f32) -> f32 {
+    (movie_height / 600.0).clamp(0.5, 3.0)
+}
+
+fn subtitle_rect(
+    position: crate::assets::subtitle_file::SubtitlePosition,
+    [x, y, w, h]: [i32; 4],
+    scale: f32,
+    font_cell_height: f32,
+) -> RectPx {
+    use crate::assets::subtitle_file::SubtitlePosition;
+    let margin = (24.0 * scale).round() as i32;
+    let line_h = (font_cell_height * scale).round() as i32;
+    let bottom = (36.0 * scale).round() as i32;
+    let available = (w - margin * 2).max(1);
+    let text_w = match position {
+        SubtitlePosition::Left | SubtitlePosition::Right => (available * 2 / 3).max(1),
+        SubtitlePosition::Center => available,
+    };
+    let text_x = match position {
+        SubtitlePosition::Left => x + margin,
+        SubtitlePosition::Right => x + w - margin - text_w,
+        SubtitlePosition::Center => x + margin,
+    };
+    RectPx::new(text_x, y + h - bottom - line_h * 2, text_w, line_h * 2)
+}
+
+fn subtitle_alignment(position: crate::assets::subtitle_file::SubtitlePosition) -> ShellAlign {
+    use crate::assets::subtitle_file::SubtitlePosition;
+    match position {
+        SubtitlePosition::Left => ShellAlign::NONE,
+        SubtitlePosition::Center => ShellAlign::H_CENTER,
+        SubtitlePosition::Right => ShellAlign::H_RIGHT,
+    }
+}
+
+#[cfg(test)]
+mod subtitle_layout_tests {
+    use super::*;
+    use crate::assets::subtitle_file::SubtitlePosition;
+
+    #[test]
+    fn subtitle_anchors_inside_the_presented_movie_rect() {
+        let movie = [240, 0, 1440, 1080];
+        let scale: f32 = 1.8;
+        let cell_height: f32 = 17.0;
+        let margin = (24.0_f32 * scale).round() as i32;
+        let bottom = (36.0_f32 * scale).round() as i32;
+        let line_height = (cell_height * scale).round() as i32;
+        let left = subtitle_rect(SubtitlePosition::Left, movie, scale, cell_height);
+        let center = subtitle_rect(SubtitlePosition::Center, movie, scale, cell_height);
+        let right = subtitle_rect(SubtitlePosition::Right, movie, scale, cell_height);
+        assert_eq!(left.x, 240 + margin);
+        assert_eq!(center.x, left.x);
+        assert_eq!(right.x + right.w, 240 + 1440 - margin);
+        assert_eq!(left.y + left.h, 1080 - bottom);
+        assert_eq!(left.h, line_height * 2);
+        assert!(left.w < center.w);
+        assert_eq!(
+            subtitle_alignment(SubtitlePosition::Center),
+            ShellAlign::H_CENTER
+        );
+    }
+
+    #[test]
+    fn movie_subtitle_scale_tracks_height_but_stays_bounded() {
+        assert_eq!(subtitle_scale(600.0), 1.0);
+        assert!(subtitle_scale(1080.0) > 1.0);
+        assert_eq!(subtitle_scale(1.0), 0.5);
+    }
+
+    #[test]
+    fn subtitle_scissor_is_clipped_to_the_render_target() {
+        let rect = RectPx::new(24, 460, 700, 34);
+        let clipped = clip_text_rect(rect, 640, 480).unwrap();
+        assert_eq!(clipped, RectPx::new(24, 460, 616, 20));
+        assert!(clip_text_rect(RectPx::new(700, 530, 20, 20), 640, 480).is_none());
+    }
 }
 
 /// Paint the credits roll on black with the 16-bit band fade, no cursor.

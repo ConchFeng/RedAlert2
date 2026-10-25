@@ -24,6 +24,10 @@ use winit::event_loop::OwnedDisplayHandle;
 #[cfg(any(not(target_os = "horizon"), feature = "horizon-client"))]
 use winit::window::Window;
 
+#[cfg(target_os = "horizon")]
+#[path = "gpu_memory.rs"]
+mod memory;
+
 /// A platform window and logical drawable size for wgpu surface creation.
 ///
 /// `surface_handle` returns an owned handle. A native backend must keep the
@@ -152,6 +156,8 @@ pub struct GpuContext {
     /// Exact identity returned by the adapter that backs this context.
     adapter_info: wgpu::AdapterInfo,
     capture_target: Option<CaptureTarget>,
+    #[cfg(target_os = "horizon")]
+    _memory_monitor: Option<memory::Monitor>,
 }
 
 impl GpuContext {
@@ -340,6 +346,8 @@ impl GpuContext {
             surface_format,
         );
 
+        #[cfg(target_os = "horizon")]
+        let memory_monitor = memory::Monitor::start(&device);
         Ok(Self {
             surface: Mutex::new(surface),
             instance,
@@ -350,6 +358,8 @@ impl GpuContext {
             surface_format,
             adapter_info,
             capture_target,
+            #[cfg(target_os = "horizon")]
+            _memory_monitor: memory_monitor,
         })
     }
 

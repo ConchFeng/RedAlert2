@@ -80,6 +80,8 @@ pub(crate) const WOL_TEST_SERVICE_HELP: &str =
     "Internet opens with stand-in servers, lobbies and players, for testing its screens.";
 pub(crate) const FPS_COUNTER_LABEL: &str = "FPS Counter";
 pub(crate) const FPS_COUNTER_HELP: &str = "Show frames per second in the top-left corner. Off at every start; Ctrl+Alt+F also switches it.";
+pub(crate) const SWITCH_60_FPS_LABEL: &str = "60 FPS Limit";
+pub(crate) const SWITCH_60_FPS_HELP: &str = "On: cap rendering at 60 FPS. Off: cap at 30 FPS. Does not change game speed; actual FPS depends on performance.";
 pub(crate) const SHIFT_QUEUE_HELP: &str =
     "Shift-click an infantry, vehicle or aircraft cameo to queue several at once.";
 pub(crate) const DISPLAY_LABEL: &str = "Display";
@@ -475,6 +477,8 @@ pub(crate) enum LauncherCheckboxId {
     /// shows and changes live state at once, and is never saved: the readout
     /// starts hidden at every launch.
     FpsCounter,
+    /// Horizon presentation only; unchecked means 30 FPS.
+    Switch60Fps,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -504,6 +508,7 @@ pub(crate) enum LauncherOptionsEvent {
     RenderInterpolationChanged(bool),
     MouseWheelZoomChanged(bool),
     FpsCounterChanged(bool),
+    Switch60FpsChanged(bool),
     ScorePreview(f32),
     SoundPreview(f32),
     VoicePreview(f32),
@@ -546,6 +551,7 @@ pub(crate) struct LauncherOptionsValues {
     pub(crate) wol_test_service: bool,
     /// The FPS readout's live state when the page opened, then each toggle.
     pub(crate) fps_counter: bool,
+    pub(crate) switch_60_fps: bool,
     /// The Sidebar list's choice; like Zoom, it applies at once.
     pub(crate) sidebar: SidebarSize,
     pub(crate) score_position: u8,
@@ -570,6 +576,7 @@ impl Default for LauncherOptionsValues {
             shift_queue: false,
             wol_test_service: false,
             fps_counter: false,
+            switch_60_fps: false,
             sidebar: SidebarSize::Normal,
             score_position: 4,
             sound_position: 7,
@@ -889,6 +896,7 @@ impl OptionsDialogState {
             LauncherCheckboxId::RenderInterpolation => &mut self.values.render_interpolation,
             LauncherCheckboxId::MouseWheelZoom => &mut self.values.mouse_wheel_zoom,
             LauncherCheckboxId::FpsCounter => &mut self.values.fps_counter,
+            LauncherCheckboxId::Switch60Fps => &mut self.values.switch_60_fps,
         };
         *slot = !*slot;
         let checked = *slot;
@@ -919,6 +927,9 @@ impl OptionsDialogState {
             LauncherCheckboxId::FpsCounter => self
                 .pending_events
                 .push(LauncherOptionsEvent::FpsCounterChanged(checked)),
+            LauncherCheckboxId::Switch60Fps => self
+                .pending_events
+                .push(LauncherOptionsEvent::Switch60FpsChanged(checked)),
             LauncherCheckboxId::Tooltips
             | LauncherCheckboxId::TargetLines
             | LauncherCheckboxId::ShowHidden => {}
@@ -1403,6 +1414,34 @@ mod tests {
         assert_eq!(packed.score_volume.to_bits(), 0.0_f32.to_bits());
         assert_eq!(packed.sound_volume.to_bits(), 0.5_f32.to_bits());
         assert_eq!(packed.voice_volume.to_bits(), 0.6_f32.to_bits());
+    }
+
+    #[test]
+    fn switch_frame_limit_toggle_leaves_fps_counter_and_game_options_alone() {
+        let mut state = state(true);
+        let initial = state.values;
+        let initial_pack = state.pack();
+        state.checkbox_mouse_down(LauncherCheckboxId::Switch60Fps, frame(5, 5, 195, 16));
+        assert!(state.values.switch_60_fps);
+        assert_eq!(state.values.fps_counter, initial.fps_counter);
+        assert_eq!(state.pack(), initial_pack);
+        assert_eq!(
+            state.drain_output().events,
+            [
+                LauncherOptionsEvent::Cue(LauncherCue::Checkbox),
+                LauncherOptionsEvent::Switch60FpsChanged(true),
+            ]
+        );
+        state.checkbox_mouse_down(LauncherCheckboxId::Switch60Fps, frame(5, 5, 195, 16));
+        assert!(!state.values.switch_60_fps);
+        assert_eq!(state.values.fps_counter, initial.fps_counter);
+        assert_eq!(
+            state.drain_output().events,
+            [
+                LauncherOptionsEvent::Cue(LauncherCue::Checkbox),
+                LauncherOptionsEvent::Switch60FpsChanged(false),
+            ]
+        );
     }
 
     #[test]

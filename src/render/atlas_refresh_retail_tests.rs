@@ -21,6 +21,7 @@
 //! Run (release, so timings resemble the shipped game):
 //! RA2_DIR=<retail root> cargo test -p vera20k --lib --release \
 //!     retail_atlas_refresh_costs -- --ignored --nocapture
+//! Set `VERA20K_ATLAS_REFRESH_MAP` to use another installed skirmish map.
 //!
 //! RA2_DIR=<retail root> cargo test -p vera20k --lib --release \
 //!     retail_campaign_preload_covers_the_authored_match -- --ignored --nocapture
@@ -144,8 +145,10 @@ fn load_time_shp_pairs(
 #[ignore = "requires retail archives and a wgpu adapter; prints atlas refresh timings"]
 fn retail_atlas_refresh_costs() {
     let root = retail_root();
-    let mut scenario =
-        crate::headless_scenario::load(&root, "Dustbowl.mmx", 0x0B21_D6E5).expect("Dustbowl loads");
+    let map = std::env::var("VERA20K_ATLAS_REFRESH_MAP")
+        .unwrap_or_else(|_| "Dustbowl.mmx".to_owned());
+    let mut scenario = crate::headless_scenario::load(&root, &map, 0x0B21_D6E5)
+        .unwrap_or_else(|error| panic!("{map} loads: {error}"));
     let mut assets =
         AssetManager::new(&root, MediaArchiveMode::STOCK_DIGITAL).expect("retail archives");
     let theater_name = scenario.map.header.theater.clone();

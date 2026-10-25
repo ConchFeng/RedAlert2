@@ -180,6 +180,13 @@ impl MoviePlayback {
     pub(crate) fn surface(&self) -> &BinkMovieSurface {
         &self.surface
     }
+
+    /// Wall-clock seconds represented by the displayed frame. Movie subtitles
+    /// use this rather than the simulation tick clock, so pausing, skipped
+    /// renders and a 30/60 FPS presentation cap do not drift their timing.
+    pub(crate) fn elapsed_seconds(&self) -> f64 {
+        self.surface.next_frame() as f64 / self.surface.fps().max(1.0)
+    }
 }
 
 #[cfg(test)]

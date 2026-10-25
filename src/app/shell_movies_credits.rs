@@ -308,11 +308,19 @@ impl App {
             .options_profile
             .voice_volume
             .clamp(0.0, 1.0);
+        let subtitles = state.process_assets.manager().and_then(|assets| {
+            crate::assets::subtitle_file::SubtitleTable::from_retail_files(
+                assets.get_ref("subtitlemd.txt"),
+                assets.get_ref("subtitle.txt"),
+            )
+        });
         let movie = FullscreenMovie::new(
             surface,
             state.audio.music_player.as_ref().map(|music| music.mixer()),
             voice_volume,
             return_to,
+            subtitles,
+            stem,
         );
         state.frontend.fullscreen_movie = Some(movie);
         if running_scenario {
@@ -399,8 +407,8 @@ impl App {
         }
     }
 
-    /// Only a bare Escape release (`Keyboard::Get() == 0x081B`) aborts a
-    /// movie; every other key and mouse event is consumed and ignored.
+    /// Bare Escape release (`Keyboard::Get() == 0x081B`), also mapped from
+    /// Horizon's Plus button. Other keys remain consumed and ignored.
     pub(super) fn fullscreen_movie_key(
         state: &mut AppState,
         code: winit::keyboard::KeyCode,

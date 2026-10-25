@@ -29,6 +29,8 @@ typedef struct {
 #define Module_Kernel 1
 #define KernelError_OutOfResource 132
 #define InfoType_ResourceLimit 9
+#define InfoType_TotalMemorySize 6
+#define InfoType_UsedMemorySize 7
 #define LimitableResource_Sessions 4
 #define R_MODULE(result) ((result) & 0x1FF)
 #define R_DESCRIPTION(result) (((result) >> 9) & 0x1FFF)
@@ -50,11 +52,6 @@ Result threadStart(Thread *);
 Result threadClose(Thread *);
 u64 armGetSystemTick(void);
 u64 armGetSystemTickFreq(void);
-Result svcSetResourceLimitLimitValue(Handle, int, u64);
-bool envIsSyscallHinted(u8 id);
-void smExit(void);
-Result smInitialize(void);
-
 Result test_dispatch(Service *, u32, const void *, size_t, void *, Dispatch);
 #define serviceDispatch(service, command, ...) \
     test_dispatch(service, command, NULL, 0, NULL, (Dispatch){__VA_ARGS__})

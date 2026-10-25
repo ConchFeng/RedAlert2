@@ -17,7 +17,7 @@ WORKSPACE = ROOT.parents[3]
 TOOLCHAIN = "nightly-2026-10-04"
 UPSTREAM_COMMIT = "3eac779b232ee47cd0eb957676c64386ac7b0f1d"
 DEFAULT_CLIENT_ASSETS = ROOT / "target/emulator/master-xdg-data/eden/sdmc/game"
-CLIENT_VERSION = "0.0.1 beta"
+CLIENT_VERSION = "0.0.2"
 PROFILE_FEATURES = "horizon-frame-profile,telemetry"
 
 
@@ -275,6 +275,9 @@ def main():
     if args.client:
         runtime_objects.append(work / "fps_report.o")
         run(cc, *cflags, "-c", "fps_report.c", "-o", runtime_objects[-1])
+    if args.gpu or args.client:
+        runtime_objects.append(work / "memory.o")
+        run(cc, *cflags, "-c", "memory.c", "-o", runtime_objects[-1])
     elf = work / f"{artifact}.elf"
     if args.gpu or args.client:
         nvk = Path(os.environ.get(

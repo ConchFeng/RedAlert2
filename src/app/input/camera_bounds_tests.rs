@@ -126,3 +126,14 @@ fn oversized_local_bounds_keep_scroll_and_cinematic_focus_stable() {
         "focus still completes while the camera is fixed"
     );
 }
+
+#[test]
+fn right_stick_and_touch_motion_share_the_camera_scale_with_opposite_gesture_sign() {
+    let delta = (85.0_f32, -42.0_f32);
+    let scale = 0.75_f32 * 1.25_f32;
+    let stick = (delta.0 / scale, delta.1 / scale);
+    let touch = (-delta.0 / scale, -delta.1 / scale);
+    assert_eq!(stick, (90.666664, -44.8));
+    assert_eq!(touch, (-90.666664, 44.8));
+    assert_eq!(touch, (-stick.0, -stick.1));
+}

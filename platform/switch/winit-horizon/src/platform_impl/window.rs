@@ -2,10 +2,7 @@ use std::{
     collections::VecDeque,
     ffi::c_void,
     ptr::NonNull,
-    sync::{
-        atomic::Ordering,
-        Arc, Mutex,
-    },
+    sync::{atomic::Ordering, Arc, Mutex},
 };
 
 use crate::{
@@ -17,7 +14,8 @@ use crate::{
 };
 
 use super::{
-    ActiveEventLoop, Fullscreen, MonitorHandle, PlatformSpecificWindowAttributes, Shared, WindowId,
+    ActiveEventLoop, Fullscreen, MonitorHandle, PlatformSpecificWindowAttributes, Shared, TouchPan,
+    WindowId,
 };
 
 const DISPLAY_WIDTH: u32 = 1280;
@@ -66,7 +64,10 @@ impl Window {
         // The client initializes libnx before entering winit. The returned default NWindow
         // remains owned by libnx until process shutdown.
         let Some(n_window) = NonNull::new(unsafe { platform_window_init() }) else {
-            event_loop.shared.window_created.store(false, Ordering::Release);
+            event_loop
+                .shared
+                .window_created
+                .store(false, Ordering::Release);
             return Err(os_error!(std::io::Error::other(
                 "platform_window_init returned a null NWindow"
             )));
@@ -94,7 +95,9 @@ impl Window {
     }
 
     fn state(&self) -> std::sync::MutexGuard<'_, WindowState> {
-        self.state.lock().unwrap_or_else(std::sync::PoisonError::into_inner)
+        self.state
+            .lock()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
     }
 
     pub fn id(&self) -> WindowId {
@@ -209,6 +212,18 @@ impl Window {
         self.state().fullscreen.clone()
     }
 
+    /// Two-finger midpoint movement in window pixels since the previous poll.
+    /// `active` is true for the whole two-finger gesture, including the frame
+    /// that started it, so the app can suppress the synthetic left click.
+    pub fn touch_pan(&self) -> TouchPan {
+        *self.shared.touch_pan.lock().unwrap()
+    }
+
+    /// Horizon-only right-stick camera sample shared with the native input poll.
+    pub fn camera_pan(&self) -> super::event_loop::CameraPan {
+        *self.shared.camera_pan.lock().unwrap()
+    }
+
     pub fn set_decorations(&self, _decorations: bool) {}
 
     pub fn is_decorated(&self) -> bool {
@@ -283,7 +298,9 @@ impl Window {
     {
         use crate::raw_window_handle::{HorizonWindowHandle, RawWindowHandle};
 
-        Ok(RawWindowHandle::Horizon(HorizonWindowHandle::new(self.n_window)))
+        Ok(RawWindowHandle::Horizon(HorizonWindowHandle::new(
+            self.n_window,
+        )))
     }
 
     #[cfg(feature = "rwh_06")]

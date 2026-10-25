@@ -118,7 +118,7 @@ wgpu = "27"
 winit = "0.30"
 
 [target.'cfg(target_os = "horizon")'.dependencies]
-wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl"] }
+wgpu = { version = "27", default-features = false, features = ["std", "vulkan", "wgsl", "counters"] }
 winit = "=0.30.12"
 
 [target.'cfg(unix)'.dependencies]

@@ -39,6 +39,7 @@ pub(crate) fn launcher_values_from_profile(
         shift_queue: profile.shift_queue,
         wol_test_service: profile.wol_test_service,
         fps_counter: false,
+        switch_60_fps: profile.switch_60_fps,
         sidebar: profile.sidebar,
         score_position: admitted_volume_position(profile.score_volume),
         sound_position: admitted_volume_position(profile.sound_volume),
@@ -93,6 +94,7 @@ pub(crate) trait LauncherPreviewOperations: AudioVolumeOperations {
     fn store_shift_queue(&mut self, shift_queue: bool);
     fn store_wol_test_service(&mut self, wol_test_service: bool);
     fn set_fps_counter(&mut self, shown: bool);
+    fn store_switch_60_fps(&mut self, enabled: bool);
 }
 
 /// Dispatch one already-ordered UI event without an INI write. The three audio
@@ -129,6 +131,9 @@ pub(crate) fn dispatch_launcher_preview_event(
             operations.store_wol_test_service(wol_test_service);
         }
         LauncherOptionsEvent::FpsCounterChanged(shown) => operations.set_fps_counter(shown),
+        LauncherOptionsEvent::Switch60FpsChanged(enabled) => {
+            operations.store_switch_60_fps(enabled)
+        }
         LauncherOptionsEvent::ScorePreview(volume) => {
             apply_volume(operations, AudioVolume::Score, volume, true)
         }

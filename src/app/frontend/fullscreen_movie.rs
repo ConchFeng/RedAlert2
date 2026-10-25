@@ -88,6 +88,8 @@ pub(crate) fn movie_rect(screen_w: i32, screen_h: i32, movie_w: i32, movie_h: i3
 pub(crate) struct FullscreenMovie {
     playback: crate::app::movie_playback::MoviePlayback,
     return_to: MovieReturn,
+    subtitles: Option<crate::assets::subtitle_file::SubtitleTable>,
+    movie_stem: String,
 }
 
 impl FullscreenMovie {
@@ -96,10 +98,14 @@ impl FullscreenMovie {
         mixer: Option<&rodio::mixer::Mixer>,
         voice_volume: f32,
         return_to: MovieReturn,
+        subtitles: Option<crate::assets::subtitle_file::SubtitleTable>,
+        movie_stem: &str,
     ) -> Self {
         Self {
             playback: crate::app::movie_playback::MoviePlayback::new(surface, mixer, voice_volume),
             return_to,
+            subtitles,
+            movie_stem: movie_stem.to_owned(),
         }
     }
     pub(crate) fn into_return(self) -> MovieReturn {
@@ -126,6 +132,11 @@ impl FullscreenMovie {
     }
     pub(crate) fn surface(&self) -> &BinkMovieSurface {
         self.playback.surface()
+    }
+    pub(crate) fn subtitle_cue(&self) -> Option<&crate::assets::subtitle_file::SubtitleCue> {
+        self.subtitles
+            .as_ref()?
+            .cue_at(&self.movie_stem, self.playback.elapsed_seconds())
     }
     pub(crate) fn instance(&self, screen_w: i32, screen_h: i32) -> SpriteInstance {
         let [x, y, w, h] = movie_rect(

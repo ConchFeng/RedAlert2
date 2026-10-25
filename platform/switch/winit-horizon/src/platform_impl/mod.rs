@@ -18,7 +18,9 @@ pub(crate) use crate::cursor::{
     OnlyCursorImage as PlatformCustomCursor, OnlyCursorImageSource as PlatformCustomCursorSource,
 };
 pub(crate) use crate::icon::NoIcon as PlatformIcon;
-pub use event_loop::{ActiveEventLoop, EventLoop, EventLoopProxy, OwnedDisplayHandle, Shared};
+pub use event_loop::{
+    ActiveEventLoop, CameraPan, EventLoop, EventLoopProxy, OwnedDisplayHandle, Shared, TouchPan,
+};
 pub use window::Window;
 pub type OsError = std::io::Error;
 

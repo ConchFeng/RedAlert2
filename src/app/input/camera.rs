@@ -364,6 +364,44 @@ impl PendingCameraScroll {
     }
 }
 
+/// Queue a Horizon two-finger drag in the existing camera transaction.
+///
+/// The backend reports window pixels. Convert through the match upscale pass
+/// first, then through the logical view zoom, and invert the motion because
+/// dragging the terrain right moves the camera left.
+pub(crate) fn queue_touch_pan(state: &mut AppState, window_delta: (f32, f32)) {
+    queue_window_camera_motion(state, window_delta, true);
+}
+
+/// Queue a right-stick camera step. Unlike a drag gesture, the stick value is
+/// already a movement direction: pushing right must look right.
+pub(crate) fn queue_stick_camera_pan(state: &mut AppState, window_delta: (f32, f32)) {
+    queue_window_camera_motion(state, window_delta, false);
+}
+
+fn queue_window_camera_motion(state: &mut AppState, window_delta: (f32, f32), invert: bool) {
+    if !window_delta.0.is_finite() || !window_delta.1.is_finite() {
+        return;
+    }
+    let render_scale = state
+        .tactical_zoom()
+        .map_or(1.0, crate::render::upscale_pass::ZoomGeometry::scale);
+    let view_zoom = state.match_state.input.zoom_level;
+    if render_scale <= 0.0
+        || !render_scale.is_finite()
+        || view_zoom <= 0.0
+        || !view_zoom.is_finite()
+    {
+        return;
+    }
+    let scale = render_scale * view_zoom;
+    let direction = if invert { -1.0 } else { 1.0 };
+    state.match_state.input.pending_camera_scroll.request((
+        direction * window_delta.0 / scale,
+        direction * window_delta.1 / scale,
+    ));
+}
+
 /// An absolute view change replaces the committed and requested view together
 /// (SetViewToCoordInstant 0x6D6070, stores 0x6D613F..0x6D6153). Follow,
 /// bookmarks, minimap, loading and VERA zoom all enter through this owner.

@@ -14,6 +14,14 @@ extern int rust_main(void);
 extern void *__aarch64_read_tp(void);
 static PadState pad;
 static bool user_save_mounted;
+typedef struct {
+    uint32_t count;
+    struct {
+        uint32_t id;
+        uint32_t x;
+        uint32_t y;
+    } touches[16];
+} VeraTouchState;
 #ifndef VERA_WGPU
 static EGLDisplay display;
 static EGLContext context;
@@ -99,6 +107,8 @@ void platform_console_init(void) {
     padConfigureInput(1, HidNpadStyleSet_NpadStandard);
     padInitializeDefault(&pad);
     hidInitializeTouchScreen();
+    hidInitializeMouse();
+    hidInitializeKeyboard();
 }
 bool platform_running(void) { return appletMainLoop(); }
 int32_t platform_applet_type(void) { return appletGetAppletType(); }
@@ -123,6 +133,84 @@ bool platform_touch(uint32_t *x, uint32_t *y) {
     *x = state.touches[0].x;
     *y = state.touches[0].y;
     return true;
+}
+uint32_t platform_touches(VeraTouchState *output) {
+    HidTouchScreenState state = {0};
+    if (!output) return 0;
+    output->count = 0;
+    if (!hidGetTouchScreenStates(&state, 1) || state.count <= 0) return 0;
+    uint32_t count = (uint32_t)state.count;
+    if (count > 16) count = 16;
+    for (uint32_t index = 0; index < count; ++index) {
+        output->touches[index].id = state.touches[index].finger_id;
+        output->touches[index].x = state.touches[index].x;
+        output->touches[index].y = state.touches[index].y;
+    }
+    output->count = count;
+    return count;
+}
+bool platform_mouse(int32_t *delta_x, int32_t *delta_y, int32_t *wheel_x,
+                    int32_t *wheel_y, uint32_t *buttons, uint32_t *pressed_buttons,
+                    uint32_t *released_buttons) {
+    static uint64_t last_sample;
+    static uint32_t last_buttons;
+    HidMouseState states[17] = {0};
+    size_t count = hidGetMouseStates(states, 17);
+    if (appletGetOperationMode() != AppletOperationMode_Console ||
+        !count || !(states[0].attributes & HidMouseAttribute_IsConnected)) {
+        last_sample = 0;
+        last_buttons = 0;
+        return false;
+    }
+    int32_t dx = 0, dy = 0, wx = 0, wy = 0;
+    // libnx returns newest first. Consume each relative sample once, including
+    // history collected between slower rendered frames.
+    size_t available = last_sample ? count : 1;
+    while (available && states[available - 1].sampling_number <= last_sample) --available;
+    for (size_t index = 0; index < available; ++index) {
+        dx += states[index].delta_x;
+        dy += states[index].delta_y;
+        wx += states[index].wheel_delta_x;
+        wy += states[index].wheel_delta_y;
+    }
+    if (delta_x) *delta_x = dx;
+    if (delta_y) *delta_y = dy;
+    if (wheel_x) *wheel_x = wx;
+    if (wheel_y) *wheel_y = wy;
+    if (buttons) *buttons = states[0].buttons;
+    uint32_t pressed = 0, released = 0;
+    uint32_t previous = last_buttons;
+    for (size_t index = available; index-- > 0;) {
+        pressed |= states[index].buttons & ~previous;
+        released |= ~states[index].buttons & previous;
+        previous = states[index].buttons;
+    }
+    last_sample = states[0].sampling_number;
+    last_buttons = states[0].buttons;
+    if (pressed_buttons) *pressed_buttons = pressed;
+    if (released_buttons) *released_buttons = released;
+    return true;
+}
+uint64_t platform_keyboard(uint64_t *keys) {
+    HidKeyboardState state = {0};
+    if (!keys) return 0;
+    for (uint32_t index = 0; index < 4; ++index) keys[index] = 0;
+    if (appletGetOperationMode() != AppletOperationMode_Console ||
+        !hidGetKeyboardStates(&state, 1)) return 0;
+    for (uint32_t index = 0; index < 4; ++index) keys[index] = state.keys[index];
+    return state.modifiers;
+}
+bool platform_touch_finger(uint32_t finger_id, uint32_t *x, uint32_t *y) {
+    HidTouchScreenState state = {0};
+    if (!hidGetTouchScreenStates(&state, 1) || state.count <= 0) return false;
+    for (int32_t index = 0; index < state.count; ++index) {
+        if (state.touches[index].finger_id == finger_id) {
+            if (x) *x = state.touches[index].x;
+            if (y) *y = state.touches[index].y;
+            return true;
+        }
+    }
+    return false;
 }
 Result platform_commit_sdmc(void) { return fsdevCommitDevice("sdmc"); }
 Result platform_commit_user_save(void) {

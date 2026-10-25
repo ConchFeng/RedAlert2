@@ -649,10 +649,7 @@ impl BatchRenderer {
         let pipeline_layout: wgpu::PipelineLayout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("Batch Pipeline Layout"),
-                bind_group_layouts: &[
-                    &camera_bind_group_layout,
-                    &texture_bind_group_layout,
-                ],
+                bind_group_layouts: &[&camera_bind_group_layout, &texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
 
@@ -878,10 +875,7 @@ impl BatchRenderer {
         let zdepth_pipeline_layout: wgpu::PipelineLayout =
             device.create_pipeline_layout(&wgpu::PipelineLayoutDescriptor {
                 label: Some("ZDepth Pipeline Layout"),
-                bind_group_layouts: &[
-                    &camera_bind_group_layout,
-                    &zdepth_texture_bind_group_layout,
-                ],
+                bind_group_layouts: &[&camera_bind_group_layout, &zdepth_texture_bind_group_layout],
                 push_constant_ranges: &[],
             });
         let zdepth_pipeline: wgpu::RenderPipeline =
@@ -1343,6 +1337,15 @@ impl BatchRenderer {
                         depth_or_array_layers: 1,
                     },
                 );
+                // Writes retain their staging allocation until a submission
+                // completes. Retire this band before allocating the next one.
+                let submission_index = queue.submit(std::iter::empty());
+                device
+                    .poll(wgpu::PollType::Wait {
+                        submission_index: Some(submission_index),
+                        timeout: Some(std::time::Duration::from_secs(10)),
+                    })
+                    .expect("Batch texture upload did not complete");
             }
             texture
         };

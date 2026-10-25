@@ -10,6 +10,12 @@
 也已从空 SD 资源目录启动并进入遭遇战。完整战术操作与新版真机验收尚未完成；
 下方早期检查点中的限制以 HANDOFF 顶部当前结论为准。
 
+本版 Horizon 输入新增 USB Hub 键鼠、右摇杆镜头平移和双指中点拖动地图；
+鼠标键位同时支持中键与前进/后退，滚轮复用现有滚轮语义。剧情影片会从资源根
+读取 UTF-16LE `subtitlemd.txt` / `subtitle.txt`，按影片自身帧时钟绘制字幕。
+`0.0.2` 包已构建并通过包结构校验，但这些功能尚未在 Eden 或真机运行验证；
+零售字幕、MIX 和其他游戏资源仍不入 Git。
+
 当前 Switch 客户端由主线程调度共享 Rust 游戏核心和 wgpu/Vulkan 绘制；Rayon
 三线程池用于部分寻路和目标扫描，体素图集用 scoped `std::thread` 分摊姿态光栅化，
 没有独立模拟/渲染线程。2026-10-24
@@ -32,9 +38,9 @@ profile NSP 的 Eden 遭遇战实测约 27 fps、模拟时钟 1.000× 实时；�
 python3 build.py --client
 ```
 
-当前客户端版本为 `0.0.1 beta`，NSP 命名格式为
+当前客户端版本为 `0.0.2`，NSP 命名格式为
 `dist/vera20-client-v<VERSION>.nsp`，本版产物为
-`dist/vera20-client-v0.0.1.nsp`，标题 ID
+`dist/vera20-client-v0.0.2.nsp`，标题 ID
 `0100f52556458000`。运行日志在客体 `sdmc:/switch/vera20k/logs/client.log`，
 错误结果在 `sdmc:/switch/vera20k/client.last-error.txt`；使用现有 master 模拟器
 数据目录。资源优先从包内 RomFS 读取，配置和日志目录为
@@ -62,8 +68,8 @@ python3 build.py --client --nsp \
 因此请只放需要随包携带的资源。原始资源留在本机，不加入 Git。
 
 客户端链接构建默认打入游戏资源，并按 `vera20-client-v<VERSION>.nsp` 命名。
-本版资源内置 NSP 为 803,079,896 字节，SHA256
-`bbccd4d6446900b771473a83ef4aa6c84d5dd311d379d9ec75bad3868651f980`。
+本版资源内置 NSP 为 1,986,971,864 字节，SHA256
+`d9b3e2e9e05bac5a8b515e347d881165f3903d2b666109bbd870937e675dc71f`。
 构建也会生成诊断 NRO；NRO 本身不内置这些资源。
 
 客户端挂载 `romfs:/`；没有配置覆盖时优先从包内读取资源，找不到包内资源时
@@ -80,12 +86,29 @@ python3 build.py --client --nsp \
 `run_eden.sh --client` 仍是旧 NRO 诊断入口；验证当前客户端须将 Eden 的 `-g`
 指向上述 NSP，以提供账号存档上下文。
 
-Horizon 对局呈现设置 30 FPS 上限；不改变屏幕刷新率。所有呈现路径都接入
+USB 键盘、鼠标仅在底座/TV 模式启用；掌机模式使用手柄和触摸。
+切回掌机会释放 USB 按键状态。手柄 A/B、单指触摸和 USB 鼠标共用点击事件，
+任一来源释放时不会打断其他来源仍按住的按钮。双指拖图整段抑制触摸点击。
+
+`v0.0.2` 手柄映射：左摇杆移动指针，右摇杆平移镜头；十字键上／下选择
+编队 1／2，左为警戒（G），右为路径点模式（Z）。选中单位后，按住 R 再按
+上／下可建立编队 1／2；按住十字键右并依次点击地面设置路径点，松开后执行。
+X 为部署（D），Y 为切换同盟（A），L／R 为 Shift／Ctrl，ZL／ZR 为 Tab／Space，
+Plus／Minus 为 Escape／F10。以上功能遵循当前游戏热键配置；剧情用实体 Plus
+跳过，不添加屏幕 `+` 按钮。
+
+Horizon 对局呈现默认设置 30 FPS 上限；可在主菜单 `Options → Vera Options →
+Developer Options` 勾选 `60 FPS Limit`，切换为 60 FPS 上限，取消勾选恢复 30。
+选择保存在 `VERA.INI` 的 `[VERA] Switch60Fps=`，切换即时生效，只影响画面
+呈现，不改变模拟速度或屏幕刷新率；实际帧率仍取决于性能。原有 `FPS Counter`
+保持每次启动默认隐藏。所有呈现路径都接入
 SaltyNX 共享页上报，无服务时跳过；已有 NX-FPS 上报者活跃时交由它负责。
 外部插件读数、实际帧率及用户存档隔离仍需用最终 NSP 在真机确认。
 
 FPS 上报诊断记录在 `logs/client.log`，日志目标为 `switch::fps`，包括共享页连接、
 IPC/映射错误和首次有效读数。缺少 SaltyNX 不阻止启动，后台每 5 秒重试。
+安装版 NSP 的 Session 限制为 `1/1` 时，上报器只记录 `0x10801` 并跳过；
+不要尝试用特权 SVC `0x7E` 提升限额（真机返回 `2168-0008` 并终止游戏）。
 主机上的针对性 C 检查可从仓库根运行：
 
 ```bash
@@ -100,7 +123,9 @@ cc -std=gnu11 -Wall -Wextra -Werror -Iplatform/switch/tests/include \
 
 资源打包不会补齐源目录缺少的音乐或影片。2026-10-25 已向本机资源目录补齐
 `theme.mix`、`thememd.mix`、`movmd03.mix`、`movies01.mix`、`movies02.mix`，
-新资源包中已可查找到主题音乐和首关剧情影片；实际播放仍待真机确认。
+并加入 UTF-16LE `subtitlemd.txt`、`subtitle.txt`。新资源包中已核对两份字幕
+的大小和 SHA256，主题音乐和首关剧情影片可查找到；实际播放与字幕显示仍待
+运行确认。
 随机地图生成仍有向资源目录写 `RandMap.Sed` / 预览文件的路径，在只读 RomFS
 模式下尚未适配，当前请使用已有地图。
 

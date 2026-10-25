@@ -478,15 +478,19 @@ pub(crate) fn build_presentation_manifest(
     theater_iso_palette: Option<&Palette>,
 ) -> PresentationManifest {
     let art = rules.map(RuleSet::art);
+    // Horizon cannot afford baking every future team and country roster.
+    // Keep resident entities and deploy targets; newly spawned types use the
+    // existing growth path without repacking resident pages.
+    let preload_rules = rules.filter(|_| !cfg!(target_os = "horizon"));
+    #[cfg(target_os = "horizon")]
+    log::info!("Atlas preload: resident world and deploy targets; future rosters load on demand");
     // `load_theater_unit_and_iso_palettes` owns both theater palettes:
     // `load_theater` publishes them and mid-match atlas growth re-reads them.
     // Without a loaded theater nothing renders, so no entity atlas is built.
     let palette = theater_unit_palette;
     let unit_atlas: Option<UnitAtlas> = if palette.is_some() {
-        // A computer's teams only enter the world when it creates one, so the
-        // starting entities never name the types its roster recruits. Bake
-        // them now: a mid-match growth page costs the player a visible freeze.
-        let authored = rules.map(|rules| {
+        // Preload future teams and country rosters where memory permits.
+        let authored = preload_rules.map(|rules| {
             let teams = unit_atlas::UnitAtlasDemand::of_authored_teams(
                 sim.team_script_vm(),
                 rules,
@@ -529,20 +533,16 @@ pub(crate) fn build_presentation_manifest(
     // infantry bodies and building hulls. Their own House colour is the only
     // variant they draw, so pass exact (type, colour) pairs instead of the
     // deploy targets' every-colour cross product.
-    let country_shp_pairs = rules.map_or_else(Vec::new, |rules| {
+    let country_shp_pairs = preload_rules.map_or_else(Vec::new, |rules| {
         let game_mode_nonzero = sim.session().game_mode_nonzero();
         let mut pairs: Vec<(String, crate::rules::house_colors::HouseColorIndex)> = Vec::new();
-        for country in crate::sim::ai_buildable::participating_countries(
-            sim.houses(),
-            rules,
-            sim.interner(),
-        ) {
+        for country in
+            crate::sim::ai_buildable::participating_countries(sim.houses(), rules, sim.interner())
+        {
             let colors: Vec<_> = sim
                 .houses()
                 .values()
-                .filter(|house| {
-                    sim.interner().resolve(house.house_type_id()) == country.name
-                })
+                .filter(|house| sim.interner().resolve(house.house_type_id()) == country.name)
                 .filter_map(|house| {
                     house_colors
                         .get(sim.interner().resolve(house.name()))

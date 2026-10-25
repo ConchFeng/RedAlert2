@@ -135,6 +135,8 @@ pub(crate) struct RetailOptionsProfile {
     /// `[VERA] MouseWheelZoom=`: let the mouse wheel change the battle's
     /// view distance. Off by default; this is a local camera preference.
     pub(crate) mouse_wheel_zoom: bool,
+    /// `[VERA] Switch60Fps=`: raise Horizon's presentation cap from 30 to 60.
+    pub(crate) switch_60_fps: bool,
     /// `[VERA] ShiftQueue=`: whether a Shift-click on a mobile strip queues
     /// [`Self::shift_queue_count`] builds: the Options page's Shift-Click
     /// Batch Queue. Off by default, so Shift + left click queues one copy as
@@ -218,6 +220,7 @@ impl Default for RetailOptionsProfile {
             yr_original_style: false,
             render_interpolation: false,
             mouse_wheel_zoom: false,
+            switch_60_fps: false,
             shift_queue: false,
             shift_queue_count: DEFAULT_SHIFT_QUEUE_COUNT,
             wol_test_service: false,
@@ -239,7 +242,7 @@ pub(crate) struct FormattedProfileSections {
     pub(crate) audio: [(&'static str, String); 7],
     pub(crate) network: [(&'static str, String); 4],
     /// VERA's own section, written after the native ones.
-    pub(crate) vera: [(&'static str, String); 12],
+    pub(crate) vera: [(&'static str, String); 13],
 }
 
 impl RetailOptionsLoad {
@@ -336,6 +339,12 @@ impl RetailOptionsLoad {
 }
 
 impl RetailOptionsProfile {
+    #[cfg(any(target_os = "horizon", test))]
+    pub(crate) fn switch_render_interval(&self) -> std::time::Duration {
+        let limit = if self.switch_60_fps { 60 } else { 30 };
+        std::time::Duration::from_nanos(1_000_000_000 / limit)
+    }
+
     /// `OptionsClass::Set_Score_Volume` at `0x005FA4A0` stores an upper-only
     /// clamped f32. Reuse the INI reader's normalization so live setters retain
     /// negative and unordered inputs instead of copying the output clamp.
@@ -439,6 +448,7 @@ impl RetailOptionsProfile {
             self.render_interpolation =
                 vera.read_bool("RenderInterpolation", self.render_interpolation);
             self.mouse_wheel_zoom = vera.read_bool("MouseWheelZoom", self.mouse_wheel_zoom);
+            self.switch_60_fps = vera.read_bool("Switch60Fps", self.switch_60_fps);
             self.shift_queue = vera.read_bool("ShiftQueue", self.shift_queue);
             // Absent keeps the current value; present-but-nonnumeric answers 0,
             // which the range lifts to 1 rather than a click that queues nothing.
@@ -551,6 +561,7 @@ impl RetailOptionsProfile {
                     "MouseWheelZoom",
                     format_bool(self.mouse_wheel_zoom).to_string(),
                 ),
+                ("Switch60Fps", format_bool(self.switch_60_fps).to_string()),
                 ("Display", self.display.ini_value().to_owned()),
             ],
         }
@@ -1439,6 +1450,28 @@ ScoreVolume=0.3\nIsScoreShuffle=yes\nSoundLatency=4\nInGameMusic=no\n[VERA]\nZoo
             load_snapshot(&startup, &auto).retained_profile.display,
             DisplayTarget::Auto
         );
+    }
+
+    #[test]
+    fn switch_frame_limit_round_trips_without_changing_game_speed() {
+        let startup = RetailStartupOptions::default();
+        let input = b"[Options]\nGameSpeed=5\n[VERA]\nUnowned=keep\n";
+        let mut profile = load_snapshot(&startup, input).retained_profile;
+        assert!(!profile.switch_60_fps);
+        assert_eq!(profile.switch_render_interval().as_nanos(), 33_333_333);
+        profile.switch_60_fps = true;
+        let written = profile.transform_settings(input);
+        let mut reloaded = load_snapshot(&startup, &written).retained_profile;
+        assert!(reloaded.switch_60_fps);
+        assert_eq!(reloaded.switch_render_interval().as_nanos(), 16_666_666);
+        assert_eq!(reloaded.game_speed, 5);
+        assert!(String::from_utf8_lossy(&written).contains("Unowned=keep"));
+        reloaded.switch_60_fps = false;
+        let written = reloaded.transform_settings(&written);
+        let reloaded = load_snapshot(&startup, &written).retained_profile;
+        assert!(!reloaded.switch_60_fps);
+        assert_eq!(reloaded.game_speed, 5);
+        assert!(!String::from_utf8_lossy(&written).contains("FpsCounter="));
     }
 
     #[test]

@@ -39,12 +39,8 @@ static u32 observed_tick;
 static unsigned window_frames, tick_index;
 static bool observing, external_writer, logged_report;
 
-static unsigned session_limit_attempts;
-static bool session_limit_raised;
-
 static Result start_connector(void);
 static void connector_main(void *unused);
-static Result connect_session_limited(Handle *port, Result original);
 
 extern void platform_fps_log(const char *message);
 
@@ -96,64 +92,18 @@ static void connection_failure(const char *stage, Result result) {
     }
 }
 
-// Called when svcConnectToNamedPort returned Session-limit exhaustion (0x10801).
-// First attempt: if the resource-limit syscall is hinted, raise this process's
-// own session limit by one and retry.  Fallback from the third attempt onward:
-// vacate the sm: slot with smExit, connect, then unconditionally restore sm:
-// before returning — every code path must leave sm: in the initialized state.
-static Result connect_session_limited(Handle *port, Result original) {
-    if (!session_limit_raised && envIsSyscallHinted(0x7E)) {
-        u64 limit_handle = 0;
-        Result info = svcGetInfo(&limit_handle, InfoType_ResourceLimit, INVALID_HANDLE, 0);
-        if (R_SUCCEEDED(info) && limit_handle != INVALID_HANDLE) {
-            s64 maximum = -1;
-            Result lv = svcGetResourceLimitLimitValue(&maximum, (Handle)limit_handle,
-                LimitableResource_Sessions);
-            if (R_SUCCEEDED(lv)) {
-                Result set = svcSetResourceLimitLimitValue((Handle)limit_handle,
-                    LimitableResource_Sessions, (u64)(maximum + 1));
-                if (R_SUCCEEDED(set)) {
-                    session_limit_raised = true;
-                    fps_log("raised session limit to %lld; retrying SaltySD",
-                        (long long)(maximum + 1));
-                }
-            }
-            svcCloseHandle((Handle)limit_handle);
-        }
-        if (session_limit_raised) {
-            return svcConnectToNamedPort(port, "SaltySD");
-        }
-    }
-    // Syscall not hinted or limit raise failed.  Wait until the third consecutive
-    // Session-limit failure so transient exhaustion from startup doesn't trigger
-    // the sm: dance unnecessarily.
-    if (++session_limit_attempts < 3) {
-        return original;
-    }
-    // smExit returns void; always call smInitialize afterward to restore sm:.
-    smExit();
-    Result connect = svcConnectToNamedPort(port, "SaltySD");
-    Result sm_init = smInitialize();
-    if (R_FAILED(sm_init)) {
-        fps_log("FATAL: smInitialize failed after SaltySD connect attempt: 0x%x", sm_init);
-    }
-    return connect;
-}
-
 static FpsPrefix *connect_page(void) {
     FpsPrefix *candidate = NULL;
     candidate_reused = false;
     Handle port = INVALID_HANDLE;
+    // Installed NSPs run with a one-session limit and the kernel rejects the
+    // privileged resource-limit syscall even when libnx reports it hinted.
+    // Never probe that syscall or swap sm: here: an optional FPS reporter must
+    // not be able to abort game startup.
     Result result = svcConnectToNamedPort(&port, "SaltySD");
     if (R_FAILED(result)) {
-        if (R_MODULE(result) == Module_Kernel &&
-            R_DESCRIPTION(result) == KernelError_OutOfResource) {
-            result = connect_session_limited(&port, result);
-        }
-        if (R_FAILED(result)) {
-            connection_failure("connect SaltySD", result);
-            return NULL;
-        }
+        connection_failure("connect SaltySD", result);
+        return NULL;
     }
     Service service = { .session = port };
     if (!shmemGetAddr(&memory)) {

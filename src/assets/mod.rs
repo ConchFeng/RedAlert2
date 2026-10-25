@@ -42,6 +42,7 @@ pub mod pal_file;
 pub mod pcx_file;
 pub mod shp_decode;
 pub mod shp_file;
+pub mod subtitle_file;
 pub mod tmp_decode;
 pub mod tmp_file;
 pub mod vpl_file;

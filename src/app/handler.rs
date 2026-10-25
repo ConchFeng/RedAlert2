@@ -18,6 +18,42 @@ fn launcher_options_consumes_escape<T>(dialog: &Option<T>, is_escape: bool) -> b
 }
 
 impl App {
+    #[cfg(target_os = "horizon")]
+    fn apply_horizon_touch_pan(state: &mut AppState) {
+        if state.frontend.screen != GameScreen::InGame
+            || state.match_state.paused()
+            || state.match_state.network_wait.dialog_open()
+            || crate::app::frontend::shell_transition::blocks_shell_input(state)
+            || crate::app::input::campaign_input::is_locked(state)
+        {
+            return;
+        }
+        let pan = state.platform.window.horizon_touch_pan();
+        if !pan.active || pan.delta == (0.0, 0.0) {
+            return;
+        }
+        crate::app::input::camera::queue_touch_pan(state, pan.delta);
+        state.platform.window.request_redraw();
+    }
+
+    #[cfg(target_os = "horizon")]
+    fn apply_horizon_camera_pan(state: &mut AppState) {
+        if state.frontend.screen != GameScreen::InGame
+            || state.match_state.paused()
+            || state.match_state.network_wait.dialog_open()
+            || crate::app::frontend::shell_transition::blocks_shell_input(state)
+            || crate::app::input::campaign_input::is_locked(state)
+        {
+            return;
+        }
+        let pan = state.platform.window.horizon_camera_pan();
+        if !pan.active || pan.delta == (0.0, 0.0) {
+            return;
+        }
+        crate::app::input::camera::queue_stick_camera_pan(state, pan.delta);
+        state.platform.window.request_redraw();
+    }
+
     /// An event can interrupt WaitUntil before a capture's render cadence.
     /// Keep that render deadline while still waking for independently due
     /// lobby/network services. Offscreen frames have no swapchain pacing.
@@ -1108,6 +1144,12 @@ impl ApplicationHandler for App {
             }
             WindowEvent::CursorMoved { position, .. } => {
                 state.set_cursor_from_window(position.x as f32, position.y as f32);
+                if state.frontend.screen == GameScreen::MainMenu
+                    && state.frontend.fullscreen_movie.is_some()
+                {
+                    state.platform.window.request_redraw();
+                    return;
+                }
                 if Self::house_outcome_wait_pending(state) {
                     return;
                 }
@@ -1227,11 +1269,12 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if state.frontend.screen == GameScreen::MainMenu {
-                    // Play_Movie reads and ignores mouse buttons; Show_Credits
-                    // queues them as ordinary Keyboard entries.
+                    // Play_Movie ignores mouse buttons; do not pass clicks
+                    // through to the caller's UI.
                     if state.frontend.fullscreen_movie.is_some() {
                         return;
                     }
+                    // Show_Credits queues mouse buttons as Keyboard entries.
                     if state.frontend.credits_roll.is_some() {
                         Self::credits_roll_input(
                             state,
@@ -1442,6 +1485,12 @@ impl ApplicationHandler for App {
                     dispatch::sidebar_wheel_scroll(state, lines);
                 }
             }
+            WindowEvent::Touch(touch) if touch.phase == winit::event::TouchPhase::Ended => {
+                // The Horizon backend promotes a two-finger midpoint drag to
+                // the window's camera channel. Do not leave a synthetic
+                // single-touch left drag latched when the gesture ends.
+                state.match_state.input.cancel_tactical_drag();
+            }
             WindowEvent::RedrawRequested => {
                 if let Err(err) = Self::render_frame(state, event_loop, None, None) {
                     log::error!("Render: {:#}", err);
@@ -1454,6 +1503,10 @@ impl ApplicationHandler for App {
     fn about_to_wait(&mut self, event_loop: &ActiveEventLoop) {
         let shell_scroll_wake = if let Some(state) = self.state.as_mut() {
             Self::follow_window_full_screen(state);
+            #[cfg(target_os = "horizon")]
+            Self::apply_horizon_touch_pan(state);
+            #[cfg(target_os = "horizon")]
+            Self::apply_horizon_camera_pan(state);
             // cursor lock: the OS drops the clip on focus loss /
             // Windows key, so re-assert the player's choice every frame while
             // the window is focused. Presentation-only, never part of the sim.

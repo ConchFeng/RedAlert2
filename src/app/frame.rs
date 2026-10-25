@@ -576,14 +576,14 @@ impl App {
         #[cfg(target_os = "horizon")]
         {
             let now = Instant::now();
-            let interval = std::time::Duration::from_nanos(1_000_000_000 / 30);
+            let interval = state.persistence.options_profile.switch_render_interval();
             if let Some(last) = state.platform.last_render_start {
                 let remaining = interval.saturating_sub(now.duration_since(last));
                 if !remaining.is_zero() {
                     let slice = remaining.min(std::time::Duration::from_millis(4));
                     std::thread::sleep(slice);
                     // Sleep the exact remainder on the final wake so the
-                    // present lands on the 30 Hz boundary instead of arriving
+                    // present lands on the selected boundary instead of arriving
                     // up to one 4 ms slice late.
                     if remaining > slice {
                         return Ok(());

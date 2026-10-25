@@ -66,6 +66,13 @@ impl crate::app::persistence::options::launcher::LauncherPreviewOperations for A
         // Live state only; no profile stores it, so each launch starts hidden.
         self.renderer.fps_overlay.set_visible(shown);
     }
+    fn store_switch_60_fps(&mut self, enabled: bool) {
+        self.persistence.options_profile.switch_60_fps = enabled;
+        #[cfg(target_os = "horizon")]
+        {
+            self.platform.last_render_start = None;
+        }
+    }
     fn store_original_shape(&mut self, original_shape: bool) {
         self.persistence.options_profile.original_shape = original_shape;
         App::sync_zoom_pass(self);
