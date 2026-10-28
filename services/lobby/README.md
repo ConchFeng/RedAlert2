@@ -60,7 +60,7 @@ curl https://lobby.vera20k.org/v1/admin/notice -H "Authorization: Bearer $ADMIN_
 The notice appears as public chat from `VERA20k`: at once for players in Intl.
 Command or a game room that has not started, and for the others when they next
 enter Intl. Command, until it expires. A new notice replaces it and
-`{"minutes":0}` clears it. Players who show only buddy or clan chat don't see it.
+`{"minutes":0}` clears it.
 
 The client defaults to the deployed lobby at `https://lobby.vera20k.org`, the
 Worker's custom domain. Its workers.dev and preview URLs stay off because their

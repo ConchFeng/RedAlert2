@@ -2826,21 +2826,15 @@ fn sender(member: &WolMember) -> wol_chat::WolSender<'_> {
 /// up. The local record is found by the login nickname
 /// (`[0xB73E40]`) among the channel's users.
 fn sender_passes(state: &AppState, from: &WolMember, text: &[u16]) -> bool {
-    let preferences = &state.frontend.wol_preferences;
-    let filters = wol_chat::WolDisplayFilters {
-        latin: preferences.display_latin != 0,
-        asian: preferences.display_asian != 0,
-        buddies: preferences.display_buddies,
-        clan: preferences.display_clan,
-    };
+    let visit = state.frontend.wol.as_ref();
+    let filters = wol_chat::WolDisplayFilters::new(
+        &state.frontend.wol_preferences,
+        visit.is_some_and(|visit| visit.modern_ui()),
+    );
     let sender = sender(from);
     let setup_open = state.frontend.shell_route.network_setup();
     let local = nickname(state);
-    let in_game = state
-        .frontend
-        .wol
-        .as_ref()
-        .is_none_or(|visit| visit.in_game);
+    let in_game = visit.is_none_or(|visit| visit.in_game);
     let lobby = lobby_dialog(state).filter(|_| !in_game);
     let local_clan = lobby
         .and_then(|lobby| {
