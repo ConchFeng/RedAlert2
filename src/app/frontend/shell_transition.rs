@@ -161,19 +161,20 @@ impl ShellSlideKind {
     pub(crate) fn column(self, rows: u32, page: Option<&MenuPageSpec>) -> SlideColumn {
         let spec = crate::ui::shell::slide::slide_spec_for(self.dialog_id())
             .expect("rendered shell dialog must have a slide column");
+        let page = page.filter(|page| page.dialog == self.dialog_id());
         // WOL's simplified pages must slide only their visible buttons too.
-        let top_buttons = page
-            .filter(|page| page.dialog == self.dialog_id())
-            .map_or_else(
-                || match self {
-                    ShellSlideKind::Options => spec.top_buttons + 1,
-                    ShellSlideKind::VeraOptions => 0,
-                    _ => spec.top_buttons,
-                },
-                |page| page.stacked.len() as u32,
-            );
+        let top_buttons = page.map_or_else(
+            || match self {
+                ShellSlideKind::Options => spec.top_buttons + 1,
+                ShellSlideKind::VeraOptions => 0,
+                _ => spec.top_buttons,
+            },
+            |page| page.stacked.len() as u32,
+        );
         crate::ui::shell::slide::SlideDialogSpec {
             top_buttons,
+            // The online lobby keeps the warning monitor for its top panel.
+            top_panel: spec.top_panel && page.is_none_or(crate::ui::wol_lobby::keeps_top_panel),
             ..spec
         }
         .column(rows)
@@ -1523,9 +1524,13 @@ mod tests {
         assert_eq!((welcome.top_buttons, welcome.bottom_button), (1, true));
         let lobby = crate::ui::wol_lobby::WolLobbyState::new(false, true);
         let column = ShellSlideKind::WolLobby.column(9, Some(lobby.page_spec()));
-        assert_eq!((column.top_buttons, column.bottom_button), (3, true));
+        assert_eq!(
+            (column.top_buttons, column.bottom_button, column.top_panel),
+            (3, true, false)
+        );
         assert_eq!(ShellSlideKind::WolWelcome.column(9, None).top_buttons, 6);
-        assert_eq!(ShellSlideKind::WolLobby.column(9, None).top_buttons, 8);
+        let retail = ShellSlideKind::WolLobby.column(9, None);
+        assert_eq!((retail.top_buttons, retail.top_panel), (8, true));
     }
 
     #[test]

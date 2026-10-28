@@ -1992,6 +1992,22 @@ impl WolCapture {
                     "the test service did not fill 0x113"
                 );
                 self.event(frame, "0x113 settled from the test service");
+                if lobby.ui.is_modern() {
+                    // The one chat lobby is named nowhere: no list, no join line.
+                    let joined = crate::assets::csf_file::format_csf(
+                        &App::csf_label(state, "TXT_JOINED_S", "TXT_JOINED_S"),
+                        &[crate::assets::csf_file::CsfArg::Str("")],
+                    );
+                    let layout = crate::app::shell_wol::lobby::layout(state);
+                    ensure!(
+                        layout.control_rect(lobby_ui::LOBBIES).is_none()
+                            && !lobby.ui.enabled(lobby_ui::LOBBIES)
+                            && !lobby.ui.chat.lines.iter().any(|line| {
+                                String::from_utf16_lossy(&line.text).starts_with(&joined)
+                            }),
+                        "the modern 0x113 names its chat lobby"
+                    );
+                }
                 if self.target == WolTarget::ModernOptions {
                     let layout = crate::app::shell_wol::lobby::layout(state);
                     lobby_button(state, &layout, lobby_ui::OPTIONS)?;
