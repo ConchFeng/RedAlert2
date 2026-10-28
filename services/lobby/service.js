@@ -6,7 +6,7 @@ import { byteLength, record, playerName, validChannel, validJsonTree, validOptio
 const encoder = new TextEncoder();
 const LOBBY_PROTOCOL = 4;
 const RELAY_PROTOCOL = 2;
-const PUBLIC_LOBBY_NAME = 'Lob_41_2';
+const PUBLIC_LOBBY_NAME = 'Lob_41_7';
 // Channel flags bit 0x100 marks a game with a password: the client's game list
 // (0x00781480) shows its lock and Join (0x00789960) asks for the password first.
 const CHANNEL_KEYED = 0x100;
@@ -376,7 +376,7 @@ export class LobbyService {
       members: [], revision: 0, phase: 'lobby', ready: {}, maps: {}, agreements: {}, created: this.clock(),
     });
     const publicRoom = store.get('room:public');
-    // Retail TXT_LOB_3 is German Bunker; keep the durable room and its members.
+    // Retail TXT_LOB_8 is Intl. Command; keep the durable room and its members.
     if (publicRoom.capacity !== 256 || publicRoom.channel.name !== PUBLIC_LOBBY_NAME) {
       publicRoom.capacity = 256; publicRoom.channel.name = PUBLIC_LOBBY_NAME;
       store.put('room:public', publicRoom);
@@ -706,7 +706,7 @@ export class LobbyService {
 
   // One operator notice at a time: a new one replaces it and `minutes: 0`
   // alone clears it. Each session receives it once, at once in a lobby-phase
-  // room, otherwise on its next German Bunker join; games drop chat in a match.
+  // room, otherwise on its next Intl. Command join; games drop chat in a match.
   setNotice(body) {
     if (record(body, ['minutes']) && body.minutes === 0) {
       this.store.delete('notice');

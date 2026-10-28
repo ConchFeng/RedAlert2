@@ -41,7 +41,7 @@ use winit::keyboard::KeyCode;
 /// The list wait `0x0077F120` gives up after 30 s.
 const LIST_WAIT: Duration = Duration::from_millis(30_000);
 // The initial VERA public lobby; native diagnostic catalogs keep their rooms.
-const PUBLIC_LOBBY_NAME: &str = "Lob_41_2";
+const PUBLIC_LOBBY_NAME: &str = "Lob_41_7";
 /// `0x00788800`/`0x00789B60`: at most 150 x 100 ms for the leave.
 const LEAVE_WAIT: Duration = Duration::from_millis(15_000);
 /// `SetTimer(0, 30000)`: the game list; `SetTimer(1, 53000)`: the lobbies.
@@ -3948,11 +3948,11 @@ mod tests {
     }
 
     #[test]
-    fn normal_test_service_keeps_the_simplified_ui_and_only_german_bunker() {
+    fn normal_test_service_keeps_the_simplified_ui_and_only_intl_command() {
         let mut visit = crate::app::shell_wol::WolVisit::open(false);
         visit.set_provider(service::WolProvider::TestService);
         assert_eq!(visit.welcome_page_spec().stacked.len(), 1);
-        let channels: Vec<_> = ["Lob_41_0", "Lob_41_1", "Lob_41_2"]
+        let channels: Vec<_> = ["Lob_41_0", "Lob_41_2", "Lob_41_7"]
             .into_iter()
             .map(|name| WolChannel {
                 name: name.into(),
@@ -3968,7 +3968,7 @@ mod tests {
         );
         lobby.set_lobbies(channels.clone());
         assert_eq!(lobby.lobbies.len(), 1);
-        assert_eq!(lobby.lobbies[0].name, "Lob_41_2");
+        assert_eq!(lobby.lobbies[0].name, "Lob_41_7");
         assert_eq!(lobby.ui.page_spec().stacked.len(), 3);
         visit.set_legacy_ui(true);
         let mut legacy = new_runner(
@@ -3987,14 +3987,14 @@ mod tests {
     /// shows; the retail list keeps the count from the last listing.
     #[test]
     fn modern_lobby_row_counts_the_joined_lobbys_users() {
-        let bunker = WolChannel {
+        let public = WolChannel {
             name: PUBLIC_LOBBY_NAME.into(),
             ..Default::default()
         };
         for (modern, users) in [(true, 2), (false, 0)] {
             let mut lobby = new_runner(Runner::Lobby, false, false, Instant::now(), modern);
-            lobby.set_lobbies(vec![bunker.clone()]);
-            lobby.current = Some(bunker.clone());
+            lobby.set_lobbies(vec![public.clone()]);
+            lobby.current = Some(public.clone());
             lobby.members = ["Tanya", "Boris"]
                 .map(|name| WolMember {
                     name: name.into(),

@@ -86,19 +86,19 @@ async function room(f, host, guest) {
   return revision;
 }
 
-test('German Bunker replaces the public lobby name while retaining membership and game rooms', async () => {
+test('Intl. Command replaces the public lobby name while retaining membership and game rooms', async () => {
   const f = fixture(); const host = await f.player('Host'); const guest = await f.player('Guest');
   await f.command(host, 'join', { channel: f.store.get('room:public').channel.name, key: '' });
   await f.command(guest, 'create', { channel, key: '' });
   const publicRoom = f.store.get('room:public');
-  publicRoom.channel.name = 'Lob_41_0'; publicRoom.capacity = 100;
+  publicRoom.channel.name = 'Lob_41_2'; publicRoom.capacity = 100;
   f.store.put('room:public', publicRoom);
   f.store.put('room:other-chat', { ...publicRoom, id: 'other-chat', members: [],
     channel: { ...publicRoom.channel, name: 'Lob_41_1' } });
   f.restart();
   const listed = await f.request('/v1/channels?kind=0', host.token);
   assert.deepEqual(listed.body.channels.map((value) => [value.id, value.name, value.users, value.max_users]),
-    [['public', 'Lob_41_2', 1, 256]]);
+    [['public', 'Lob_41_7', 1, 256]]);
   assert.deepEqual(f.store.get('room:public').members, publicRoom.members);
   assert.equal(f.store.get('room:public').revision, publicRoom.revision);
   assert.equal(f.store.list('session:').find((value) => value.player_id === host.player_id).channel_id, 'public');
@@ -106,7 +106,7 @@ test('German Bunker replaces the public lobby name while retaining membership an
   assert.equal(f.store.count('account:'), 0);
   assert.equal((await f.request('/v1/channels?kind=41', host.token)).body.channels[0].name, channel.name);
   assert.equal((await f.command(host, 'join', { channel: 'Lob_41_1', key: '' })).status, 409);
-  const joined = await f.command(host, 'join', { channel: 'Lob_41_2', key: '' });
+  const joined = await f.command(host, 'join', { channel: 'Lob_41_7', key: '' });
   assert.equal(joined.status, 200);
   assert.equal(joined.body.events.find((event) => event.kind === 'joined').payload.channel.id, 'public');
 });
@@ -773,7 +773,7 @@ test('protocol upgrade is mandatory and duplicate sign-in cannot reset player ac
   old.protocol = 2; f.store.put(`session:${old.id}`, old);
   assert.equal((await f.request('/v1/channels?kind=0', user.token)).status, 426);
   old.protocol = 4; f.store.put(`session:${old.id}`, old);
-  await f.command(user, 'join', { channel: 'Lob_41_2', key: '' });
+  await f.command(user, 'join', { channel: 'Lob_41_7', key: '' });
   for (let i = 0; i < 30; i++) assert.equal((await f.command(user, 'chat', { text: 'hello', to: [] })).status, 200);
   const duplicate = await f.request('/v1/sessions', null, { nickname: 'PLAYER' });
   assert.equal(duplicate.status, 409);
@@ -864,7 +864,7 @@ test('canonical schemas reject fanout padding and state updates stay bounded', a
 
 test('public chat rejects escaped lone surrogates without poisoning recipient polling', async () => {
   const f = fixture(), sender = await f.player('Sender'), reader = await f.player('Reader');
-  for (const user of [sender, reader]) await f.command(user, 'join', { channel: 'Lob_41_2', key: '' });
+  for (const user of [sender, reader]) await f.command(user, 'join', { channel: 'Lob_41_7', key: '' });
   const before = await f.request('/v1/events?after=0', reader.token);
   for (const text of ['\ud800', '\udfff'])
     assert.equal((await f.command(sender, 'chat', { text, to: [] })).status, 400);
@@ -924,7 +924,7 @@ test('translation waits beside the command queue and readers share one cached mo
   const second = f.request('/v1/translate', other.token, message);
   for (let turn = 0; !release && turn < 100; turn++) await new Promise((resolve) => setTimeout(resolve, 0));
   assert.ok(release, 'the model was asked');
-  assert.equal((await f.command(reader, 'join', { channel: 'Lob_41_2', key: '' })).status, 200);
+  assert.equal((await f.command(reader, 'join', { channel: 'Lob_41_7', key: '' })).status, 200);
   release({ text: 'gg 打得好' });
   assert.deepEqual(await Promise.all([first, second]), [{ status: 200, body: { text: 'gg 打得好' } }, { status: 200, body: { text: 'gg 打得好' } }]);
   assert.deepEqual(await f.request('/v1/translate', reader.token, message), { status: 200, body: { text: 'gg 打得好' } });
@@ -981,7 +981,7 @@ test('operator notices reach each open chat once and wait for players outside on
   const away = await f.player('Away'), playing = await f.player('Playing');
   await f.command(host, 'create', { channel, key: '' });
   await f.command(guest, 'join', { channel: channel.name, key: '' });
-  await f.command(lobby, 'join', { channel: 'Lob_41_2', key: '' });
+  await f.command(lobby, 'join', { channel: 'Lob_41_7', key: '' });
   await f.command(playing, 'create', { channel: { ...channel, name: 'Match' }, key: '' });
   const match = f.store.list('room:').find((room) => room.channel.name === 'Match');
   f.store.put(`room:${match.id}`, { ...match, phase: 'playing' });
@@ -996,7 +996,7 @@ test('operator notices reach each open chat once and wait for players outside on
   await f.command(playing, 'leave');
   await f.command(lobby, 'leave');
   for (const user of [playing, away, lobby]) {
-    assert.equal((await f.command(user, 'join', { channel: 'Lob_41_2', key: '' })).status, 200);
+    assert.equal((await f.command(user, 'join', { channel: 'Lob_41_7', key: '' })).status, 200);
     assert.deepEqual(await notices(f, user), [text]);
   }
 });
@@ -1004,17 +1004,17 @@ test('operator notices reach each open chat once and wait for players outside on
 test('a replacement notice reaches players again while clearing or expiry stops delivery', async () => {
   const f = fixture(); f.env.ADMIN_KEY = ADMIN_KEY;
   const reader = await f.player('Reader');
-  await f.command(reader, 'join', { channel: 'Lob_41_2', key: '' });
+  await f.command(reader, 'join', { channel: 'Lob_41_7', key: '' });
   for (const text of ['First', 'Second'])
     assert.equal((await f.request('/v1/admin/notice', ADMIN_KEY, { text, minutes: 1 })).status, 200);
   assert.deepEqual(await notices(f, reader), ['First', 'Second']);
   assert.deepEqual((await f.request('/v1/admin/notice', ADMIN_KEY, { minutes: 0 })).body, { notice: null, delivered: 0 });
   const cleared = await f.player('Cleared');
-  await f.command(cleared, 'join', { channel: 'Lob_41_2', key: '' });
+  await f.command(cleared, 'join', { channel: 'Lob_41_7', key: '' });
   assert.equal((await f.request('/v1/admin/notice', ADMIN_KEY, { text: 'Brief', minutes: 1 })).status, 200);
   f.advance(60);
   const late = await f.player('Late');
-  await f.command(late, 'join', { channel: 'Lob_41_2', key: '' });
+  await f.command(late, 'join', { channel: 'Lob_41_7', key: '' });
   assert.deepEqual(await notices(f, cleared), ['Brief']);
   assert.deepEqual(await notices(f, late), []);
 });

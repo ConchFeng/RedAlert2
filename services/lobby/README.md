@@ -4,7 +4,7 @@ The Cloudflare Worker serves `protocol.md`. Its SQLite Durable Object owns guest
 profiles, authenticated sessions, room membership, settings revisions, readiness
 and start agreement. The relay and clients own UDP connectivity and simulation.
 
-German Bunker (`Lob_41_2`) is the only public chat lobby. Its durable `public`
+Intl. Command (`Lob_41_7`) is the only public chat lobby. Its durable `public`
 room id and membership survive the name migration; player-created game rooms
 remain available. Players enter a username and receive a fresh guest identity
 and bearer session. An active name is reserved without case; another sign-in
@@ -57,9 +57,9 @@ curl https://lobby.vera20k.org/v1/admin/notice -H "Authorization: Bearer $ADMIN_
   -H 'Content-Type: application/json' -d '{"text":"Server restart at 20:00 UTC.","minutes":60}'
 ```
 
-The notice appears as public chat from `VERA20k`: at once for players in German
-Bunker or a game room that has not started, and for the others when they next
-enter German Bunker, until it expires. A new notice replaces it and
+The notice appears as public chat from `VERA20k`: at once for players in Intl.
+Command or a game room that has not started, and for the others when they next
+enter Intl. Command, until it expires. A new notice replaces it and
 `{"minutes":0}` clears it. Players who show only buddy or clan chat don't see it.
 
 The client defaults to the deployed lobby at `https://lobby.vera20k.org`, the

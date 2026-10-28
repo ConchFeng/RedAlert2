@@ -59,7 +59,7 @@ not authority. `name` identifies a channel uniquely for compatibility with the
 existing shell. Member: `{player_id,name,flags,squad,clan_name,clan_tag}`. Flags bit 0
 is the channel owner, bit 1 voice; the client adds its own local bit 32768. Servers
 set identity and flags from the authenticated membership, never from user payloads.
-The only public chat channel is German Bunker (`name:"Lob_41_2"`, `id:"public"`).
+The only public chat channel is Intl. Command (`name:"Lob_41_7"`, `id:"public"`).
 The service updates that stored room's name without replacing its membership or
 accounts. Other chat channels are neither listed nor joinable; game rooms remain
 available through `kind:41`.
@@ -304,7 +304,7 @@ sets the one current notice, replacing any earlier one: non-blank text of at mos
 return `{notice,delivered}`: the notice `{id,text,expires_at}` or `null`, and how
 many sessions received it at once. A notice is an ordinary public `chat` event from
 `{player_id:"00000000-0000-0000-0000-000000000000",name:"VERA20k",flags:1,squad:0,clan_name:"",clan_tag:""}`.
-Sessions in German Bunker or a game room that has not started receive it when it is
-set; others receive it on their next German Bunker join until it expires. Each
+Sessions in Intl. Command or a game room that has not started receive it when it is
+set; others receive it on their next Intl. Command join until it expires. Each
 session receives a notice once. Sign-in refuses `VERA20k` without case with 409
 `name_unavailable`.

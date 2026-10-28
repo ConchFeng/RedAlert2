@@ -707,7 +707,7 @@ fn lobbies() -> Vec<WolChannel> {
         name,
         ..Default::default()
     };
-    [(0, 4), (1, 0), (2, 0)]
+    [(0, 4), (1, 0), (7, 0)]
         .into_iter()
         .map(|(number, users)| lobby(format!("Lob_41_{number}"), users))
         .chain([

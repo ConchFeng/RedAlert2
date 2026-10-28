@@ -388,7 +388,7 @@ const ONLINE_WELCOME_TEXT: [WolTextStatic; 8] = [
     text(
         None,
         Literal(
-            "Custom games for VERA20k players.\nMeet in German Bunker to create or join a game.",
+            "Custom games for VERA20k players.\nMeet in Intl. Command to create or join a game.",
         ),
         (42, 80, 330, 34),
         StaticAlign::Left,
