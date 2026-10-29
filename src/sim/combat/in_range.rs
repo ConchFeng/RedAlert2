@@ -524,9 +524,9 @@ pub(crate) fn compute_range_target(
         // shells, not the V3's InvisibleHigh) may shell a deck three or more
         // levels up; native (0x006F74D7..0x006F7504) refuses regardless of
         // any flag.
-        if (!(crate::rules::NPBUG_ENABLED && !projectile.subject_to_cliffs)
+        if !(crate::rules::NPBUG_ENABLED && !projectile.subject_to_cliffs)
             && cells.flags(cell) & 0x100 != 0
-            && i64::from(rise) >= 3 * LEPTONS_PER_LEVEL)
+            && i64::from(rise) >= 3 * LEPTONS_PER_LEVEL
         {
             return false;
         }
