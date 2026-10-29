@@ -843,8 +843,8 @@ pub fn can_dock_occupier_garrison(
         return false;
     }
     // NPBUG (NPExt bug-fix changelog item 34, issue #2966): CanBeOccupiedBy
-    // @ 0x00457CE0 / CanDock @ 0x00457D3E refuse a building at or below red
-    // health with no owner exemption, so infantry released from a bunker
+    // @ 0x00457CE0 refuses a building at or below red health (`IsRedHP @
+    // 0x005F5CD0`, called at `0x00457D8F`) with no owner exemption, so infantry released from a bunker
     // their own house let drop to red could never re-enter it. Under npbug
     // the building's own house is exempt; every other house keeps the
     // refusal.

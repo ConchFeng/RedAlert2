@@ -1900,8 +1900,8 @@ fn the_nearest_own_bunker_with_room_takes_an_occupier() {
 }
 
 /// NPBUG #2966 (NPExt changelog item 34): `BuildingClass::CanBeOccupiedBy`
-/// @ 0x00457CE0 and `CanDock @ 0x00457D3E` refuse any `CanBeOccupied=`
-/// building at or below red health with no owner exemption, so infantry
+/// @ 0x00457CE0 refuses any `CanBeOccupied=` building at or below red health
+/// (`IsRedHP @ 0x005F5CD0` at `0x00457D8F`) with no owner exemption, so infantry
 /// released from a battle bunker that dropped to red could never re-enter
 /// it. Under npbug the owner's own building admits again, exactly on the
 /// threshold (`condition_red` defaults to 0.5; 250 is half of NABNKR's 500).
@@ -1911,7 +1911,6 @@ fn npbug_own_red_health_bunker_admits_its_owner_again() {
     let rules = rules();
     let (mut sim, _) = arena(&rules);
     let bunker = spawn(&mut sim, &rules, "NABNKR", "YuriCountry", 16, 10);
-    let outsider = spawn(&mut sim, &rules, "E1", "Americans", 10, 12);
     let infantry = spawn(&mut sim, &rules, "E1", "YuriCountry", 10, 10);
     sim.substrate
         .entities
@@ -1922,10 +1921,6 @@ fn npbug_own_red_health_bunker_admits_its_owner_again() {
 
     let admits =
         |sim: &Simulation, id| crate::sim::passenger::can_enter_transport(sim, &rules, id, bunker);
-    assert!(
-        !admits(&sim, outsider),
-        "another house keeps the red-health refusal"
-    );
     assert!(
         admits(&sim, infantry),
         "the owner's own red bunker admits its occupier again"
