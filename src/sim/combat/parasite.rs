@@ -827,20 +827,6 @@ impl Simulation {
             .entities
             .get(victim)
             .map_or(0, |v| v.body_facing_current(frame));
-        // NPBUG (NPExt bug-fix changelog item 26, issue #2957): a drone
-        // ejected from a victim killed in flight crashes after unlimbo.
-        let victim_was_airborne = crate::rules::NPBUG_ENABLED
-            && self
-                .substrate
-                .entities
-                .get(victim)
-                .is_some_and(|victim_entity| {
-                    victim_entity.category() == EntityCategory::Aircraft
-                        || crate::sim::movement::air_movement::current_fly_height(
-                            victim_entity,
-                            self.resolved_terrain.as_ref(),
-                        ) > 0
-                });
         let coords = self.parasite_release_coords(owner, victim, rules);
         // 0x0062A2F8..0x0062A379: the 0xA8E7AC bracket around Unlimbo.
         let placed = coords.is_some_and(|coords| {
@@ -858,12 +844,6 @@ impl Simulation {
             self.parasite_reselect(owner, rules, effects);
             self.parasite_rejoin_team(owner, rules, effects);
             self.parasite_released_owner_orders(owner, true, rules, effects);
-            if victim_was_airborne {
-                if let Some(entity) = self.substrate.entities.get_mut(owner) {
-                    entity.crash.set_crashing_for_test(true);
-                }
-                self.foot_crash(owner, None, rules, effects.overlay_registry(), effects);
-            }
         } else {
             self.substrate
                 .entities
@@ -896,14 +876,7 @@ impl Simulation {
         if self.parasite_can_place_at_victim(owner, victim, rules) {
             let victim_entity = self.substrate.entities.get(victim)?;
             let mut coords = ground_pose::position_world_coord(&victim_entity.position);
-            // NPBUG (NPExt bug-fix changelog item 26, issue #2957): a drone
-            // ejected from a victim killed in flight appears at the victim's
-            // position and crashes, instead of snapping to the ground cell
-            // under the kill.
-            if owner_is_unit
-                && !(crate::rules::NPBUG_ENABLED
-                    && victim_entity.category() == EntityCategory::Aircraft)
-            {
+            if owner_is_unit {
                 coords = target_cell_coord(
                     (coords.x / 256) as u16,
                     (coords.y / 256) as u16,
