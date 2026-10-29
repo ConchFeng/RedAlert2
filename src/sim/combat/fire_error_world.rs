@@ -280,6 +280,7 @@ impl<'a> FireSubject<'a> {
             }),
             berserk: firer.berserk.is_active(),
             falling: firer.is_falling_down(),
+            crash_latched: firer.crash.is_crashing(),
             sinking: firer.sinking.is_active(),
             in_open_transport: firer.passenger_role.in_open_transport(),
             // The transport being the target (T9) is [`FirerPart::facts`]'s.

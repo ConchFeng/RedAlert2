@@ -251,6 +251,8 @@ pub(crate) struct FirerFacts {
     pub berserk: bool,
     /// `+0x8D`.
     pub falling: bool,
+    /// NPBUG (#2963): the crash latch, alongside the fall state.
+    pub crash_latched: bool,
     /// `+0x82`, `+0x11C`.
     pub in_open_transport: bool,
     pub transporter: Transporter,
@@ -329,6 +331,7 @@ impl Default for FirerFacts {
             sinking: false,
             berserk: false,
             falling: false,
+            crash_latched: false,
             in_open_transport: false,
             transporter: Transporter::None,
             on_bridge: false,
@@ -889,6 +892,14 @@ fn techno(facts: &FireFacts, query: &mut impl FireQuery, check_range: bool) -> F
     }
     // T19 `0x006FC2D2`.
     if firer.falling {
+        return Illegal;
+    }
+    // NPBUG (NPExt bug-fix changelog item 96, issue #2963): the crash latch
+    // joins the fall refusal — a crashing Rocketeer can neither fire nor be
+    // attacked. Native's fall state covers only the parachute/bomb/flaming
+    // fall, so a crash-latched aircraft absorbed fire and hit the ground
+    // shooting; the receiver-side arm below refuses it as a target too.
+    if crate::rules::NPBUG_ENABLED && firer.crash_latched {
         return Illegal;
     }
     // T20 `0x006FC2E0`: EMP (vt+0x37C; a Unit also while its death frames
