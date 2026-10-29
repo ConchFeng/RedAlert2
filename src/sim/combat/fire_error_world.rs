@@ -356,6 +356,7 @@ impl<'a> FireSubject<'a> {
         let firer_type = FirerTypeFacts {
             natural: obj.natural,
             pushy: obj.pushy,
+            naval_targeting: obj.naval_targeting,
             land_targeting: obj.land_targeting,
             mobile_fire: obj.mobile_fire,
             turret_count: obj.turret_count,

@@ -147,9 +147,11 @@ fn a_mapless_fire_gate_takes_the_shared_range_answer() {
 }
 
 /// NPBUG (NPExt bug-fix changelog item 72, issue #2961): a NavalTargeting=6
-/// firer refuses a force-attack on open water — native T41 consulted no
-/// naval selector for a Cell target, so the squid-class shot was admitted.
+/// firer refuses a force-attack on open water, which native T41
+/// (`0x006FC7EB..0x006FC868`) admitted; a NavalTargeting=0 firer still fires
+/// at the same water cell.
 #[test]
+#[cfg(feature = "npbug")]
 fn npbug_naval_targeting_six_refuses_the_water_surface() {
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[VehicleTypes]\n0=TANK\n\
@@ -182,30 +184,29 @@ fn npbug_naval_targeting_six_refuses_the_water_surface() {
         "Soviet",
         (11, 10),
     );
+    spawn(
+        &mut sim.substrate.entities,
+        2,
+        "TANK",
+        EntityCategory::Unit,
+        "Soviet",
+        (9, 10),
+    );
     sim.interner = test_interner();
-    let firer = sim.substrate.entities.get(1).unwrap();
-    let subject = crate::sim::combat::fire_error_world::FireSubject {
-        world: &sim,
-        rules: &rules,
-        overlay_registry: None,
-        fog: None,
-        firer,
-        obj: rules.object("SQUID").unwrap(),
-        target: Some(crate::sim::combat::TargetKind::Cell(12, 10)),
-        weapon_index: 0,
+    let error = |firer: u64, kind: &str| {
+        crate::sim::combat::fire_error_world::FireSubject {
+            world: &sim,
+            rules: &rules,
+            overlay_registry: None,
+            fog: None,
+            firer: sim.substrate.entities.get(firer).unwrap(),
+            obj: rules.object(kind).unwrap(),
+            target: Some(crate::sim::combat::TargetKind::Cell(12, 10)),
+            weapon_index: 0,
+        }
+        .fire_error(false)
     };
-    let error = subject.fire_error(false);
-    if crate::rules::NPBUG_ENABLED {
-        assert_eq!(
-            error,
-            crate::sim::combat::fire_error::FireError::Illegal,
-            "the water surface is refused under npbug"
-        );
-    } else {
-        assert_ne!(
-            error,
-            crate::sim::combat::fire_error::FireError::Illegal,
-            "stock admits the water force-attack"
-        );
-    }
+    use crate::sim::combat::fire_error::FireError;
+    assert_eq!(error(1, "SQUID"), FireError::Illegal, "NavalTargeting=6");
+    assert_ne!(error(2, "TANK"), FireError::Illegal, "NavalTargeting=0");
 }

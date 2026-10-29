@@ -281,6 +281,11 @@ fn facts(input: &Value) -> FireFacts {
         firer_type: FirerTypeFacts {
             natural: flag(&ft["natural"]),
             pushy: flag(&ft["pushy"]),
+            // The oracle writes no `+0x600` (stock GetFireError reads it only
+            // inside the selector, a verdict here), so every row's firer
+            // holds the constructor 0 and npbug's NavalTargeting=6 arm
+            // (#2961) reaches no row.
+            naval_targeting: 0,
             land_targeting: int(&ft["land_targeting"]),
             mobile_fire: flag(&ft["mobile_fire"]),
             turret_count: int(&ft["turret_count"]),
@@ -500,10 +505,7 @@ fn evaluate(input: &Value) -> (i32, Vec<&'static str>) {
 /// occupant query (`occupants_via_get_weapon`, `0x004526F0` through
 /// vt+0x400) belongs to weapon lookup, which the corpus fixes to the type's
 /// own slots, so it is left out of the comparison.
-// NPBUG (#2961) changes the water-cell force-attack rows, so the native
-// corpus pins the stock build.
 #[test]
-#[cfg(not(feature = "npbug"))]
 fn original_fire_error_rows() {
     let corpus: Value = serde_json::from_str(crate::test_fixture::text(
         "tools/spatial_oracle/fire_error.json",
