@@ -57,6 +57,11 @@ The sections follow the behavior chains of #3024.
   pre-selected ChronoWarp click (`ClickFire4FB1E0` admission, the PostClick=
   exemption at `0x006CB933..0x006CB95F`) before any launch or paired Sphere
   write, so the warp neither fires nor restarts the countdown while held.
+- #2938 (NPExt changelog item 80): the Psychic Dominator strike's area
+  damage books its kills to the Dominator's owner. Native passes the
+  lightning-storm house slot (`0x00A9FACC`) — empty without an active
+  storm — so building kills reached no score and no destroyed-buildings
+  count.
 
 ### Combat target, order, fire and damage eligibility
 
