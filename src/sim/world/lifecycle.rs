@@ -5524,7 +5524,11 @@ impl Simulation {
         // NPBUG (NPExt bug-fix changelog item 99, issue #2951): a dying or
         // docking aircraft is low, so native's repair substitutes the pad's
         // ground cell and the missile flew into the airbase. The repair
-        // loses the target instead — the pad takes no stray damage.
+        // loses the target instead — the pad takes no stray damage. The dock
+        // test is the home pad (Aircraft+0x6CC), which the factory exit sets
+        // (`0x0044404D`) and only Find_Docking_Bay or PointerExpired clears,
+        // so it covers any padded aircraft not in the air, parked or taking
+        // off too; an aircraft in the air already loses the target below.
         if crate::rules::NPBUG_ENABLED
             && let Some(entity) = entity
             && entity.category() == EntityCategory::Aircraft
