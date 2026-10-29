@@ -281,7 +281,15 @@ fn aircraft_release_control_matches_316_original_mission_suffixes() {
             .filter(|event| event["call"] == "fire")
             .count();
         assert_eq!(result.len(), calls, "{row}");
-        assert_eq!(entity.weapon_burst.index(), 0, "{row}");
+        // NPBUG (#2949): a Burst=1 shot advances the index for the launch
+        // parity instead of wrapping to 0.
+        let expected_index =
+            if crate::rules::NPBUG_ENABLED && row["input"]["burst"].as_i64() == Some(1) {
+                1
+            } else {
+                0
+            };
+        assert_eq!(entity.weapon_burst.index(), expected_index, "{row}");
     }
 }
 

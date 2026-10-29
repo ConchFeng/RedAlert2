@@ -1463,7 +1463,7 @@ pub(super) fn emit_admitted_fire(
         );
         if let Some(entity) = world.substrate.entities.get_mut(snap.stable_id) {
             entity.rearm_after_fire(binary_frame as i32, rof);
-            entity.weapon_burst.complete_shot(weapon.burst.max(1));
+            entity.weapon_burst.complete_shot_npbug(weapon.burst.max(1));
         }
         let weapon_id = world.interner.intern(selected.weapon_id);
         world.fire_disk_laser(
@@ -1926,7 +1926,7 @@ pub(super) fn emit_admitted_fire(
     if let Some(entity) = world.substrate.entities.get_mut(snap.stable_id) {
         let rearm = fireat_rearm_frames(rof, entity.berserk.is_active());
         entity.rearm_after_fire(binary_frame as i32, rearm);
-        entity.weapon_burst.complete_shot(weapon.burst.max(1));
+        entity.weapon_burst.complete_shot_npbug(weapon.burst.max(1));
         entity.last_fire_frame.record(binary_frame);
     }
     // TechnoClass::FireAt6FF38F calls VocClass::PlayAt7509E0 before the
