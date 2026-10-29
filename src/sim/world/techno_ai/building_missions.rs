@@ -1361,13 +1361,18 @@ fn prism_supporter(
         let Some(candidate) = sim.substrate.entities.get(candidate_id) else {
             continue;
         };
+        // NPBUG (NPExt bug-fix changelog item 18, issue #2978): a tower
+        // still under construction (Building+534 == 0) supplies no support
+        // beam. Native's walk asked alive/same-type/rearm/idle-ish but never
+        // the build state.
         let admitted = candidate.lifecycle.object_alive()
             && candidate.type_ref() == master.type_ref()
             && candidate.rearm_timer.remaining(now) == 0
             && candidate.pending_building_fire.remaining_ticks() == 0
             && candidate.drain.draining_me().is_none()
             && candidate.mission.effective() != attack
-            && candidate_id != id;
+            && candidate_id != id
+            && !(crate::rules::NPBUG_ENABLED && candidate.in_construction_bstate());
         if !admitted {
             continue;
         }

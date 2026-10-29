@@ -172,6 +172,10 @@ The sections follow the behavior chains of #3024.
   keeps pumping after the damaged-art swap; the capture's `Grand_Opening`
   re-run (Building `0x00448CEF`) starts it. A building transferred back to a
   passive house keeps the slots it already has.
+- #2978 (NPExt changelog item 18): the prism supporter walk refuses a tower
+  still under construction (Building+534 == 0). Native asked
+  alive/same-type/rearm/idle-ish but never the build state, so unfinished
+  towers contributed beams during base build-up.
 
 ### Movement, crash, ejection, garrison and lifecycle
 
