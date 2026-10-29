@@ -815,10 +815,16 @@ fn rally_value(
 /// house) a Scenario draw `RandomRanged(0, best + 10)`; candidates worth more
 /// than the best so far replace the picks, as much join them. The final
 /// Scenario draw `RandomRanged(0, picks - 1)` chooses; none is the empty cell.
+/// NPBUG (NPExt bug-fix changelog item 9, issue #2935): a fully cloaked
+/// entry is skipped outright instead of drawing — the AI super weapon no
+/// longer aims at submerged subs or stealth tanks.
 fn pick_best_rally_target(entries: &[RallyEntry], rng: &mut SimRng) -> (i16, i16) {
     let mut best = 0i32;
     let mut picks: Vec<(i16, i16)> = Vec::new();
     for entry in entries {
+        if crate::rules::NPBUG_ENABLED && entry.cloaked {
+            continue;
+        }
         let mut value = if entry.in_playfield { entry.value } else { 0 };
         if entry.cloaked {
             value = rng.next_range_i32_inclusive(0, best.wrapping_add(10));

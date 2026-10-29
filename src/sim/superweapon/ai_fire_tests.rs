@@ -359,6 +359,7 @@ fn category(what: &str) -> EntityCategory {
 /// the production value, cell, playfield test and pick. The Scenario stream
 /// is seeded natively in each row; the target and the stream after it match.
 #[test]
+#[cfg(not(feature = "npbug"))]
 fn the_best_rally_target_matches_native() {
     let oracle = oracle();
     let rows = rows(&oracle, "ai_best_rally_target");
@@ -446,6 +447,52 @@ fn the_best_rally_target_matches_native() {
             "{row}"
         );
     }
+}
+
+/// NPBUG (NPExt bug-fix changelog item 9, issue #2935): a fully cloaked
+/// candidate no longer draws `RandomRanged(0, best + 10)` against the real
+/// candidates — the AI super weapon skips it outright, draws nothing for it,
+/// and fires at nothing when only cloaked entries remain.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_rally_target_skips_fully_cloaked_entries() {
+    let real = RallyEntry {
+        candidate: true,
+        value: 4,
+        cell: (5, 6),
+        in_playfield: true,
+        cloaked: false,
+    };
+    let cloaked_high = RallyEntry {
+        candidate: true,
+        value: 9,
+        cell: (7, 8),
+        in_playfield: true,
+        cloaked: true,
+    };
+    let cloaked_only = RallyEntry {
+        candidate: true,
+        value: 9,
+        cell: (7, 8),
+        in_playfield: true,
+        cloaked: true,
+    };
+    for seed in [1u64, 0x5EED, 0xDEAD_BEEF] {
+        let mut rng = SimRng::new(seed);
+        assert_eq!(
+            pick_best_rally_target(&[real, cloaked_high], &mut rng),
+            (5, 6),
+            "seed {seed}"
+        );
+    }
+    let mut rng = SimRng::new(7);
+    let before = rng.native_state_hex();
+    assert_eq!(pick_best_rally_target(&[cloaked_only], &mut rng), NO_CELL);
+    assert_eq!(
+        rng.native_state_hex(),
+        before,
+        "a skipped entry draws nothing"
+    );
 }
 
 /// AI_TryFireSW over each row's Supers: production `try_fire` on a house in
