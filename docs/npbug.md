@@ -83,9 +83,10 @@ The sections follow the behavior chains of #3024.
   executor's owner-free retask (Queue `0x004C73B9`), so a foreign harvester
   caught in the selection could be stalled on area guard.
 - #2961 (NPExt changelog item 72): the fire-error cell arm
-  (`0x006FC7EB..0x006FC868`) consults the naval selector — a
-  `NavalTargeting=6` firer refuses the water surface itself, closing the
-  open-water force-attack the Techno-only T40 gate missed.
+  (`0x006FC7EB..0x006FC868`) reads only LandTargeting, so a `NavalTargeting=6`
+  firer (dogs, Terror and Chaos Drones) could force-attack a water or beach
+  cell. Under npbug that firer type (`+0x600`) refuses the cell; every other
+  firer is unchanged.
 - #2968 (NPExt changelog item 65): damage landing exactly on the yellow
   threshold classifies as the `DamageState::Yellow` crossing, so the struck
   building plays its damaged-building cue. Native `Object5F5390` tests the
