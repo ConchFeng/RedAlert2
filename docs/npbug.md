@@ -79,6 +79,11 @@ The sections follow the behavior chains of #3024.
   mid-burst keeps the burst slot instead of resetting it, so the
   interrupted burst resumes and the full ROF still separates bursts — the
   cancellation no longer skips the reload.
+- #2955 (NPExt changelog item 10): the guard hotkey's miner fallback
+  (`Guard730D60`'s Unit slave-manager/Harvester arm) demands the issuing
+  house's ownership. Native pairs that ownership-free arm with the MegaMission
+  executor's owner-free retask (Queue `0x004C73B9`), so a foreign harvester
+  caught in the selection could be stalled on area guard.
 
 ### Weapon, wave and projectile source, path and range
 

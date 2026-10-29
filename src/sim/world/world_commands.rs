@@ -590,8 +590,17 @@ impl Simulation {
         }
         let ordinary =
             self.techno_player_controllable(id, rules) && self.techno_is_active(id, rules);
-        let miner = actor.category() == EntityCategory::Unit
+        let mut miner = actor.category() == EntityCategory::Unit
             && (actor.slave_manager.is_some() || actor.is_harvester());
+        // NPBUG (NPExt bug-fix changelog item 10, issue #2955): the native
+        // Guard730D60 miner fallback carries no ownership test, and the
+        // MEGAMISSION executor (Queue 0x004C73B9) rechecks neither owner nor
+        // friendship, so a foreign harvester caught in the selection is
+        // retasked onto area guard and stalls. Under npbug the fallback also
+        // demands the issuing house's ownership, like the ordinary arm.
+        if crate::rules::NPBUG_ENABLED && miner && !self.house_is_human_player(actor.owner()) {
+            miner = false;
+        }
         if !ordinary && !miner {
             return None;
         }
@@ -4563,6 +4572,50 @@ mod tests {
                 .unwrap()
                 .state(),
             BunkerState::Idle
+        );
+    }
+
+    /// NPBUG (NPExt bug-fix changelog item 10, issue #2955): the guard
+    /// hotkey's miner fallback (Guard730D60) must not retask a foreign ore
+    /// miner onto area guard; the player's own harvester keeps it.
+    #[test]
+    #[cfg(feature = "npbug")]
+    fn npbug_guard_hotkey_refuses_a_foreign_harvester() {
+        let ini = IniFile::from_str(
+            "[InfantryTypes]\n\
+             [VehicleTypes]\n\
+             0=HARV\n\
+             [AircraftTypes]\n\
+             [BuildingTypes]\n\
+             [HARV]\n\
+             Strength=1000\n\
+             Speed=4\n\
+             Sight=8\n\
+             Harvester=yes\n\
+             Locomotor={4A582741-9839-11d1-B709-00A024DDAFD1}\n",
+        );
+        let rules = RuleSet::from_ini(&ini).expect("harvester rules");
+        let mut sim = crate::sim::arena_fixture::rival_arena(&rules, 77);
+        sim.intern_rule_type_ids(&rules);
+        sim.resolve_type_handles(&rules);
+        let foreign = sim
+            .spawn_object("HARV", "Russians", 16, 16, 0, &rules)
+            .expect("foreign harvester");
+        let owned = sim
+            .spawn_object("HARV", "Americans", 18, 16, 0, &rules)
+            .expect("owned harvester");
+        assert!(
+            sim.substrate.entities.get(foreign).unwrap().is_harvester(),
+            "the fixture's HARV carries the native Harvester flag"
+        );
+        assert_eq!(
+            sim.area_guard_key_command(foreign, &rules),
+            None,
+            "the G hotkey's miner fallback must not admit a foreign harvester"
+        );
+        assert!(
+            sim.area_guard_key_command(owned, &rules).is_some(),
+            "the player's own harvester keeps its miner fallback"
         );
     }
 }
