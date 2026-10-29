@@ -50,10 +50,13 @@ The sections follow the behavior chains of #3024.
   (`AI_FindBestRallyTarget50CBF0`, choice `0x0050CF38..0x0050D16B`) skips a
   fully cloaked entry instead of letting its `RandomRanged(0, best + 10)`
   draw beat every real candidate.
-- #2936 (NPExt changelog item 11): insufficient house power refuses the
-  pre-selected ChronoWarp click (`ClickFire4FB1E0` admission, the PostClick=
-  exemption at `0x006CB933..0x006CB95F`) before any launch or paired Sphere
-  write, so the warp neither fires nor restarts the countdown while held.
+- #2936 (NPExt changelog item 11): a pre-selected ChronoWarp click is
+  refused, with no write, while its paired Sphere is held (IsSuspended, which
+  `Update_Owned_Supers @ 0x0050AF10` sets on the IsPowered Sphere for low
+  power or no online provider). Native `Fire_SW @ 0x004FAE50` launched the
+  warp through ClickFire's PostClick exemption (`0x006CB933..0x006CB95F`),
+  then cleared the Sphere's readiness and restarted its countdown while held
+  (`0x004FAEA6..0x004FAEC1`).
 - #2938 (NPExt changelog item 80): the Psychic Dominator strike's area
   damage books its kills to the Dominator's owner. Native passes the
   lightning-storm house slot (`0x00A9FACC`) — empty without an active
@@ -87,12 +90,13 @@ The sections follow the behavior chains of #3024.
   firer (dogs, Terror and Chaos Drones) could force-attack a water or beach
   cell. Under npbug that firer type (`+0x600`) refuses the cell; every other
   firer is unchanged.
-- #2968 (NPExt changelog item 65): damage landing exactly on the yellow
-  threshold classifies as the `DamageState::Yellow` crossing, so the struck
-  building plays its damaged-building cue. Native `Object5F5390` tests the
-  post-damage HP strictly (`post < strength >> 1`), so the exact boundary
-  stayed Damaged and the `BuildingClass::ReceiveDamage @ 0x00442230` result
-  table (`0x00442476`) never reached the global `BuildingDamageSound` request
+- #2968 (NPExt changelog item 65): HP exactly on `strength >> 1` counts as
+  the yellow side, so the hit landing on it is the `DamageState::Yellow`
+  crossing (yellow Tags 39/42, the damaged-building cue) and the next hit
+  from it is no second crossing. Native `Object5F5390` answers Yellow only
+  for `half <= previous && post < half`, so the exact boundary stayed
+  Damaged and the `BuildingClass::ReceiveDamage @ 0x00442230` result table
+  (`0x00442476`) never reached the global `BuildingDamageSound` request
   (`0x00442706`).
 - #2981 (NPExt changelog item 55): a kill's veterancy award divides by the
   recipient's OWN house cost factors. Native `Record_The_Kill`
@@ -150,13 +154,14 @@ The sections follow the behavior chains of #3024.
   infantry released from a battle bunker their own house let drop to red could
   never re-garrison it. Under npbug the building's own house is exempt;
   other houses keep the refusal.
-- #2971 (NPExt changelog item 95): a tech building (`NeedsEngineer=`) starts
-  its active animations only when a real house owns it. Native fills
-  Idle18 + Active3..6 at first opening (`0x0044632E..0x00446374`) with no
-  ownership arm, so an un-owned oil derrick pumps from scenario placement and
-  keeps pumping after the damaged-art swap; the capture's `Grand_Opening`
-  re-run (Building `0x00448CEF`) starts it. A building transferred back to a
-  passive house keeps the slots it already has.
+- #2971 (NPExt changelog item 95): a tech building (`NeedsEngineer=`) owned
+  by a MultiplayPassive house skips Grand_Opening's Idle18 + Active3..6 fill,
+  and the capture's `Grand_Opening` re-run (`BuildingClass::ChangeOwner`,
+  `0x00448CEF`) fills those empty slots once a non-passive house owns it.
+  Native fills them at first opening (`0x0044632E..0x00446374`) with no
+  ownership arm, so an un-owned oil derrick pumped from scenario placement.
+  Placement for a real house keeps the native fill; a building handed back
+  to a passive house keeps the slots it has.
 - #2978 (NPExt changelog item 18): the prism supporter walk
   (`0x0044B357..0x0044B4BD`) refuses a tower in body state 0
   (Building+534), so unfinished towers no longer contribute beams during
