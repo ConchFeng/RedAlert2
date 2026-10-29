@@ -114,6 +114,8 @@ mod prone_damage_tests;
 #[cfg(test)]
 mod radiation_beam_tests;
 #[cfg(test)]
+mod record_kill_tests;
+#[cfg(test)]
 mod shrapnel_chain_tests;
 #[cfg(test)]
 mod screen_shake_tests;
