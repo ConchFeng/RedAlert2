@@ -29,10 +29,11 @@ The sections follow the behavior chains of #3024.
 ### Rules and repeated INI reads
 
 - #2928 (NPExt changelog item 5): a `[General]` pass that omits
-  `PrismSupportModifier=` keeps the retained percentage instead of
+  `PrismSupportModifier=` keeps the retained percentage exactly instead of
   multiplying it by another 100 (`ReadGeneral67114F`, scale at
-  `0x0067116E`). NPBUG compiles the same default rescale the Ares hook
-  `RulesClass_Addition_General_PrismSupportModifier` (`0x1005D040`) uses.
+  `0x0067116E`). An Ares build keeps Ares's own rescale
+  (`RulesClass_Addition_General_PrismSupportModifier`, `0x1005D040`), which
+  chops most values by one per keyless pass.
 
 ### Superweapon and AI strategy
 
@@ -43,8 +44,8 @@ The sections follow the behavior chains of #3024.
   position against the original arrays — shrinking range, duplicate grants —
   and returns early when labs outnumber types, leaving every lab inert.
   NPExt's exact rewrite was not disassembled; this implements the corrected
-  contract the report states, with a changed RNG draw pattern as a recorded
-  residual.
+  contract the report states. The draw ranges match native while labs do not
+  outnumber types; each refilled lab adds one draw.
 - #2935 (NPExt changelog item 9): the AI super-weapon rally pick
   (`AI_FindBestRallyTarget50CBF0`, choice `0x0050CF38..0x0050D16B`) skips a
   fully cloaked entry instead of letting its `RandomRanged(0, best + 10)`
@@ -65,7 +66,8 @@ The sections follow the behavior chains of #3024.
   (`TechnoClass::Greatest_Threat @ 0x006F8DF0`'s candidate gates) refuses an
   invulnerable candidate. Native gates G1..G13 have no invulnerability arm —
   the Iron Curtain is enforced receiver-side only — so auto-acquisition
-  dumped fire into curtained units.
+  dumped fire into curtained units. The capture and occupy scans (masks
+  `0x200`, `0x8000`, `0x10000`) keep native.
 - #2942 (NPExt changelog item 7): a temporal erase pays one alliance-gated
   veterancy award. Native pays the Update's `VeterancyStruct::Add`
   (`0x0071A917..0x0071A978`, no alliance test) and Record_The_Kill's award
@@ -114,16 +116,18 @@ The sections follow the behavior chains of #3024.
   structural bridges (`0x006F74D7..0x006F7504`) consults the projectile's
   `SubjectToCliffs=` — a projectile that ignores cliffs may shell a deck
   three or more levels up; cliff-respecting arcing shots stay refused.
-- #2951 (NPExt changelog item 99): a missile whose target dies while
-  landing or docking loses the target instead of taking the pad's ground
-  cell. Native's PointerExpired repair (`LoseTarget468430` /
-  `PointerExpired468517` cell substitution) treats the low aircraft as
-  ordinary, so anti-air fire that downs a landing aircraft flew into the
-  airbase.
-- #2986 (NPExt changelog item 85): the magnetic wave takes the
-  tracking-distance decay (`MAX_TRACKING_DISTANCE_LEPTONS`). Native skipped
-  type 3, so a magnetron beam followed its held target at any distance; the
-  decay ends the beam like every other wave type.
+- #2951 (NPExt changelog item 99): a missile whose aircraft target dies, or
+  expires while it has a home pad and is not in the air, loses the target
+  instead of taking the ground cell. Native's PointerExpired repair
+  (`LoseTarget468430` / `PointerExpired468517` cell substitution) treats the
+  low aircraft as ordinary, so anti-air fire that downs a landing aircraft
+  flew into the airbase. The pad (Aircraft+0x6CC) stays set for the
+  aircraft's life, so parked and departing aircraft take the arm too.
+- #2986 (NPExt changelog item 85): the magnetic wave decays once its held
+  target leaves its owner's weapon 0 `Range=`. Native's tracking decay
+  (`WaveClass::Update_Wave @ 0x00762AF0`) skips type 3, so a magnetron beam
+  followed its target at any distance. The other types' 2172-lepton bound
+  would end beams inside the retail MagneticBeam's 12-cell range.
 
 ### Building placement, construction, economy and sensors
 
@@ -132,20 +136,22 @@ The sections follow the behavior chains of #3024.
   `SensorArray=yes` building falls through to its normal weapon-range radius
   instead of drawing `CloakRadiusInCells=`. The cloak-generator arm keeps
   native behavior.
-- #2953 (NPExt changelog item 17): a naval factory's rally click resolves
-  only against water. Native resolved the player rally through the
-  amphibious movement zone, so land tiles in that zone were accepted and
-  beached the ships.
+- #2953 (NPExt changelog item 17): a naval factory's rally accepts only a
+  resolved water cell. Native `SetRallyPoint` (`0x00443860`) resolves the
+  click in the Amphibious zone, so land tiles in that zone were accepted and
+  beached the ships. A refused click still plays the rally announcement, and
+  an opening shipyard whose offset cell is land gets no rally.
 - #2965 (NPExt changelog item 6): a refused `UndeploysInto=` conversion
   (`BuildingClass::Mission_Selling @ 0x00449C30`, the Unlimbo refund tail
   `0x0044A16B..0x0044A176`) deletes the never-placed limbo Unit with the
   building. Native retains it, so its `Add_Tracking @ 0x004FF700` count kept
   feeding ShortGame's BaseUnit sum and the defeat gate
   (`HouseClass::Update` `0x004F8E92..0x004F8F77`) never declared the emptied
-  house defeated.
+  house defeated. This is part of #2965: undeploying a yard already being
+  sold is a separate VERA-versus-native gap.
 - #2966 (NPExt changelog item 34): a `CanBeOccupied=` building refuses every
   entrant at or below red health, owner included
-  (`BuildingClass::CanBeOccupiedBy @ 0x00457CE0`, `CanDock @ 0x00457D3E`), so
+  (`BuildingClass::CanBeOccupiedBy @ 0x00457CE0`, `IsRedHP` at `0x00457D8F`), so
   infantry released from a battle bunker their own house let drop to red could
   never re-garrison it. Under npbug the building's own house is exempt;
   other houses keep the refusal.
@@ -156,10 +162,10 @@ The sections follow the behavior chains of #3024.
   keeps pumping after the damaged-art swap; the capture's `Grand_Opening`
   re-run (Building `0x00448CEF`) starts it. A building transferred back to a
   passive house keeps the slots it already has.
-- #2978 (NPExt changelog item 18): the prism supporter walk refuses a tower
-  still under construction (Building+534 == 0). Native asked
-  alive/same-type/rearm/idle-ish but never the build state, so unfinished
-  towers contributed beams during base build-up.
+- #2978 (NPExt changelog item 18): the prism supporter walk
+  (`0x0044B357..0x0044B4BD`) refuses a tower in body state 0
+  (Building+534), so unfinished towers no longer contribute beams during
+  base build-up. A tower being sold is in the same state and is refused too.
 
 ### Movement, crash, ejection, garrison and lifecycle
 
@@ -171,27 +177,30 @@ The sections follow the behavior chains of #3024.
   the cell stayed blocked. The anim still steps its stage back and retries.
 - #2956 (NPExt changelog item 19, part 1 of 4): a unit the Magnetron lifts
   is not self-propelled — held locomotion plays no move sounds. Native ran
-  the victim's own foot move-sound tail over the held jumpjet route. (The
-  lift speed, drop crash sounds and held-aircraft death parts of the chain
-  remain open.)
+  the victim's own foot move-sound tail over the held jumpjet route
+  (`FootClass::AI @ 0x004DA530`); the skip also skips that tail's Main RNG
+  draw (`0x004DAACB`). The lift speed, drop crash sounds and held-aircraft
+  death parts of the chain remain open.
 
 ### Capture, mind control, lift and retaliation
 
 ### UI, presentation, audio and scenario lifetime
 
 - #2931 (NPExt changelog item 79): scenario transitions clear the screen
-  shake. Native's offset lives in a process-global that only decays while
-  battle input runs, so quitting mid-shake started the next game with
-  leftover camera movement.
+  shake. Native's offset is the global Map's `+4`/`+8` (`0x0087F7E8`), which
+  only decays while battle input runs (`0x004F4BB0`), so quitting mid-shake
+  started the next game with leftover camera movement.
 - #2979 (NPExt changelog item 28): the action determination's warp rung also
   catches a still-warping-in actor over an entity target. Native limits the
   warp-in arm to Cell targets, so a pre-emergence chrono legionnaire fell
   through to the attack rung's pure weapon-range alternative and showed a
-  force-attack cursor over friendlies.
+  force-attack cursor over friendlies. The rung answers every object target
+  while warping in, enemies included.
 - #2980 (NPExt changelog item 45): the T type-select seed set no longer grows
-  the `DeploysInto`/`UndeploysInto` counterpart type (the 0x00732C30 ID match
-  reads it at 0x00732C61..0x00732C83), so T with an MCV selected gathers MCVs
-  only instead of also taking the Construction Yard, and vice versa.
+  the `DeploysInto`/`UndeploysInto` counterpart type
+  (`TypeSelect__BuildSeedTypeIDs @ 0x00732D10`, Type+0x404/+0x408), so T with
+  an MCV selected gathers MCVs only instead of also taking the Construction
+  Yard, and vice versa. An Ares build follows `TypeSelectUseDeploy=`.
 - #2984 (NPExt changelog item 70): the mind-control removal sound plays
   only for the two involved parties — the (former) controller and the
   owner the unit returns to. Native emitted a plain positional VocAt with
