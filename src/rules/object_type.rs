@@ -3037,6 +3037,10 @@ impl ObjectType {
     /// Building GetSensorRange4566B0. The caller supplies retained+268 and
     /// GetCurrentWeapon70E1A0's resolved range; Option already represents the
     /// null WeaponStruct/WeaponType test70E240. No General.GapRadius fallback.
+    /// NPBUG deviation (issue #2930, NPExt bug-fix changelog item 53): under
+    /// npbug `SensorArray=` is out of the ring-radius choice, so a plain
+    /// sensor array falls through to the weapon-range arm instead of drawing
+    /// `CloakRadiusInCells=`; the cloak-generator arm stays native.
     pub fn building_sensor_range(&self, gap_supercharged: bool, weapon_range: Option<i32>) -> i32 {
         if self.psychic_detection_radius > 0 {
             self.psychic_detection_radius
@@ -3046,7 +3050,7 @@ impl ObjectType {
             } else {
                 self.gap_radius_in_cells
             })
-        } else if self.sensor_array || self.cloak_generator {
+        } else if (self.sensor_array && !crate::rules::NPBUG_ENABLED) || self.cloak_generator {
             i32::from(self.cloak_radius_in_cells)
         } else {
             weapon_range

@@ -73,10 +73,17 @@ fn constructors_and_each_admitted_radial_reader_history_match_original() {
         let object = rules.object(row["type"].as_str().unwrap()).unwrap();
         assert_fields(object, &row["after"]);
         for (flag, expected) in row["range_by_268"].as_array().unwrap().iter().enumerate() {
-            assert_eq!(
-                object.building_sensor_range(flag != 0, None),
-                expected.as_i64().unwrap() as i32
-            );
+            // NPBUG #2930 (NPExt bug-fix changelog item 53): npbug removes
+            // SensorArray from the ring-radius choice, so a plain sensor-array
+            // row falls to the weapon-range arm — 0 for the null weapon these
+            // goldens pass.
+            let expected =
+                if crate::rules::NPBUG_ENABLED && object.sensor_array && !object.cloak_generator {
+                    0
+                } else {
+                    expected.as_i64().unwrap() as i32
+                };
+            assert_eq!(object.building_sensor_range(flag != 0, None), expected);
         }
     }
 }
@@ -105,4 +112,30 @@ fn stock_radial_fields_and_ranges_use_physical_rules_mode_map_and_art() {
             .unwrap()
             .has_radial_indicator()
     );
+}
+
+/// NPBUG (NPExt bug-fix changelog item 53, issue #2930): the ring radius no
+/// longer consults `SensorArray=`. A `SensorArray=yes` building keeps the
+/// normal weapon-range radius instead of drawing `CloakRadiusInCells=`, while
+/// a cloak generator's arm stays native.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_sensor_array_ring_uses_the_weapon_range_not_the_cloak_radius() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[BuildingTypes]\n0=SENS\n1=CLAK\n\
+         [SENS]\nSensorArray=yes\nCloakRadiusInCells=11\n\
+         [CLAK]\nCloakGenerator=yes\nCloakRadiusInCells=11\n",
+    ))
+    .unwrap();
+    let sensor = rules.object("SENS").unwrap();
+    assert!(sensor.sensor_array && !sensor.cloak_generator);
+    // Native's SensorArray arm would return 11; npbug falls through to the
+    // weapon-range radius, 800/256.
+    assert_eq!(sensor.building_sensor_range(false, Some(800)), 3);
+    assert_eq!(sensor.building_sensor_range(true, Some(800)), 3);
+    assert_eq!(sensor.building_sensor_range(false, None), 0);
+    // The cloak-generator arm is unchanged: still CloakRadiusInCells.
+    let cloak = rules.object("CLAK").unwrap();
+    assert!(cloak.cloak_generator && !cloak.sensor_array);
+    assert_eq!(cloak.building_sensor_range(false, Some(800)), 11);
 }

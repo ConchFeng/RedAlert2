@@ -46,6 +46,12 @@ The sections follow the behavior chains of #3024.
 
 ### Building placement, construction, economy and sensors
 
+- #2930 (NPExt changelog item 53): the selected-building ring radius
+  (`GetSensorRange @ 0x004566B0`) no longer consults `SensorArray=` — a
+  `SensorArray=yes` building falls through to its normal weapon-range radius
+  instead of drawing `CloakRadiusInCells=`. The cloak-generator arm keeps
+  native behavior.
+
 ### Movement, crash, ejection, garrison and lifecycle
 
 ### Capture, mind control, lift and retaliation
