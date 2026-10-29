@@ -138,6 +138,10 @@ The sections follow the behavior chains of #3024.
   `PointerExpired468517` cell substitution) treats the low aircraft as
   ordinary, so anti-air fire that downs a landing aircraft flew into the
   airbase.
+- #2986 (NPExt changelog item 85): the magnetic wave takes the
+  tracking-distance decay (`MAX_TRACKING_DISTANCE_LEPTONS`). Native skipped
+  type 3, so a magnetron beam followed its held target at any distance; the
+  decay ends the beam like every other wave type.
 
 ### Building placement, construction, economy and sensors
 

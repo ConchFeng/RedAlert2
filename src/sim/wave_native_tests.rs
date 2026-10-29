@@ -534,3 +534,36 @@ fn npbug_a_secondary_sonic_wave_reads_the_emitting_weapon() {
         );
     }
 }
+
+/// NPBUG (NPExt bug-fix changelog item 85, issue #2986): a magnetic wave
+/// takes the tracking-distance decay — native skipped type 3, so the beam
+/// followed a drifting held target across any distance. Stock keeps the
+/// unbounded follow.
+#[test]
+fn npbug_a_magnetic_wave_decays_past_the_tracking_distance() {
+    use crate::sim::combat::TargetKind;
+    let terrain = crate::map::resolved_terrain::test_flat_ground_grid(80);
+    let mut wave = from_native(&corpus()["birth_rows"][0]["after"]);
+    // The same target identity the wave holds, parked ~24 cells away — far
+    // past the 2172-lepton tracking bound.
+    let far = WaveUpdateContext {
+        owner_position: Some(ProjectileCoord::new(2560, 2560, 0)),
+        owner_fire_coordinate: Some(ProjectileCoord::new(2560, 2560, 0)),
+        owner_current_target: wave.target_ref(),
+        target_position: Some(ProjectileCoord::new(2560 + 24 * 256, 2560, 0)),
+        target_is_unit: true,
+    };
+    let _ = TargetKind::Cell(0, 0);
+    wave.update_geometry_and_cells(far, Some(&terrain));
+    if crate::rules::NPBUG_ENABLED {
+        assert!(
+            wave.decaying() && !wave.active_geometry(),
+            "the far beam decays under npbug"
+        );
+    } else {
+        assert!(
+            wave.active_geometry() && !wave.decaying(),
+            "stock follows the far target unbounded"
+        );
+    }
+}

@@ -548,6 +548,21 @@ impl Wave {
             self.decaying = true;
         }
 
+        // NPBUG (NPExt bug-fix changelog item 85, issue #2986): the
+        // tracking-distance decay applies to the magnetic wave too. Native
+        // skips type 3, so a magnetron beam followed its held target at any
+        // distance with no weapon-range bound.
+        if crate::rules::NPBUG_ENABLED
+            && self.active_geometry
+            && self.wave_type == 3
+            && let (Some(owner), Some(target)) = (context.owner_position, context.target_position)
+            && distance_3d_leptons([owner.x, owner.z, owner.y], [target.x, target.z, target.y])
+                > MAX_TRACKING_DISTANCE_LEPTONS
+        {
+            self.active_geometry = false;
+            self.decaying = true;
+        }
+
         if self.active_geometry {
             if let (Some(owner), Some(target)) =
                 (context.owner_fire_coordinate, context.target_position)
