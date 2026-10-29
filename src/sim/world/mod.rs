@@ -2408,22 +2408,13 @@ impl Simulation {
         // &[ESP+0x88], this target coordinate (0x006FE204), first and
         // &[ESP+0x44], the launch source (`event.fire_coord`: GetFLH or a
         // Dropping projectile's GetCoords), second.
-        let mut wave = crate::sim::wave::Wave::new_owned(
+        let wave = crate::sim::wave::Wave::new_owned(
             wave_type,
             event.attacker_id,
             event.target,
             target,
             event.fire_coord,
         );
-        // NPBUG (#2944): the emitting slot rides with the wave. Native
-        // hardcodes the primary everywhere it re-reads the FLH or the sonic
-        // damage weapon.
-        if crate::rules::NPBUG_ENABLED {
-            wave.set_emitting_weapon_index_for_npbug(match event.weapon_slot {
-                crate::sim::combat::combat_weapon::WeaponSlot::Primary => 0,
-                crate::sim::combat::combat_weapon::WeaponSlot::Secondary => 1,
-            });
-        }
         Some(wave)
     }
 
@@ -2570,28 +2561,10 @@ impl Simulation {
                 let Some(object_type) = self.interner.object_type(firer.type_ref(), rules) else {
                     break;
                 };
-                // NPBUG (#2944): the sonic damage re-selects the emitting
-                // weapon, not the primary. Native re-runs GetWeapon(0)
-                // regardless of which slot emitted the wave.
-                let weapon_name = if crate::rules::NPBUG_ENABLED {
-                    self.waves
-                        .get(request.wave_id)
-                        .map(|wave| wave.emitting_weapon_index())
-                        .and_then(|index| {
-                            crate::sim::combat::combat_weapon::weapon_for_index(
-                                object_type,
-                                firer.veterancy.rank(),
-                                index,
-                            )
-                            .map(|(weapon_id, _)| weapon_id)
-                        })
-                } else {
-                    crate::sim::combat::combat_weapon::primary_for_tier(
-                        object_type,
-                        firer.veterancy.rank(),
-                    )
-                };
-                let Some(weapon_name) = weapon_name else {
+                let Some(weapon_name) = crate::sim::combat::combat_weapon::primary_for_tier(
+                    object_type,
+                    firer.veterancy.rank(),
+                ) else {
                     break;
                 };
                 let Some(weapon) = rules.weapon(weapon_name) else {

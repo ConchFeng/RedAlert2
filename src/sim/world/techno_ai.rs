@@ -132,13 +132,6 @@ impl Simulation {
             let object = self.interner.object_type(entity.type_ref(), rules)?;
             // GetFLH(0, null) still mirrors by the owner's current burst
             // parity (+0x3B8, `0x006F3C82`), as FireAt's own call does.
-            // NPBUG (#2944): the geometry re-reads the emitting slot, not
-            // the hardcoded primary.
-            let slot = if crate::rules::NPBUG_ENABLED {
-                wave.emitting_weapon_index()
-            } else {
-                0
-            };
             let burst_index = (entity.weapon_burst.index() & 1) as u8;
             Some(
                 crate::sim::combat::fire_coord::fire_coordinate(
@@ -146,7 +139,7 @@ impl Simulation {
                     rules,
                     &crate::sim::combat::fire_coord::FireSource::of_entity(entity),
                     object,
-                    slot,
+                    0,
                     burst_index,
                     crate::rules::flh::Flh::default(),
                 )
@@ -182,7 +175,7 @@ impl Simulation {
                 crate::sim::combat::combat_weapon::get_weapon(
                     entity,
                     object,
-                    wave.emitting_weapon_index(),
+                    0,
                     &self.substrate.entities,
                     rules,
                     &self.interner,

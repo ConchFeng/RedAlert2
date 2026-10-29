@@ -158,7 +158,7 @@ pub struct WaveUpdateContext {
     pub target_position: Option<ProjectileCoord>,
     /// Native What_Am_I==1 reverses type3's geometry arguments.
     pub target_is_unit: bool,
-    /// NPBUG (#2986): the emitting weapon's `Range=`, the magnetic wave's
+    /// NPBUG (#2986): the owner's weapon 0 `Range=`, the magnetic wave's
     /// tracking bound. None without npbug.
     pub magnetic_range_leptons: Option<i32>,
 }
@@ -190,11 +190,6 @@ pub struct Wave {
     direction_octant: i32,
     intensity: i32,
     recorded_cells: Vec<WaveRecordedCell>,
-    /// NPBUG (#2944): the weapon slot whose FireAt emitted this wave. Native
-    /// hardcodes the primary (GetFLH(0), GetWeapon(0)); npbug reads the
-    /// emitter's own slot for the FLH anchor and the sonic damage data.
-    #[serde(default)]
-    emitting_weapon_index: i32,
 }
 
 impl Wave {
@@ -355,7 +350,6 @@ impl Wave {
             direction_octant: 0,
             intensity: Self::DEFAULT_LASER_INTENSITY,
             recorded_cells: Vec::new(),
-            emitting_weapon_index: 0,
         }
     }
 
@@ -370,16 +364,6 @@ impl Wave {
         wave.owner_id = Some(owner_id);
         wave.target_ref = Some(target_ref);
         wave
-    }
-
-    /// NPBUG (#2944): the weapon slot whose FireAt emitted this wave.
-    pub const fn set_emitting_weapon_index_for_npbug(&mut self, index: i32) {
-        self.emitting_weapon_index = index;
-    }
-
-    /// NPBUG (#2944): the emitting slot; native always reads the primary.
-    pub const fn emitting_weapon_index(&self) -> i32 {
-        self.emitting_weapon_index
     }
 
     #[cfg(any(test, feature = "test-support"))]
@@ -552,8 +536,9 @@ impl Wave {
         }
 
         // NPBUG (NPExt bug-fix changelog item 85, issue #2986): the magnetic
-        // wave decays once its held target leaves the emitting weapon's
-        // range. Native skips type 3 in the tracking-distance decay, so a
+        // wave decays once its held target leaves the range of the owner's
+        // weapon 0, the slot the wave code reads (GetWeapon(0) at
+        // `0x0075F330`). Native skips type 3 in the tracking-distance decay, so a
         // magnetron beam followed its target at any distance. The 2172-lepton
         // bound of the other types would end beams inside the retail
         // MagneticBeam's 12-cell range.
