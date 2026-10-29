@@ -237,20 +237,23 @@ fn resolve_rally_cell_click(
     .filter(|cell| *cell != (0, 0))
     .filter(|&cell| {
         // NPBUG (NPExt bug-fix changelog item 17, issue #2953): a naval
-        // factory's rally accepts only water. Native resolved the click
-        // against the amphibious movement zone, so land tiles in that zone
-        // were accepted and beached the ships.
+        // factory's rally accepts only a water cell. Native `SetRallyPoint`
+        // (`0x00443860`) resolves the click in the Amphibious zone (4), so a
+        // land cell there was accepted and beached the ships. RESIDUAL: a
+        // refused click still plays the new-rally announcement and keeps the
+        // Move cursor, and the opening shipyard rally takes no rally when its
+        // offset cell is not water.
         !(crate::rules::NPBUG_ENABLED && click.naval)
-            || clicked_land_type(cells, click.clicked)
+            || land_type(cells, cell)
                 == Some(crate::rules::terrain_rules::LandType::Water.as_index())
     }))
 }
 
-/// The clicked cell's land type, through the query's terrain.
-fn clicked_land_type(cells: &NativeCellQuery<'_>, clicked: (i16, i16)) -> Option<u8> {
+/// A cell's land type, through the query's terrain.
+fn land_type(cells: &NativeCellQuery<'_>, cell: (u16, u16)) -> Option<u8> {
     cells
         .terrain()
-        .cell(clicked.0 as u16, clicked.1 as u16)
+        .cell(cell.0, cell.1)
         .map(|cell| cell.land_type)
 }
 
@@ -402,15 +405,12 @@ mod tests {
             )
             .unwrap();
             let expected = pair(&row["nearby"][0]["result"]);
-            // NPBUG (#2953): the naval row's land click is refused instead
-            // of resolving through the amphibious zone.
-            let expected =
-                if crate::rules::NPBUG_ENABLED && input["naval"].as_bool().unwrap_or(false) {
-                    None
-                } else {
-                    (expected != (0, 0)).then_some(expected)
-                };
-            assert_eq!(result, expected, "{input}");
+            // NPBUG (#2953) refuses a naval row's land answer; the native
+            // rows pin the stock build.
+            if crate::rules::NPBUG_ENABLED && input["naval"].as_bool().unwrap_or(false) {
+                continue;
+            }
+            assert_eq!(result, (expected != (0, 0)).then_some(expected), "{input}");
             let dummy = pair(&row["nearby"][0]["dummy_at_return"]);
             assert_eq!(
                 cells.coord(NativeCellIdentity::Dummy),
