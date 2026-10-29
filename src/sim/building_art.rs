@@ -359,6 +359,13 @@ impl Simulation {
             rules.general.condition_yellow,
         );
         let garrisoned = !entity.passenger_role.occupants().is_empty();
+        let opening_slots_empty = [18, 3, 4, 5, 6]
+            .iter()
+            .all(|&slot| entity.building_art.anim_slots[slot].is_none());
+        let owner_passive = self
+            .houses
+            .get(&owner)
+            .is_some_and(|house| house.multiplay_passive());
         // 0x00446382..0x004463B4: the built type's InfantryGainSelfHeal and
         // UnitsGainSelfHeal join the owner's house. Natively a capture of a
         // placed building skips this add (0x00445FD0) and ChangeOwner's tail
@@ -373,16 +380,19 @@ impl Simulation {
             rules,
         );
         // NPBUG (NPExt bug-fix changelog item 95, issue #2971): a tech
-        // building (`NeedsEngineer=`) starts its active animations when a
-        // real house owns it. Native fills Idle18 + Active3..6 at first
-        // opening (0x0044632E..0x00446374) with no ownership arm, so an
-        // un-owned oil derrick pumped from scenario placement and kept
-        // pumping after the damaged-art swap; the capture's Grand_Opening
-        // re-run (Building 0x00448CEF) starts it.
-        // The placement arm holds for a tech type; the capture re-run —
-        // first_opening already consumed — fills the slots instead.
-        let tech = crate::rules::NPBUG_ENABLED && object.needs_engineer;
-        if (first_opening && !tech || captured && tech) && !refinery {
+        // building (`NeedsEngineer=`) starts its active animations once a
+        // non-passive house owns it. Native fills Idle18 + Active3..6 at
+        // first opening (0x0044632E..0x00446374) with no ownership arm, so an
+        // un-owned oil derrick pumps from scenario placement. Under npbug that
+        // fill skips a MultiplayPassive owner, and the capture's
+        // Grand_Opening re-run (Building 0x00448CEF) fills the slots the skip
+        // left empty once a non-passive house takes it; filled slots stay.
+        let fill_opening_slots = if crate::rules::NPBUG_ENABLED && object.needs_engineer {
+            !owner_passive && (first_opening || captured && opening_slots_empty)
+        } else {
+            first_opening
+        };
+        if fill_opening_slots && !refinery {
             for slot in [18, 3, 4, 5, 6] {
                 self.set_building_anim_slot(
                     id,

@@ -5,11 +5,11 @@ use crate::rules::ini_parser::IniFile;
 use crate::sim::house_state::HouseState;
 
 /// NPBUG (NPExt bug-fix changelog item 95, issue #2971): a tech building's
-/// active animations start when a real house owns it, not at first opening.
-/// Native fills Idle18 + Active3..6 unconditionally
+/// active animations start once a non-passive house owns it. Native fills
+/// Idle18 + Active3..6 at first opening with no ownership arm
 /// (`0x0044632E..0x00446374`), so an un-owned oil derrick pumps from
-/// scenario placement and keeps pumping after the damaged-art swap; the
-/// capture's `Grand_Opening` re-run (Building `0x00448CEF`) starts it.
+/// scenario placement; the capture's `Grand_Opening` re-run (Building
+/// `0x00448CEF`) starts it, and one placed for a real house pumps at once.
 #[test]
 #[cfg(feature = "npbug")]
 fn npbug_tech_derrick_pump_starts_on_capture_not_placement() {
@@ -98,6 +98,29 @@ fn npbug_tech_derrick_pump_starts_on_capture_not_placement() {
         "N",
         "the normal pump, not the damaged variant"
     );
+    // Handed back to the passive house, it keeps that pump: no refill.
+    sim.change_owner_with_rules(
+        derrick,
+        neutral,
+        &rules,
+        None,
+        crate::sim::world::FrameEffects::default(),
+    );
+    assert_eq!(pump(&sim, derrick), Some(anim));
+
+    // A derrick placed for a real house pumps from its first opening.
+    let owned = sim
+        .spawn_object("CAOILD", "Americans", 18, 10, 0, &rules)
+        .unwrap();
+    sim.grand_opening(
+        owned,
+        false,
+        true,
+        &rules,
+        None,
+        crate::sim::world::FrameEffects::default(),
+    );
+    assert!(pump(&sim, owned).is_some(), "an owned derrick pumps");
 
     // The gate is scoped to `NeedsEngineer=`: a non-tech building still
     // animates from its first opening while neutral-owned.

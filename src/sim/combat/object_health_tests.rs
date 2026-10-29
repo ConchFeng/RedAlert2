@@ -85,6 +85,17 @@ fn observe_virtual(
                     "alive_after":u8::from(entity.lifecycle.object_alive())}));
 }
 
+/// NPBUG #2968 puts HP exactly on `strength >> 1` on the yellow side, so a
+/// surviving hit from or onto that boundary answers differently from native.
+/// Rows pinning either case are skipped under npbug; the npbug test covers it.
+fn npbug_moves_yellow_boundary(input: &Value, output: &Value) -> bool {
+    let previous = input["current"].as_i64().unwrap() as i32;
+    let packet = output["damage_packet"].as_i64().unwrap() as i32;
+    let post = previous.wrapping_sub(packet);
+    let yellow = (input["strength"].as_i64().unwrap() as i32) >> 1;
+    crate::rules::NPBUG_ENABLED && packet > 0 && post > 0 && (previous == yellow || post == yellow)
+}
+
 #[test]
 fn actual_signed_object_commit_matches_original_packet_results_and_callbacks() {
     let corpus = corpus();
@@ -93,6 +104,9 @@ fn actual_signed_object_commit_matches_original_packet_results_and_callbacks() {
     for row in rows {
         let input = &row["input"];
         let output = &row["output"];
+        if npbug_moves_yellow_boundary(input, output) {
+            continue;
+        }
         let mut entity = GameEntity::test_default(1, "X", "Americans", 2, 2);
         entity
             .health
@@ -130,24 +144,6 @@ fn actual_signed_object_commit_matches_original_packet_results_and_callbacks() {
             false,
         );
         drop(host);
-        let mut expected_result = output["result"].as_i64().unwrap() as i32;
-        // NPBUG #2968: a pinned Damaged row that lands exactly on
-        // `strength >> 1` is the yellow crossing under npbug, so its result
-        // is Yellow. Rows native already answers Yellow, Red or Dead keep
-        // their recorded answer.
-        if crate::rules::NPBUG_ENABLED && expected_result == DamageState::Damaged as i32 {
-            let current = input["current"].as_i64().unwrap() as i32;
-            let mut damage = input["damage"].as_i64().unwrap() as i32;
-            // The CanC4-less building receiver raises a negative packet to 1
-            // before the Object body sees it.
-            if input["kind"] == "building" && input["can_c4"] == false {
-                damage = damage.max(1);
-            }
-            let yellow = (input["strength"].as_i64().unwrap() as i32) >> 1;
-            if yellow > 0 && damage > 0 && current - damage.min(current) == yellow {
-                expected_result = DamageState::Yellow as i32;
-            }
-        }
         assert_eq!(
             entity.health.current(),
             output["actual"].as_i64().unwrap() as i32,
@@ -159,7 +155,11 @@ fn actual_signed_object_commit_matches_original_packet_results_and_callbacks() {
             output["damage_packet"].as_i64().unwrap() as i32,
             "{input}"
         );
-        assert_eq!(result as i32, expected_result, "{input}");
+        assert_eq!(
+            result as i32,
+            output["result"].as_i64().unwrap() as i32,
+            "{input}"
+        );
         assert_eq!(
             u8::from(entity.lifecycle.object_alive()),
             output["alive"].as_u64().unwrap() as u8,
@@ -279,39 +279,46 @@ fn is_full_matches_the_masked_ratio_compare() {
     }
 }
 
-/// NPBUG #2968 (NPExt bug-fix changelog item 65): a hit that lands exactly on
-/// `strength >> 1` is the yellow crossing, not a silent Damaged step.
+/// NPBUG #2968 (NPExt bug-fix changelog item 65): a hit landing exactly on
+/// `strength >> 1` is the yellow crossing, and the next hit from that boundary
+/// does not cross it again, so the yellow Tags (39 with a source, 42) run once.
 #[cfg(feature = "npbug")]
 #[test]
-fn npbug_damage_landing_exactly_on_yellow_classifies_as_the_crossing() {
-    for (damage, expected) in [
-        (50, DamageState::Yellow),  // 100 -> 50 lands exactly on the threshold
-        (49, DamageState::Damaged), // 100 -> 51 stays above it
-        (51, DamageState::Yellow),  // 100 -> 49 is strictly below it
-    ] {
-        let strength = Cell::new(100);
-        let mut entity = GameEntity::test_default(1, "X", "Americans", 2, 2);
-        entity.health.set_for_test(100);
-        entity.lifecycle.set_object_alive_for_test(true);
+fn npbug_exact_yellow_hit_crosses_once() {
+    let strength = Cell::new(100);
+    let mut entity = GameEntity::test_default(1, "X", "Americans", 2, 2);
+    entity.health.set_for_test(100);
+    entity.lifecycle.set_object_alive_for_test(true);
+    let mut results = Vec::new();
+    let mut yellow_tags = Vec::new();
+    for damage in [50, 10] {
         let mut host = LocalHealthHost {
             entity: &mut entity,
             strength: &strength,
-            callback: |_: &mut GameEntity, _: HealthCallback| {},
+            callback: |_: &mut GameEntity, callback: HealthCallback| {
+                if let HealthCallback::Tag {
+                    kind: kind @ (39 | 42),
+                    ..
+                } = callback
+                {
+                    yellow_tags.push(kind);
+                }
+            },
         };
         let mut packet = damage;
-        let result = commit(
+        results.push(commit(
             &mut host,
             &mut packet,
             strength.get(),
             true,
             false,
             0.25,
-            false,
-        );
-        drop(host);
-        assert_eq!(result, expected, "100 - {damage}");
-        assert_eq!(entity.health.current(), 100 - damage);
+            true,
+        ));
     }
+    assert_eq!(results, [DamageState::Yellow, DamageState::Damaged]);
+    assert_eq!(yellow_tags, [39, 42]);
+    assert_eq!(entity.health.current(), 40);
 }
 
 #[path = "object_health_trigger_tests.rs"]

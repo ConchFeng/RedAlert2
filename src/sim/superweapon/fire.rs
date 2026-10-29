@@ -188,6 +188,21 @@ impl Simulation {
             .then(|| super::pre_dependent(rules, sw))
             .flatten()
             .and_then(|(name, pre)| Some((self.interner.get(name)?, pre)));
+        // NPBUG (NPExt bug-fix changelog item 11, issue #2936): Fire_SW
+        // 0x004FAE50 launches a PostClick= warp through ClickFire's PostClick
+        // exemption (0x006CB933..0x006CB95F) even while its paired Sphere is
+        // held, then clears that Sphere's readiness and restarts its countdown
+        // (0x004FAEA6..0x004FAEC1) whatever ClickFire returned. The hold is
+        // the Sphere's IsSuspended, which CanFire 0x006CC360 refuses and
+        // Update_Owned_Supers 0x0050AF10 sets on an IsPowered Super for low
+        // power or no online provider. Under npbug a held Sphere refuses the
+        // warp click before any write: no launch, pairing, timer or alert.
+        if crate::rules::NPBUG_ENABLED
+            && let Some((pre_type, _)) = paired
+            && super_instance(self, owner, pre_type).is_some_and(|pre| pre.is_suspended())
+        {
+            return false;
+        }
         #[cfg(feature = "ares")]
         let paid_source = super::two_stage::destination_for_source(self, rules, sw_type_id, sw);
         #[cfg(feature = "ares")]
@@ -522,19 +537,6 @@ fn click_fire_admission(
         return false;
     };
     if !instance.click_fire_admits() && !sw.post_click {
-        return false;
-    }
-    // NPBUG (NPExt bug-fix changelog item 11, issue #2936): the PostClick=
-    // exemption above let a pre-selected warp fire through low power, and the
-    // paired Sphere write restart its countdown while held. Insufficient
-    // power refuses the click before any launch, pairing or timer write.
-    if crate::rules::NPBUG_ENABLED
-        && sw.post_click
-        && sim
-            .power_states
-            .get(&owner)
-            .is_some_and(|state| state.low_power())
-    {
         return false;
     }
     if sw.kind == SuperWeaponKind::LightningStorm && super::lightning_storm::has_deferment(sim) {

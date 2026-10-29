@@ -200,59 +200,62 @@ fn click_fire_matches_native() {
     }
 }
 
-/// NPBUG (NPExt bug-fix changelog item 11, issue #2936): with power
-/// insufficient, a click on the pre-selected ChronoWarp refuses outright —
-/// no launch, and the paired Sphere keeps its charge and its timer instead
-/// of firing the warp and restarting while held.
+/// NPBUG (NPExt bug-fix changelog item 11, issue #2936): a warp click whose
+/// paired Sphere is held (low power suspends it after its target was picked)
+/// refuses before Fire_SW's pairing: nothing teleports, and the Sphere keeps
+/// its readiness and paused timer instead of restarting while held.
 #[test]
 #[cfg(feature = "npbug")]
-fn npbug_low_power_refuses_the_pre_selected_warp_click() {
-    let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[BuildingTypes]\n[SuperWeaponTypes]\n0=ChronoSphereSpecial\n1=ChronoWarpSpecial\n\
-         [ChronoSphereSpecial]\nType=ChronoSphere\nPreClick=yes\nRechargeTime=1\n\
-         [ChronoWarpSpecial]\nType=ChronoWarp\nPostClick=yes\nRechargeTime=1\n",
-    ))
-    .unwrap();
-    let mut sim = sim(&rules, true, &[]);
-    let owner = sim.interner.intern(OWNER);
-    let mut power = crate::sim::power_system::PowerState::default();
-    power.set_is_low_power_for_test(true);
-    sim.power_states_mut_for_test().insert(owner, power);
-    let sphere_id = sim.interner.intern("ChronoSphereSpecial");
-    let warp_id = sim.interner.intern("ChronoWarpSpecial");
-    let warp_sw = rules.super_weapon("ChronoWarpSpecial").unwrap().clone();
-    let mut sphere = SuperWeaponInstance::new(sphere_id, owner, 0);
-    sphere.is_active = true;
-    sphere.is_ready = true;
-    sphere.charge_start_tick = -1;
-    let mut warp = SuperWeaponInstance::new(warp_id, owner, 0);
-    warp.is_active = true;
-    warp.is_ready = true;
-    warp.charge_start_tick = -1;
-    let instances = sim.super_weapons.map_mut_for_test();
-    let entry = instances.entry(owner).or_default();
-    entry.insert(sphere_id, sphere);
-    entry.insert(warp_id, warp);
-    drop(instances);
-    let launched = click_fire(
-        &mut sim,
+fn npbug_held_sphere_refuses_the_pre_selected_warp() {
+    use crate::sim::superweapon::chronosphere_tests::{SOURCE, charge_chronosphere, retail_world};
+    use crate::sim::world::FrameEffects;
+    let Some((rules, mut sim, americans)) = retail_world() else {
+        return;
+    };
+    let tank = sim
+        .spawn_object_at_height("MTNK", "Americans", 20, 20, 0, 0, &rules)
+        .unwrap();
+    let sphere = charge_chronosphere(&mut sim, americans);
+    let warp = sim.interner.intern("ChronoWarpSpecial");
+    assert!(sim.fire_super_weapon(
         &rules,
-        owner,
-        warp_id,
-        &warp_sw,
-        (33, 44),
+        americans,
+        sphere,
+        SOURCE,
         None,
-        crate::sim::world::FrameEffects::default(),
+        FrameEffects::default(),
+        false
+    ));
+    let frame = sim.session.binary_frame();
+    let held = sim.super_weapons.instance_mut(&americans, &sphere).unwrap();
+    assert!(
+        held.suspend(true, false, frame),
+        "the power drop holds the Sphere"
+    );
+    let state = |sim: &Simulation| {
+        let sphere = &sim.super_weapons[&americans][&sphere];
+        (
+            sphere.is_ready,
+            sphere.is_suspended(),
+            sphere.charge_start_tick,
+            sphere.charge_duration,
+        )
+    };
+    let before = state(&sim);
+    let launched = sim.fire_super_weapon(
+        &rules,
+        americans,
+        warp,
+        (40, 40),
         None,
+        FrameEffects::default(),
         false,
     );
-    assert!(!launched, "low power refuses the pre-selected warp");
-    let instances = sim.super_weapons.map_mut_for_test();
-    let sphere = instances.get(&owner).unwrap().get(&sphere_id).unwrap();
-    assert!(sphere.is_ready, "the paired Sphere keeps its charge");
-    assert_eq!(
-        sphere.charge_start_tick, -1,
-        "no countdown restart while held"
+    assert!(!launched, "the held Sphere refuses the warp");
+    assert_eq!(state(&sim), before, "the Sphere keeps its charge and timer");
+    assert!(
+        !sim.entities().get(tank).unwrap().chrono_warp_latch(),
+        "nothing teleports"
     );
 }
 
