@@ -98,6 +98,10 @@ The sections follow the behavior chains of #3024.
   the weapon deals its own damage and the death still completes the nested
   DeathWeapon. NPExt's exact slot gating was not disassembled; every slot
   takes the corrected flow as a recorded residual.
+- #2948 (NPExt changelog item 84): the InRange arming ceiling over
+  structural bridges (`0x006F74D7..0x006F7504`) consults the projectile's
+  `SubjectToCliffs=` — a projectile that ignores cliffs may shell a deck
+  three or more levels up; cliff-respecting arcing shots stay refused.
 
 ### Building placement, construction, economy and sensors
 
