@@ -1,7 +1,7 @@
 //! Selling44A16B's refused Unit Unlimbo and the ShortGame defeat gate
-//! (issue #2965). The same synthetic Track-on-Water refusal for both
-//! capabilities: stock keeps the never-placed MCV counted, npbug removes it
-//! so the emptied house can be defeated. No retail-map claim.
+//! under NPBUG (issue #2965): a synthetic Track-on-Water refusal whose
+//! never-placed MCV npbug removes, so the emptied house can be defeated. The
+//! stock retention is pinned by `failed_yard_repack_tests`.
 
 use super::*;
 use crate::map::resolved_terrain::{ResolvedTerrainGrid, test_clear_cell};
@@ -99,54 +99,10 @@ fn base_units<'a>(sim: &'a Simulation, rules: &'a RuleSet) -> Vec<Option<Interne
         .collect()
 }
 
-/// Native pin, synthetic: the refused repack refunds the yard, uninits it
-/// and keeps the constructed MCV in limbo with its tracking intact, so the
-/// ShortGame BaseUnit sum holds the emptied house alive.
-#[test]
-#[cfg(not(feature = "npbug"))]
-fn refused_repack_keeps_the_limbo_mcv_counted_and_the_house_alive() {
-    let (rules, mut sim, owner, yard, refund) = scene();
-    let initial = i32::MAX - 1000;
-    sim.houses
-        .get_mut(&owner)
-        .unwrap()
-        .economy_mut()
-        .set_credits_for_test(initial);
-    run_repack(&mut sim, &rules, yard);
-    assert_eq!(
-        sim.houses.get(&owner).unwrap().economy().credits(),
-        initial.wrapping_add(refund),
-        "44A16B paid the cached refund to the live owner"
-    );
-    let mcv = sim
-        .entities()
-        .values()
-        .find(|entity| sim.interner().resolve(entity.type_ref()) == "MCV")
-        .expect("the refused placement keeps its constructed MCV");
-    let mcv_type = mcv.type_ref();
-    assert!(mcv.is_object_alive() && mcv.in_limbo());
-    assert!(!mcv.lifecycle.cell_marked());
-    let tracked = sim.houses.get(&owner).unwrap().tracking();
-    assert_eq!(tracked.owned_count(EntityCategory::Unit, mcv_type), 1);
-    assert_eq!(tracked.active_count(EntityCategory::Unit, mcv_type), 0);
-    assert_eq!(tracked.buildings(), 0);
-    let units = base_units(&sim, &rules);
-    assert!(
-        tracked.game_alive(true, units.iter().copied(), None, |_| false),
-        "ShortGame's BaseUnit sum keeps the house alive"
-    );
-    sim.check_defeat(Some(&rules), None);
-    assert!(
-        !sim.houses.get(&owner).unwrap().is_defeated(),
-        "the counted phantom defeats every defeat check"
-    );
-}
-
 /// NPBUG #2965 (NPExt changelog item 6): the refused repack deletes the
 /// never-placed MCV, so its BaseUnit count goes with it and the emptied
 /// house is defeated. The refund is untouched.
 #[test]
-#[cfg(feature = "npbug")]
 fn npbug_refused_repack_stops_counting_the_phantom_and_the_house_falls() {
     let (rules, mut sim, owner, yard, refund) = scene();
     let initial = i32::MAX - 1000;

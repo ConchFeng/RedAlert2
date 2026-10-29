@@ -3261,6 +3261,6 @@ mod techno_constructor_tests;
 #[path = "failed_yard_repack_tests.rs"]
 mod failed_yard_repack_tests;
 
-#[cfg(test)]
+#[cfg(all(test, feature = "npbug"))]
 #[path = "failed_undeploy_defeat_tests.rs"]
 mod failed_undeploy_defeat_tests;
