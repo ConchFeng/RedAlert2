@@ -47,6 +47,15 @@ impl ScreenShakeState {
         self.last_presented_offset_px = offset_px;
     }
 
+    /// NPBUG (NPExt bug-fix changelog item 79, issue #2931): scenario
+    /// transitions clear the residual offset. Native's shake lives in a
+    /// process-global that only decays while battle input runs, so quitting
+    /// mid-shake started the next game with leftover camera movement.
+    pub(crate) fn reset_for_scenario(&mut self) {
+        self.offset_px = [0, 0];
+        self.last_presented_offset_px = [0, 0];
+    }
+
     /// Apply Logic's native-ordered detonation writes after the render's
     /// pre-Logic offset snapshot has been taken.
     pub(crate) fn apply_updates(&mut self, updates: &[crate::sim::combat::ScreenShakeUpdate]) {
@@ -118,5 +127,35 @@ mod tests {
 
         // The first ordinary service after unpausing resumes pre-render Input.
         assert_eq!(shake.service_offset_snapshot(Some(12), false), [-7, -2]);
+    }
+}
+
+#[cfg(test)]
+mod npbug_reset_tests {
+    use super::ScreenShakeState;
+    use crate::sim::combat::ScreenShakeUpdate;
+
+    /// NPBUG (NPExt bug-fix changelog item 79, issue #2931): the scenario
+    /// transition clears both the live offset and the presented-offset
+    /// cache, so the next game starts steady.
+    #[test]
+    fn npbug_the_scenario_reset_clears_a_mid_shake_offset() {
+        let mut shake = ScreenShakeState::default();
+        shake.apply_updates(&[ScreenShakeUpdate {
+            x: Some(10),
+            y: Some(-4),
+        }]);
+        shake.record_presented([10, -4]);
+        if crate::rules::NPBUG_ENABLED {
+            shake.reset_for_scenario();
+            assert_eq!(shake.offset_px, [0, 0]);
+            assert_eq!(
+                shake.service_offset_snapshot(None, false),
+                [0, 0],
+                "a focus-frozen redraw presents a steady frame"
+            );
+        } else {
+            assert_eq!(shake.offset_px, [10, -4], "stock retains the offset");
+        }
     }
 }

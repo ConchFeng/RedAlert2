@@ -57,3 +57,8 @@ The sections follow the behavior chains of #3024.
 ### Capture, mind control, lift and retaliation
 
 ### UI, presentation, audio and scenario lifetime
+
+- #2931 (NPExt changelog item 79): scenario transitions clear the screen
+  shake. Native's offset lives in a process-global that only decays while
+  battle input runs, so quitting mid-shake started the next game with
+  leftover camera movement.
