@@ -520,7 +520,8 @@ pub(crate) fn compute_range_target(
         let cell = cells.lookup_world(tx as i32, ty as i32);
         // NPBUG (NPExt bug-fix changelog item 84, issue #2948): the ceiling
         // consults the projectile's SubjectToCliffs=. A projectile that
-        // ignores cliffs — Howitzer, V3 — may shell a deck three or more
+        // ignores cliffs (the retail Ballistic, Lobbed and GrandCannonBall
+        // shells, not the V3's InvisibleHigh) may shell a deck three or more
         // levels up; native (0x006F74D7..0x006F7504) refuses regardless of
         // any flag.
         if (!(crate::rules::NPBUG_ENABLED && !projectile.subject_to_cliffs)
