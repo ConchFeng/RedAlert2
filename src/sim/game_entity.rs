@@ -2360,6 +2360,22 @@ impl GameEntity {
             .is_some_and(|body| body.state() == 0)
     }
 
+    /// The building's construction body for tests.
+    #[cfg(any(test, feature = "test-support"))]
+    pub fn building_body_mut_for_test(
+        &mut self,
+    ) -> Option<&mut crate::sim::building_construction::BuildingBody> {
+        self.building_body.as_mut()
+    }
+
+    /// The building's construction state (0 while constructing).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn building_state_for_test(&self) -> Option<i32> {
+        self.building_body
+            .as_ref()
+            .map(crate::sim::building_construction::BuildingBody::state)
+    }
+
     /// Building440042..440074: compare actual health, publish the new sample
     /// and tell the host to invalidate the owning House's derived state.
     pub fn sample_building_health_for_power(&mut self) -> bool {

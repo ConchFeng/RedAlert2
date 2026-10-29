@@ -2,6 +2,8 @@ use super::*;
 use crate::rules::ini_parser::IniFile;
 use crate::sim::base_plan::{BasePlanNode, pack_base_plan_cell, unpack_base_plan_cell};
 use crate::sim::house_state::HouseState;
+use crate::sim::mission::state::MissionTestFixture;
+use crate::sim::mission::{MissionDispatchTimer, MissionId, MissionType};
 use crate::sim::pathfinding::PathGrid;
 
 const RULES: &str = "[General]\nPlacementDelay=.05\nAIAlternateProductionCreditCutoff=10\n\
@@ -987,5 +989,74 @@ fn parallel_building_reservation_does_not_split_on_naval() {
     assert!(
         !ai_limit_holds(&f, second),
         "naval and land buildings share the counter"
+    );
+}
+
+fn sim_interns(f: &Fixture, e: &crate::sim::game_entity::GameEntity, name: &str) -> bool {
+    f.sim.interner.resolve(e.type_ref()) == name
+}
+
+fn tank_count(f: &Fixture) -> usize {
+    f.sim
+        .substrate
+        .entities
+        .values()
+        .filter(|e| !e.death.is_dying() && !e.lifecycle.in_limbo() && sim_interns(f, e, "TANK"))
+        .count()
+}
+
+/// NPBUG (NPExt bug-fix changelog item 49, issue #2954): the shared exit
+/// owner refuses a producer that is still constructing (Building+534 == 0)
+/// or selling — stock's exit placed the vehicle and it stuck inside the
+/// unfinished factory. Other producers keep every native admission.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_the_exit_refuses_a_constructing_producer() {
+    let (mut f, weap, _) = ai_limit_fixture("", "");
+    // The producer is mid-construction (Building+534 == 0).
+    if let Some(body) = f
+        .sim
+        .entities_mut_for_test()
+        .get_mut(weap)
+        .unwrap()
+        .building_body_mut_for_test()
+    {
+        body.set_state_for_test(0);
+    }
+    // A finished vehicle held inside it (limbo, as production holds it).
+    let tank = f
+        .sim
+        .spawn_object("TANK", "AIHouse", 15, 12, 0, &f.rules)
+        .unwrap();
+    f.sim
+        .substrate
+        .entities
+        .get_mut(tank)
+        .unwrap()
+        .lifecycle
+        .set_in_limbo_for_test(true);
+    let exit = crate::sim::production::exit_produced_object(
+        &mut f.sim,
+        &f.rules,
+        weap,
+        tank,
+        (0, 0),
+        None,
+        crate::sim::world::FrameEffects::default(),
+    );
+    assert_eq!(
+        exit,
+        crate::sim::ai_base_building::BuildingExit::TryLater,
+        "the constructing producer is refused"
+    );
+    assert!(
+        f.sim
+            .substrate
+            .entities
+            .get(tank)
+            .unwrap()
+            .lifecycle
+            .in_limbo(),
+        "the tank stays held"
     );
 }

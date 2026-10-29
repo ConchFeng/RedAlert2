@@ -79,6 +79,12 @@ impl BuildingBody {
     pub(crate) const fn state(&self) -> i32 {
         self.state
     }
+
+    /// Pin the construction state for tests (state 0 = constructing).
+    #[cfg(any(test, feature = "test-support"))]
+    pub(crate) fn set_state_for_test(&mut self, state: i32) {
+        self.state = state;
+    }
     pub(crate) const fn queued(&self) -> i32 {
         self.queued
     }

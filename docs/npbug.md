@@ -124,6 +124,13 @@ The sections follow the behavior chains of #3024.
   only against water. Native resolved the player rally through the
   amphibious movement zone, so land tiles in that zone were accepted and
   beached the ships.
+- #2954 (NPExt changelog item 49): the shared exit owner
+  (`exit_produced_object`) refuses a producer that is still constructing
+  (Building+534 == 0) or selling, returning to the placement wait. Native
+  ran the finished-object exit before the constructing gate — which only
+  guarded starting production — and the Strip PLACE tail had no
+  construction admission either, so vehicles left unfinished factories
+  and stuck inside them.
 
 ### Movement, crash, ejection, garrison and lifecycle
 
