@@ -705,10 +705,10 @@ fn erase_awards_price_each_cost_by_its_house() {
     chain(&mut sim, tank, &[cleg], 1);
     let mut expected = entity(&sim, cleg).clone();
     // (legionnaire cost, tank cost): Russian and American Houses, then both
-    // American. NPBUG (issue #2942) keeps only Record_The_Kill's award,
-    // priced by the victim's House for both costs.
+    // American. NPBUG keeps only Record_The_Kill's award (issue #2942),
+    // whose legionnaire cost its own Russian House prices (issue #2981).
     let pairs: &[(i32, i32)] = if crate::rules::NPBUG_ENABLED {
-        &[(1500, 450)]
+        &[(750, 450)]
     } else {
         &[(750, 450), (1500, 450)]
     };
