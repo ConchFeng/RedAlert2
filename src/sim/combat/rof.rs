@@ -335,10 +335,9 @@ mod tests {
     /// every arm (supplied class, weapon slot, garrison and occupant queries;
     /// the original RNG, veterancy predicates and ftol execute) and records the
     /// value and the Scenario RNG state before and after. Every row replays
-    /// through [`get_rof`] from the same seed. NPBUG (#2946) changes the
-    /// sonic/particle rows, so the native corpus pins the stock build.
+    /// through [`get_rof`] from the same seed. No row reaches the veteran arm
+    /// NPBUG (#2946) adds to the early return, so it holds in both builds.
     #[test]
-    #[cfg(not(feature = "npbug"))]
     fn get_rof_matches_the_original() {
         let rows: Vec<serde_json::Value> = serde_json::from_str(crate::test_fixture::text(
             "tools/spatial_oracle/techno_rearm.json",
