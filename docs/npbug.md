@@ -123,10 +123,6 @@ The sections follow the behavior chains of #3024.
   structural bridges (`0x006F74D7..0x006F7504`) consults the projectile's
   `SubjectToCliffs=` — a projectile that ignores cliffs may shell a deck
   three or more levels up; cliff-respecting arcing shots stay refused.
-- #2949 (NPExt changelog item 43): a Burst=1 direct shot advances the burst
-  index, so the FLH parity alternates launch sides. Native's remainder
-  (fire_coord parity read; Aegis `Burst=1` Medusa) never advanced, so every
-  missile left from the same side.
 - #2951 (NPExt changelog item 99): a missile whose target dies while
   landing or docking loses the target instead of taking the pad's ground
   cell. Native's PointerExpired repair (`LoseTarget468430` /

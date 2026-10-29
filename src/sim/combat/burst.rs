@@ -81,19 +81,6 @@ impl WeaponBurst {
         // value; the ordinary caller retains its existing max(1) policy.
         self.index = self.advance().wrapping_rem(burst);
     }
-
-    /// NPBUG (NPExt bug-fix changelog item 43, issue #2949): a Burst=1
-    /// direct shot still advances the index, so the FLH parity read
-    /// (`index & 1`) alternates launch sides — native's remainder wrapped
-    /// the single-slot burst to 0 and the Aegis fired from one side forever.
-    /// Multi-slot bursts keep the native remainder.
-    pub(crate) fn complete_shot_npbug(&mut self, burst: i32) {
-        if crate::rules::NPBUG_ENABLED && burst == 1 {
-            self.index = self.advance();
-        } else {
-            self.complete_shot(burst);
-        }
-    }
 }
 
 #[cfg(test)]
@@ -405,30 +392,5 @@ mod tests {
                 "{row}"
             );
         }
-    }
-}
-
-#[cfg(all(test, feature = "npbug"))]
-mod npbug_side_tests {
-    use super::*;
-
-    /// NPBUG (NPExt bug-fix changelog item 43, issue #2949): a Burst=1
-    /// weapon's direct shots alternate the FLH parity; stock wraps the
-    /// index to 0 and every launch takes the same side.
-    #[test]
-    fn npbug_a_burst_one_weapon_alternates_its_launch_parity() {
-        let mut state = WeaponBurst::default();
-        state.complete_shot_npbug(1);
-        assert_eq!(state.index() & 1, 1, "first shot takes the odd side");
-        state.complete_shot_npbug(1);
-        assert_eq!(state.index() & 1, 0, "second shot takes the even side");
-        state.complete_shot_npbug(1);
-        assert_eq!(state.index() & 1, 1, "third shot alternates back");
-        // Multi-slot bursts keep the native remainder.
-        let mut burst_two = WeaponBurst::default();
-        burst_two.complete_shot_npbug(2);
-        assert_eq!(burst_two.index(), 1);
-        burst_two.complete_shot_npbug(2);
-        assert_eq!(burst_two.index(), 0);
     }
 }
