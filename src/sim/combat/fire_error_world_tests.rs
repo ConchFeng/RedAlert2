@@ -145,3 +145,67 @@ fn a_mapless_fire_gate_takes_the_shared_range_answer() {
     assert_ne!(error(2, "ART", 4), FireError::Range, "5 cells away");
     assert_eq!(error(2, "ART", 5), FireError::Range, "beyond Range");
 }
+
+/// NPBUG (NPExt bug-fix changelog item 72, issue #2961): a NavalTargeting=6
+/// firer refuses a force-attack on open water — native T41 consulted no
+/// naval selector for a Cell target, so the squid-class shot was admitted.
+#[test]
+fn npbug_naval_targeting_six_refuses_the_water_surface() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[VehicleTypes]\n0=TANK\n\
+         [InfantryTypes]\n0=SQUID\n\
+         [SQUID]\nStrength=300\nArmor=light\nPrimary=Tentacle\nNavalTargeting=6\n\
+         [TANK]\nStrength=300\nArmor=heavy\nPrimary=Gun\n\
+         [Tentacle]\nDamage=50\nROF=30\nRange=6\nWarhead=AP\nOmniFire=yes\n\
+         [Gun]\nDamage=50\nROF=30\nRange=6\nWarhead=AP\nOmniFire=yes\n\
+         [AP]\nVerses=100%,100%,100%,100%,100%,100%,100%,100%,100%,100%,100%\n",
+    ))
+    .unwrap();
+    let cells = (0..16u16)
+        .flat_map(|ry| (0..16u16).map(move |rx| (rx, ry)))
+        .map(|(rx, ry)| {
+            let mut cell = crate::map::resolved_terrain::test_flat_cell(rx, ry);
+            if (10..=12).contains(&rx) && ry == 10 {
+                cell.land_type = 2;
+            }
+            cell
+        })
+        .collect();
+    let terrain = crate::map::resolved_terrain::ResolvedTerrainGrid::from_cells(16, 16, cells);
+    let mut sim = crate::sim::world::Simulation::new();
+    sim.resolved_terrain = Some(terrain);
+    spawn(
+        &mut sim.substrate.entities,
+        1,
+        "SQUID",
+        EntityCategory::Infantry,
+        "Soviet",
+        (11, 10),
+    );
+    sim.interner = test_interner();
+    let firer = sim.substrate.entities.get(1).unwrap();
+    let subject = crate::sim::combat::fire_error_world::FireSubject {
+        world: &sim,
+        rules: &rules,
+        overlay_registry: None,
+        fog: None,
+        firer,
+        obj: rules.object("SQUID").unwrap(),
+        target: Some(crate::sim::combat::TargetKind::Cell(12, 10)),
+        weapon_index: 0,
+    };
+    let error = subject.fire_error(false);
+    if crate::rules::NPBUG_ENABLED {
+        assert_eq!(
+            error,
+            crate::sim::combat::fire_error::FireError::Illegal,
+            "the water surface is refused under npbug"
+        );
+    } else {
+        assert_ne!(
+            error,
+            crate::sim::combat::fire_error::FireError::Illegal,
+            "stock admits the water force-attack"
+        );
+    }
+}

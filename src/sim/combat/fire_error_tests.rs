@@ -500,7 +500,10 @@ fn evaluate(input: &Value) -> (i32, Vec<&'static str>) {
 /// occupant query (`occupants_via_get_weapon`, `0x004526F0` through
 /// vt+0x400) belongs to weapon lookup, which the corpus fixes to the type's
 /// own slots, so it is left out of the comparison.
+// NPBUG (#2961) changes the water-cell force-attack rows, so the native
+// corpus pins the stock build.
 #[test]
+#[cfg(not(feature = "npbug"))]
 fn original_fire_error_rows() {
     let corpus: Value = serde_json::from_str(crate::test_fixture::text(
         "tools/spatial_oracle/fire_error.json",

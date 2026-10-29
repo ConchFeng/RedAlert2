@@ -84,6 +84,10 @@ The sections follow the behavior chains of #3024.
   house's ownership. Native pairs that ownership-free arm with the MegaMission
   executor's owner-free retask (Queue `0x004C73B9`), so a foreign harvester
   caught in the selection could be stalled on area guard.
+- #2961 (NPExt changelog item 72): the fire-error cell arm
+  (`0x006FC7EB..0x006FC868`) consults the naval selector — a
+  `NavalTargeting=6` firer refuses the water surface itself, closing the
+  open-water force-attack the Techno-only T40 gate missed.
 
 ### Weapon, wave and projectile source, path and range
 

@@ -1022,6 +1022,18 @@ fn techno(facts: &FireFacts, query: &mut impl FireQuery, check_range: bool) -> F
         {
             return Illegal;
         }
+        // NPBUG (NPExt bug-fix changelog item 72, issue #2961): a
+        // NavalTargeting=6 firer (the selector answers -1, "never engage a
+        // Techno on water", SelectNavalTargetingWeapon @ 0x006F3820) also
+        // refuses the water surface itself. Native T41 consults no naval
+        // selector, so a force-attack on open water was admitted.
+        if crate::rules::NPBUG_ENABLED
+            && kind == FireTargetKind::Cell
+            && (target.land_type == LAND_WATER || target.land_type == LAND_BEACH)
+            && query.naval_selector() == -1
+        {
+            return Illegal;
+        }
     }
     // T42/T43 `0x006FC879..0x006FC8E6`: the Magnetron's beam is busy. T43
     // (`+0x2AC == target`) is dominated by T4.
