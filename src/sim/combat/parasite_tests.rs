@@ -1405,3 +1405,61 @@ fn grinder_arrival_refunds_the_infesting_drone_before_forced_release() {
     );
     assert_eq!(arena.eater_of(tank), None);
 }
+
+/// NPBUG (NPExt changelog item 26, issue #2957): a drone ejected from a
+/// victim killed in flight appears at the victim's air position and crashes
+/// — stock snapped it to the ground cell under the kill.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_a_drone_ejected_in_flight_stays_at_the_air_position_and_crashes() {
+    let rules = rules();
+    let mut arena = Arena::new(&rules);
+    let drone = arena.spawn(&rules, "DRON", "Russians", (10, 10));
+    // The victim is an aircraft hovering over land, killed in flight.
+    let plane = arena.spawn(&rules, "HORV", "Americans", (11, 10));
+    arena
+        .sim
+        .substrate
+        .entities
+        .get_mut(plane)
+        .unwrap()
+        .position
+        .set_exact_z_leptons_for_test(Some(3000));
+    // Attach the drone by hand: the eject (PointerExpired) path is what the
+    // fix changes, not the capture admission.
+    arena.attack(drone, plane);
+    arena
+        .sim
+        .parasite_attach(drone, Some(plane), &rules, FrameEffects::default());
+    assert_eq!(
+        arena.eater_of(plane),
+        Some(drone),
+        "the drone is attached to the plane"
+    );
+    arena
+        .sim
+        .substrate
+        .entities
+        .get_mut(plane)
+        .unwrap()
+        .health
+        .set_for_test(0);
+    arena
+        .sim
+        .parasite_pointer_expired(drone, plane, &rules, FrameEffects::default());
+
+    let released = arena.sim.substrate.entities.get(drone).unwrap();
+    assert!(
+        !released.lifecycle.in_limbo() && released.lifecycle.object_alive(),
+        "the drone ejected alive"
+    );
+    assert!(
+        released.crash.is_crashing(),
+        "the drone crashes instead of standing under the kill"
+    );
+    let z = crate::sim::movement::ground_pose::position_world_coord(&released.position).z;
+    assert!(
+        z > 1000,
+        "the drone stays at the air position, not the ground cell (z={z})"
+    );
+}
