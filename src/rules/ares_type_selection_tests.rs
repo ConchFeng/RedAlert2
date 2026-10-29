@@ -19,7 +19,11 @@ fn type_selection_group_readers_retain_layers_and_saved_registry() {
          [RESET]\nGroupAs=old\n[LONG]\nGroupAs=ABCDEFGHIJKLMNOPQRSTUVWXYZabcdeTAIL\n",
     );
     let default_rules = RuleSet::from_ini(&IniFile::empty()).unwrap();
-    assert!(default_rules.type_select_uses_deploy());
+    // NPBUG (#2980): stock TypeSelect leaves the deploy counterpart out.
+    assert_eq!(
+        default_rules.type_select_uses_deploy(),
+        cfg!(feature = "ares") || !crate::rules::NPBUG_ENABLED
+    );
     let mut layers = RulesLayerStack::new(root);
     layers.push(
         RulesLayerKind::Scenario,
@@ -39,7 +43,10 @@ fn type_selection_group_readers_retain_layers_and_saved_registry() {
     }
     #[cfg(not(feature = "ares"))]
     {
-        assert!(rules.type_select_uses_deploy());
+        assert_eq!(
+            rules.type_select_uses_deploy(),
+            !crate::rules::NPBUG_ENABLED
+        );
         assert_eq!(key(&rules, "ALPHA"), "ALPHA");
         assert_eq!(key(&rules, "LONG"), "LONG");
     }

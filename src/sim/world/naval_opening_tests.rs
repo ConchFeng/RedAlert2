@@ -375,6 +375,15 @@ fn a_failed_water_search_still_snaps_the_offset_null_cell() {
     // Change only the supplied map prior: no water can satisfy the first
     // Float/Water search. The original caller still sends(2,2) to443860.
     crate::sim::arena_fixture::flat_ground(&mut sim, rules);
+    // NPBUG (#2953): a naval yard refuses a land rally cell, so all-land
+    // ground leaves no opening rally to snap.
+    if crate::rules::NPBUG_ENABLED {
+        assert_eq!(
+            sim.factory_rally_cell_input(id, (2, 2), rules).unwrap(),
+            None
+        );
+        return;
+    }
     let expected = sim
         .factory_rally_cell_input(id, (2, 2), rules)
         .unwrap()

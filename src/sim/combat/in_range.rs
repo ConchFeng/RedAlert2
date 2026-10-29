@@ -1465,6 +1465,19 @@ mod tests {
                     "row {index}: target geometry"
                 );
             }
+            // NPBUG (#2948): these SubjectToCliffs=no shells may shell a deck
+            // three or more levels up, so the arcing deck rows' native refusal
+            // no longer holds; the npbug arcing-bridge test covers that arm.
+            if crate::rules::NPBUG_ENABLED
+                && input["arcing"] == true
+                && input["cells"].as_array().is_some_and(|cells| {
+                    cells
+                        .iter()
+                        .any(|cell| cell["flags"].as_u64().unwrap_or(0) & 0x100 != 0)
+                })
+            {
+                continue;
+            }
             // Restart only the supplied coordinate prestate for the composed
             // production call; all queried level/slope/flags stayed unchanged.
             terrain.stamp_dummy_cell_requested_coord(99, 98);

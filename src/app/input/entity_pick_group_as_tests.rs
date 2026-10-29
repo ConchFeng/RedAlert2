@@ -74,12 +74,18 @@ fn type_selection_group_reaches_tap_click_band_and_deploy_gate() {
         .mutation
         .select
     };
+    // NPBUG (#2980): the stock T tap keeps the deploy counterpart out.
+    let deploy_counterpart = if crate::rules::NPBUG_ENABLED {
+        vec![1]
+    } else {
+        vec![1, 4]
+    };
     assert_eq!(
         tap(&disabled_deploy),
         if cfg!(feature = "ares") {
             vec![1, 2, 3]
         } else {
-            vec![1, 4]
+            deploy_counterpart.clone()
         }
     );
     assert_eq!(
@@ -87,7 +93,7 @@ fn type_selection_group_reaches_tap_click_band_and_deploy_gate() {
         if cfg!(feature = "ares") {
             vec![1, 2, 3, 4]
         } else {
-            vec![1, 4]
+            deploy_counterpart
         }
     );
     let grouped = if cfg!(feature = "ares") {

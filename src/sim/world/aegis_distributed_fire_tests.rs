@@ -159,6 +159,11 @@ impl GuardScene {
 #[test]
 fn distributed_guard_normal_and_elite_cycle_live_targets_and_reset_only_burst() {
     for elite in [false, true] {
+        // NPBUG (#2945): the elite Burst=2 resumes its burst across the NULL
+        // setter instead of resetting it, which the burst tests cover.
+        if elite && crate::rules::NPBUG_ENABLED {
+            continue;
+        }
         let Some(mut scene) = GuardScene::new(elite) else {
             return;
         };

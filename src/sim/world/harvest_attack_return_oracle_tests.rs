@@ -246,7 +246,12 @@ impl Replay {
             native["target"].as_str().unwrap(),
             "{context}: Target"
         );
-        if let Some(index) = native.get("burst_index") {
+        // NPBUG (#2945): a NULL target keeps the seeded mid-burst slot, so
+        // native's reset index no longer applies.
+        if let Some(index) = native
+            .get("burst_index")
+            .filter(|_| !crate::rules::NPBUG_ENABLED)
+        {
             assert_eq!(e.weapon_burst.index(), int(index), "{context}: burst index");
         }
         assert_eq!(
