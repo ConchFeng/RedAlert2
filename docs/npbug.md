@@ -123,6 +123,10 @@ The sections follow the behavior chains of #3024.
   Mutator over an occupied cell allocated a fresh brute on every completed
   frame and never destroyed the refused one — unbounded object growth while
   the cell stayed blocked. The anim still steps its stage back and retries.
+- #2950 (NPExt changelog item 38): the radiation receiver skips a corpse at
+  Health 0. Native's IsAlive-only gate misses the unmarked infantry death —
+  InfDeath 1/2 play as the body's own Die1/Die2 — so a body dying inside a
+  field took, and died to, radiation again during its death animation.
 
 ### Capture, mind control, lift and retaliation
 

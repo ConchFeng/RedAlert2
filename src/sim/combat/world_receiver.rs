@@ -68,6 +68,14 @@ pub(crate) fn apply_foot_radiation(
     {
         return None;
     }
+    // NPBUG (NPExt bug-fix changelog item 38, issue #2950): a corpse at
+    // Health 0 keeps IsAlive through its ordinary visit (an infantryman's
+    // death sets no mark), so a body playing its Die1/Die2 sequence inside a
+    // field took — and died to — radiation a second time. Radiation skips
+    // the dying until they are gone.
+    if crate::rules::NPBUG_ENABLED && entity.health.current() <= 0 {
+        return None;
+    }
     // GetCoords -> signed /256 -> packed CellStruct -> Map5657A0. Use the
     // canonical cell identity, including stride aliases and dummy stamping.
     let coord = object_get_coords(world, stable_id)?;
