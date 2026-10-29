@@ -13,17 +13,6 @@ struct TerrorScene {
 
 fn retail_scene() -> Option<TerrorScene> {
     let mut rules = crate::rules::retail_ini_fixture::retail_battle_rules()?.rules;
-    let (_, assets) = crate::rules::retail_ini_fixture::retail_assets().unwrap();
-    let mut roots = crate::rules::effect_asset_catalog::tolerant_anim_class_roots(&rules);
-    roots.extend(
-        rules
-            .general
-            .damage_fire_types
-            .iter()
-            .map(|anim| anim.name.clone()),
-    );
-    rules.bind_anim_class_assets(&roots, &assets, "TEM", "TEMPERATE");
-    rules.bind_effect_assets(&assets, "TEM", "TEMPERATE");
     let object = rules.object("TERROR").unwrap();
     assert_eq!(object.strength, 75);
     assert_eq!(object.primary(), Some("TerrorBomb"));
@@ -35,24 +24,31 @@ fn retail_scene() -> Option<TerrorScene> {
     // retail definitions; the separate app captures use the authored Cuba map.
     let mut sim = Simulation::with_seed(31);
     crate::sim::arena_fixture::flat_arena(&mut sim, &rules);
-    for (name, human) in [("Confederation", true), ("Americans", false)] {
-        let id = sim.interner.intern(name);
-        let side = rules.country_side_index_raw(name).unwrap();
-        sim.houses
-            .register(crate::sim::house_state::HouseState::new(
-                id,
-                side,
-                Some(id),
-                human,
-                10_000,
-                10,
-            ));
-    }
+    let russians = sim.interner.intern("Russians");
+    let americans = sim.interner.intern("Americans");
+    sim.houses
+        .register(crate::sim::house_state::HouseState::new(
+            russians,
+            0,
+            Some(russians),
+            true,
+            10_000,
+            10,
+        ));
+    sim.houses
+        .register(crate::sim::house_state::HouseState::new(
+            americans,
+            1,
+            Some(americans),
+            false,
+            10_000,
+            10,
+        ));
     sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
     sim.resolve_rule_animation_lists(&rules);
     let target = sim
-        .spawn_object("GAPOWR", "Americans", 10, 10, 0, &rules)
+        .spawn_object("E1", "Americans", 10, 10, 0, &rules)
         .unwrap();
     let held_source = sim
         .spawn_object_limbo_at_height("TERROR", "Confederation", 9, 10, 0, 0, &rules)
@@ -157,6 +153,7 @@ fn compare_native_phase(scene: &TerrorScene, phase: &serde_json::Value) {
 }
 
 #[test]
+#[cfg(not(feature = "npbug"))]
 fn stock_terror_suicide_short_circuits_normal_fire() {
     use crate::sim::combat::{EntityDamageEvent, RAD_NO_ATTACKER, ReceiverCallFlags};
     use crate::sim::mission::{MissionId, MissionType};
@@ -378,6 +375,7 @@ fn stock_terror_suicide_short_circuits_normal_fire() {
 }
 
 #[test]
+#[cfg(not(feature = "npbug"))]
 fn ordinary_terror_attack_finishes_die2_and_retires_its_source() {
     use crate::sim::command::{Command, CommandEnvelope};
 
@@ -617,4 +615,101 @@ fn assert_suicide_blast_reports_building_loss(direct: bool) {
         killed,
         "the ordinary Suicide blast must kill the wounded building"
     );
+}
+
+/// NPBUG (NPExt bug-fix changelog item 44, issue #2947): the suicide weapon
+/// launches its own shot at the target and the firer still self-destructs,
+/// so the attack deals the weapon's damage and the death completes the
+/// nested DeathWeapon — instead of the native self-C4 that damaged nobody.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_a_suicide_shot_damages_the_target_and_still_kills_the_firer() {
+    use crate::sim::combat::{EntityDamageEvent, RAD_NO_ATTACKER, ReceiverCallFlags};
+    let mut rules = crate::rules::retail_ini_fixture::retail_unlayered_rules_with_art().unwrap();
+    let object = rules.object("TERROR").unwrap();
+    assert_eq!(object.primary(), Some("TerrorBomb"));
+    assert!(rules.weapon("TerrorBomb").unwrap().suicide);
+    let mut sim = Simulation::with_seed(31);
+    crate::sim::arena_fixture::flat_arena(&mut sim, &rules);
+    for (name, human) in [("Confederation", true), ("Americans", false)] {
+        let id = sim.interner.intern(name);
+        let side = rules.country_side_index_raw(name).unwrap();
+        sim.houses
+            .register(crate::sim::house_state::HouseState::new(
+                id,
+                side,
+                Some(id),
+                human,
+                10_000,
+                10,
+            ));
+    }
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    sim.resolve_rule_animation_lists(&rules);
+    let target = sim
+        .spawn_object("E1", "Americans", 10, 10, 0, &rules)
+        .unwrap();
+    let source = sim
+        .spawn_object("TERROR", "Confederation", 9, 10, 0, &rules)
+        .unwrap();
+    let owner = sim.substrate.entities.get(source).unwrap().owner();
+    sim.session.set_current_house_for_test(Some(owner));
+    sim.session.set_binary_frame_for_test(1);
+    let before = sim.substrate.entities.get(target).unwrap().health.current();
+    sim.assign_target_represented(
+        source,
+        Some(TargetKind::Entity(target)),
+        &rules,
+        None,
+        FrameEffects::default(),
+    )
+    .unwrap();
+    sim.commit_fire_visit(
+        FireVisit::Direct {
+            id: source,
+            target: TargetKind::Entity(target),
+            weapon_index: 0,
+        },
+        &rules,
+        None,
+        FrameEffects::default(),
+    );
+    // The suicide completes synchronously: the TERROR sits at Health 0,
+    // alive like the native self packet's corpse.
+    let after_self = sim.substrate.entities.get(source).unwrap();
+    assert!(
+        after_self.lifecycle.object_alive() && !after_self.death.is_dying(),
+        "the corpse keeps IsAlive at Health 0"
+    );
+    assert_eq!(after_self.health.current(), 0);
+    // The weapon itself launched: the launch bookkeeping the native suicide
+    // arm never reaches recorded the fire. (The nested DeathWeapon also
+    // fires, but only this mark distinguishes the two flows.)
+    assert_eq!(
+        after_self.last_fire_frame.frame(),
+        1,
+        "the suicide weapon's own launch ran"
+    );
+    // The launched TerrorBomb reaches the target within a few ticks — the
+    // damage the native flow never dealt.
+    let mut frames = 0;
+    let damaged = loop {
+        let commands = sim.take_due_commands();
+        sim.advance_tick(&commands, Some(&rules), None, None, 33);
+        frames += 1;
+        // A killed victim's corpse retires: a gone entity proves the hit.
+        let health = sim
+            .substrate
+            .entities
+            .get(target)
+            .map(|target| target.health.current());
+        match health {
+            None => break true,
+            Some(after) if after < before => break true,
+            Some(_) if frames > 40 => break false,
+            Some(_) => {}
+        }
+    };
+    assert!(damaged, "the launched bomb damaged or killed the target");
 }
