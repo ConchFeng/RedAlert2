@@ -912,55 +912,6 @@ fn a_pillbox_clicking_an_enemy_out_of_range_selects_it() {
     }
 }
 
-/// NPBUG (NPExt bug-fix changelog item 92, issue #2952): the attack rung
-/// refuses an unforced attack on a target the selected weapon's warhead
-/// cannot affect through vanilla receiver-side immunity — a Radiation=
-/// warhead against an ImmuneToRadiation= type. Native tests only the
-/// type's Immune= flag, so the cursor and the orders both aim waste.
-#[test]
-fn npbug_the_attack_cursor_refuses_a_warhead_immune_target() {
-    let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
-        "[InfantryTypes]\n0=DESO\n[DESO]\nStrength=200\nArmor=none\nPrimary=RadEruptionWeapon\n\
-         [VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\nImmuneToRadiation=yes\n\
-         [RadEruptionWeapon]\nDamage=100\nROF=100\nRange=8\nProjectile=Inviso\nWarhead=RadEruptionWarhead\nReport=NONE\n\
-         [Inviso]\nInviso=yes\nAG=yes\nAA=no\n\
-         [RadEruptionWarhead]\nRadiation=yes\nVersus.heavy=100%\n",
-    ))
-    .unwrap();
-    let warhead = rules
-        .weapon("RadEruptionWeapon")
-        .unwrap()
-        .warhead
-        .as_deref()
-        .unwrap();
-    assert!(
-        rules.warhead(warhead).unwrap().radiation,
-        "the desolator warhead is a radiation warhead"
-    );
-    let (sim, actor, target) = object_pair(&rules, "DESO", "enemy");
-    let action = attack_action(
-        &sim,
-        &rules,
-        actor,
-        &TargetKind::Entity(target),
-        false,
-        None,
-    );
-    if crate::rules::NPBUG_ENABLED {
-        assert_ne!(
-            action,
-            AttackAction::Attack,
-            "an immune target takes no attack cursor"
-        );
-    } else {
-        assert_eq!(
-            action,
-            AttackAction::Attack,
-            "stock shows the attack cursor on the immune target"
-        );
-    }
-}
-
 /// NPBUG (NPExt bug-fix changelog item 28, issue #2979): a chrono
 /// legionnaire still warping in takes the warp rung over an entity target
 /// too — native's warp-in arm is Cell-only, so the pure weapon-range

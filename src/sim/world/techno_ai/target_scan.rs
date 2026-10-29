@@ -683,60 +683,6 @@ impl Simulation {
             overlay_registry,
         )
     }
-
-    /// NPBUG (NPExt bug-fix changelog item 92, issue #2952): whether the
-    /// weapon the actor selects against the target carries a vanilla
-    /// receiver-side immunity the target holds — a `Radiation=yes` warhead
-    /// against an `ImmuneToRadiation=` type, or a `Psychedelic=yes` warhead
-    /// against `ImmuneToPsionics=` / `ImmuneToPsionicWeapons=`. GetFireError
-    /// tests none of these receiver-side immunities, so the action rung
-    /// needs its own query. NP-specific immunity flags and a vanilla virus
-    /// pair stay outside this scope.
-    pub fn chosen_warhead_cannot_affect(
-        &self,
-        rules: &RuleSet,
-        id: u64,
-        target: TargetKind,
-    ) -> bool {
-        let TargetKind::Entity(target_id) = target else {
-            return false;
-        };
-        let Some(actor) = self.substrate.entities.get(id) else {
-            return false;
-        };
-        let Some(kind) = self.interner.object_type(actor.type_ref(), rules) else {
-            return false;
-        };
-        let Some(target_type) = self
-            .substrate
-            .entities
-            .get(target_id)
-            .and_then(|target| self.interner.object_type(target.type_ref(), rules))
-        else {
-            return false;
-        };
-        let weapon = select_weapon(self, rules, id, Some(target));
-        let Some(weapon) = crate::sim::combat::combat_weapon::get_weapon(
-            actor,
-            kind,
-            weapon,
-            &self.substrate.entities,
-            rules,
-            &self.interner,
-        ) else {
-            return false;
-        };
-        let Some(warhead) = weapon
-            .warhead
-            .as_deref()
-            .and_then(|name| rules.warhead(name))
-        else {
-            return false;
-        };
-        (warhead.radiation && target_type.immune_to_radiation)
-            || (warhead.psychedelic
-                && (target_type.immune_to_psionics || target_type.immune_to_psionic_weapons))
-    }
 }
 
 /// The production scan host.
