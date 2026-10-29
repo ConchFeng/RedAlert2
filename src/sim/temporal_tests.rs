@@ -601,14 +601,16 @@ fn native_update_corpus() {
         assert_eq!(own_idles, native_idles, "{name}: Enter_Idle_Mode calls");
         if native_erase {
             // VeterancyStruct::Add(owner cost, target cost) in the Update,
-            // then Record_The_Kill's own award of the same pair.
+            // then Record_The_Kill's own award of the same pair. NPBUG
+            // (issue #2942) keeps only Record_The_Kill's single award.
             let mut expected = head_before;
             if let Some(add) = case.events.iter().find(|event| event[0] == "veterancy_add") {
                 let (owner_cost, target_cost) = (
                     add[2].as_i64().unwrap() as i32,
                     add[3].as_i64().unwrap() as i32,
                 );
-                for _ in 0..2 {
+                let awards = if crate::rules::NPBUG_ENABLED { 1 } else { 2 };
+                for _ in 0..awards {
                     expected.veterancy.award_kill(
                         owner_cost,
                         target_cost,
@@ -703,11 +705,17 @@ fn erase_awards_price_each_cost_by_its_house() {
     chain(&mut sim, tank, &[cleg], 1);
     let mut expected = entity(&sim, cleg).clone();
     // (legionnaire cost, tank cost): Russian and American Houses, then both
-    // American.
-    for (owner_cost, target_cost) in [(750, 450), (1500, 450)] {
+    // American. NPBUG (issue #2942) keeps only Record_The_Kill's award,
+    // priced by the victim's House for both costs.
+    let pairs: &[(i32, i32)] = if crate::rules::NPBUG_ENABLED {
+        &[(1500, 450)]
+    } else {
+        &[(750, 450), (1500, 450)]
+    };
+    for (owner_cost, target_cost) in pairs {
         expected.veterancy.award_kill(
-            owner_cost,
-            target_cost,
+            *owner_cost,
+            *target_cost,
             true,
             rules.general.veteran_ratio,
             rules.general.veteran_cap,
@@ -726,6 +734,33 @@ fn erase_awards_price_each_cost_by_its_house() {
     );
     let russians = sim.interner.get("Russians").unwrap();
     assert_eq!(sim.houses[&russians].economy().score(), 450);
+}
+
+/// NPBUG (NPExt bug-fix changelog item 7, issue #2942): erasing an ally's
+/// tank pays no experience. Native's Update award has no alliance test, so
+/// even a shared-owner victim paid `Add(ownerCost, targetCost)` on top of
+/// the zeroed Record_The_Kill award.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_erasing_an_allied_tank_pays_no_experience() {
+    let rules = rules();
+    let mut sim = sim(9);
+    let tank = spawn(&mut sim, &rules, "HTNK", "Russians", 12, 10);
+    let cleg = spawn(&mut sim, &rules, "CLEG", "Russians", 10, 10);
+    let before = veterancy(&sim, cleg);
+    chain(&mut sim, tank, &[cleg], 1);
+    sim.temporal_update_head(
+        cleg,
+        &rules,
+        None,
+        crate::sim::world::FrameEffects::default(),
+    );
+    assert!(erased(&sim, tank));
+    assert_eq!(
+        veterancy(&sim, cleg),
+        before,
+        "an allied victim pays nothing"
+    );
 }
 
 /// An erased building of the current player names the Cell of its
@@ -1466,7 +1501,8 @@ fn a_warped_object_is_frozen_and_immune() {
 /// by `a_legionnaires_inviso_bullet_warps_after_existing_object_turns`.
 /// Nothing survives, WarpAway plays, the kill is scored
 /// and the legionnaire gains `Add(1500, 900)` twice (the Update's and
-/// Record_The_Kill's).
+/// Record_The_Kill's). NPBUG (issue #2942) keeps only Record_The_Kill's
+/// single award.
 #[test]
 fn a_chrono_legionnaire_erases_a_tank() {
     use crate::sim::command::{Command, CommandEnvelope};
@@ -1475,7 +1511,8 @@ fn a_chrono_legionnaire_erases_a_tank() {
     let tank = spawn(&mut sim, &rules, "HTNK", "Americans", 13, 10);
     let cleg = spawn(&mut sim, &rules, "CLEG", "Russians", 10, 10);
     let mut experienced = entity(&sim, cleg).clone();
-    for _ in 0..2 {
+    let awards = if crate::rules::NPBUG_ENABLED { 1 } else { 2 };
+    for _ in 0..awards {
         experienced.veterancy.award_kill(
             1500,
             900,

@@ -70,6 +70,11 @@ The sections follow the behavior chains of #3024.
   invulnerable candidate. Native gates G1..G13 have no invulnerability arm —
   the Iron Curtain is enforced receiver-side only — so auto-acquisition
   dumped fire into curtained units.
+- #2942 (NPExt changelog item 7): a temporal erase pays one alliance-gated
+  veterancy award. Native pays the Update's `VeterancyStruct::Add`
+  (`0x0071A917..0x0071A978`, no alliance test) and Record_The_Kill's award
+  (`0x00702D40`, zeroed for allies) together — friendly victims paid and
+  enemy victims paid twice.
 
 ### Weapon, wave and projectile source, path and range
 

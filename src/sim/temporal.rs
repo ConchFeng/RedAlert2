@@ -721,7 +721,13 @@ impl Simulation {
         // 0x0071A917..0x0071A978: a Trainable attacker gains
         // `VeterancyStruct::Add(ownerCost, targetCost)` here, and again in
         // Record_The_Kill below.
-        self.temporal_veterancy(head, target, rules);
+        // NPBUG (NPExt bug-fix changelog item 7, issue #2942): native pays
+        // both — this arm has no alliance gate, so friendly victims still
+        // pay, and enemy victims pay twice. Skipping it leaves the single,
+        // alliance-gated Record_The_Kill award as the whole payment.
+        if !crate::rules::NPBUG_ENABLED {
+            self.temporal_veterancy(head, target, rules);
+        }
         let Some(category) = self
             .substrate
             .entities
