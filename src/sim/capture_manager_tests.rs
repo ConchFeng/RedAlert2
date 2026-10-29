@@ -2447,7 +2447,7 @@ fn npbug_the_mind_clear_sound_names_only_the_involved_parties() {
                 sound_id,
                 audible_to: Some(houses),
                 ..
-            } => Some(
+            } if sound_id == "MindCleared" => Some(
                 houses
                     .iter()
                     .map(|house| sim.interner.resolve(*house).to_string())

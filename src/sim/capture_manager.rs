@@ -1021,27 +1021,13 @@ impl Simulation {
                 if let Some(sound) = sound {
                     // NPBUG (NPExt bug-fix changelog item 70, issue #2984):
                     // the removal sound is audible only to the two involved
-                    // parties — the (former) controller and the victim's
-                    // owner. Native emitted a plain positional sound with no
-                    // house filter, so every player heard it.
-                    let event = if crate::rules::NPBUG_ENABLED {
-                        // The victim's CURRENT owner is the controller
-                        // (mind control transferred it); the involved party
-                        // is the ORIGINAL owner the unit returns to.
-                        let event = match (controller_owner, Some(original_owner)) {
-                            (Some(controller), Some(original)) if crate::rules::NPBUG_ENABLED => {
-                                SimSoundEvent::voc_at_for(
-                                    sound,
-                                    Some([controller, original]),
-                                    &victim.position,
-                                )
-                            }
-                            _ => SimSoundEvent::voc_at(sound, &victim.position),
-                        };
-                        event
-                    } else {
-                        SimSoundEvent::voc_at(sound, &victim.position)
-                    };
+                    // parties, the controller and the original owner the
+                    // victim returns to. Native plays it through a plain
+                    // `VocClass::PlayAt`, so every player heard it.
+                    let audience = controller_owner
+                        .filter(|_| crate::rules::NPBUG_ENABLED)
+                        .map(|controller| [controller, original_owner]);
+                    let event = SimSoundEvent::voc_at_for(sound, audience, &victim.position);
                     self.sound_events.emit(event);
                 }
             }
