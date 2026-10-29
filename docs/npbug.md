@@ -87,6 +87,11 @@ The sections follow the behavior chains of #3024.
   GetWeapon(0) for the sonic cell damage, so a non-primary emitter anchored
   its visuals and paid the primary's AmbientDamage/warhead. Under npbug both
   follow the emitting weapon.
+- #2946 (NPExt changelog item 59): the GetROF early return for sonic
+  weapons and live spark/fire/railgun systems (`0x006FCFE0..0x006FD036`)
+  also takes the ROF-ability reduction (`0x006FD0E2..0x006FD14C`), so
+  veteran and elite dolphins, squids and effect weapons keep their reload
+  bonus.
 
 ### Building placement, construction, economy and sensors
 

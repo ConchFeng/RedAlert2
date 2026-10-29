@@ -185,6 +185,17 @@ pub(crate) fn get_rof(query: &RofQuery<'_>, rng: &mut SimRng) -> i32 {
         || (weapon.use_fire_particles && query.live.fire)
         || (weapon.is_railgun && query.live.railgun)
     {
+        // NPBUG (NPExt bug-fix changelog item 59, issue #2946): the early
+        // return also takes the veteran/elite ROF-ability reduction
+        // (`0x006FD0E2..0x006FD14C`) instead of handing back the raw `ROF=`.
+        // The jitter, House bias and occupant arms stay out of this return,
+        // as native keeps them.
+        if crate::rules::NPBUG_ENABLED && query.rof_ability {
+            return X::ftol_i32_low_masked(X::mul(
+                X::load_i32(weapon.rof),
+                X::load_f64(NativeF64Bits::from_bits(query.veteran_rof.to_bits())),
+            ));
+        }
         return weapon.rof;
     }
     if query.burst_index < weapon.burst {
@@ -324,8 +335,10 @@ mod tests {
     /// every arm (supplied class, weapon slot, garrison and occupant queries;
     /// the original RNG, veterancy predicates and ftol execute) and records the
     /// value and the Scenario RNG state before and after. Every row replays
-    /// through [`get_rof`] from the same seed.
+    /// through [`get_rof`] from the same seed. NPBUG (#2946) changes the
+    /// sonic/particle rows, so the native corpus pins the stock build.
     #[test]
+    #[cfg(not(feature = "npbug"))]
     fn get_rof_matches_the_original() {
         let rows: Vec<serde_json::Value> = serde_json::from_str(crate::test_fixture::text(
             "tools/spatial_oracle/techno_rearm.json",
@@ -403,5 +416,43 @@ mod tests {
                 "{input}"
             );
         }
+    }
+}
+
+#[cfg(all(test, feature = "npbug"))]
+mod npbug_tests {
+    use super::*;
+    use crate::rules::ini_parser::IniFile;
+
+    /// NPBUG (NPExt bug-fix changelog item 59, issue #2946): a sonic weapon
+    /// and a weapon with a live spark system take the ROF-ability reduction
+    /// in the early return; without the ability the raw ROF= stays.
+    #[test]
+    fn npbug_sonic_and_particle_weapons_take_the_veteran_rof_bonus() {
+        let ini = IniFile::from_str("[GUN]\nROF=45\nBurst=1\nIsSonic=yes\n");
+        let weapon = WeaponType::from_ini_section("GUN", ini.section("GUN").unwrap());
+        let query = |ability: bool| RofQuery {
+            building_ammo: None,
+            weapon: Some(&weapon),
+            live: LiveParticles::default(),
+            burst_index: 1,
+            unit_burst_delays: None,
+            house_rof: NativeF64Bits::ONE,
+            #[cfg(feature = "ares")]
+            attached_rof: None,
+            rof_ability: ability,
+            veteran_rof: 0.8,
+            occupants: None,
+            bunkered: false,
+            occupy_rof_multiplier: 1.0,
+            bunker_rof_multiplier: 1.0,
+        };
+        let mut rng = SimRng::new(31);
+        assert_eq!(
+            get_rof(&query(true), &mut rng),
+            36,
+            "ftol(45 x 0.8) — the veteran reduction applies"
+        );
+        assert_eq!(get_rof(&query(false), &mut rng), 45, "no ability, raw ROF");
     }
 }
