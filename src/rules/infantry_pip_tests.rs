@@ -24,6 +24,7 @@ fn cached_ini(sections: &serde_json::Value) -> IniFile {
 fn original_read_pip_controls_use_string_defaults_and_mapped_frames() {
     let native = native();
     assert_eq!(native["original_code_unchanged"], true);
+    let npbug = crate::rules::NPBUG_ENABLED;
     let controls = native["read_pip"]["controls"].as_array().unwrap();
     assert!(!controls.is_empty());
     let mut adjacent_defaults = Vec::new();
@@ -32,13 +33,22 @@ fn original_read_pip_controls_use_string_defaults_and_mapped_frames() {
         let ini = cached_ini(&input["sections"]);
         let section = ini.section(input["section"].as_str().unwrap()).unwrap();
         let current = input["default"].as_u64().unwrap() as u32;
+        // NPBUG keeps the current frame when no pass holds the key (issue
+        // #2929); a held raw value still scans to the golden result.
+        let expected = if npbug && input["raw"].is_null() {
+            current
+        } else {
+            row["result"].as_u64().unwrap() as u32
+        };
         assert_eq!(
             section.read_pip(input["key"].as_str().unwrap(), current),
-            row["result"].as_u64().unwrap() as u32,
+            expected,
             "{row}"
         );
         if input["raw"].is_null() && matches!(current, 11 | 12) {
-            assert_eq!(row["result"], 1, "adjacent names are not pip matches");
+            if !npbug {
+                assert_eq!(row["result"], 1, "adjacent names are not pip matches");
+            }
             adjacent_defaults.push(current);
         }
     }
@@ -64,6 +74,9 @@ fn original_infantry_pip_passes_survive_process_handoffs() {
         corpus["constructor"]
     );
     let mut state = NativeRulesRegistryState::default();
+    // NPBUG (issue #2929): keyless passes keep the last explicitly set
+    // frames, so the expectation trails the last pass naming a pip key.
+    let mut npbug_expected = corpus["constructor"].clone();
     for (index, row) in corpus["section_passes"]
         .as_array()
         .unwrap()
@@ -85,9 +98,22 @@ fn original_infantry_pip_passes_survive_process_handoffs() {
             .unwrap();
         let rules = RuleSet::from_processed_rules(&processed).unwrap();
         let infantry = rules.object("E1").unwrap();
+        // NPBUG (issue #2929): an admitted section that names neither pip key
+        // keeps the retained frames instead of drifting them.
+        let sets_pips = row["input"]["sections"]["E1"]
+            .as_object()
+            .is_some_and(|keys| keys.contains_key("Pip") || keys.contains_key("OccupyPip"));
+        if sets_pips {
+            npbug_expected = row["after"].clone();
+        }
+        let expected = if crate::rules::NPBUG_ENABLED {
+            npbug_expected.clone()
+        } else {
+            row["after"].clone()
+        };
         assert_eq!(
             serde_json::json!({"pip": infantry.pip(), "occupy_pip": infantry.occupy_pip()}),
-            row["after"],
+            expected,
             "{}",
             row["name"]
         );

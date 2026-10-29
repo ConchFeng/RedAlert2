@@ -335,6 +335,14 @@ impl IniSection {
     /// frames11/12 index the adjacent Ammo/Tiberium names on the next pass;
     /// neither name belongs to the11-entry pip scan. Original executable:
     /// procedural_drawing_oracle/passenger_pips.json/read_pip.
+    ///
+    /// NPBUG (NPExt bug-fix changelog item 88, issue #2929): a pass that
+    /// omits the key keeps the current pip instead of re-deriving a default
+    /// name from the retained frame's slot in the adjacent name array
+    /// (81B9B0) — frame 3 would re-read "red", frames 11/12 re-read
+    /// Ammo/Tiberium and the scan rejects both, so every keyless pass
+    /// drifts the frame. A key some pass holds still scans, and an unknown
+    /// name still returns1.
     pub(crate) fn read_pip(&self, key: &str, current: u32) -> u32 {
         const PIPS: [(&str, u32); 11] = [
             ("green", 1),
@@ -352,19 +360,28 @@ impl IniSection {
         // Constructor1/7 and every mapped frame close over indices0..=12.
         // The adjacent literal pointers are original81B9B0/81B9B8; their
         // unrelated numeric table values must not become pip return values.
-        let default = match current {
-            11 => "Ammo",
-            12 => "Tiberium",
-            _ => {
-                PIPS.get(current as usize)
-                    .expect("ReadPip current must be a constructor or returned frame")
-                    .0
-            }
+        #[cfg(not(feature = "npbug"))]
+        let name = {
+            let default = match current {
+                11 => "Ammo",
+                12 => "Tiberium",
+                _ => {
+                    PIPS.get(current as usize)
+                        .expect("ReadPip current must be a constructor or returned frame")
+                        .0
+                }
+            };
+            Some(self.read_string(key, default, 0x20))
         };
-        let name = self.read_string(key, default, 0x20);
-        PIPS.iter()
-            .find_map(|&(candidate, frame)| candidate.eq_ignore_ascii_case(&name).then_some(frame))
-            .unwrap_or(1)
+        #[cfg(feature = "npbug")]
+        let name = self.read_name(key, 0x20);
+        name.map_or(current, |name| {
+            PIPS.iter()
+                .find_map(|&(candidate, frame)| {
+                    candidate.eq_ignore_ascii_case(&name).then_some(frame)
+                })
+                .unwrap_or(1)
+        })
     }
 
     /// ReadFactory474FF0 -> AbstractType_From_Name40DCE0. Each BuildingType
