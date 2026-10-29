@@ -74,7 +74,11 @@ impl Simulation {
         // Native +8D/+425. A retained parachute object alone is not this gate.
         let falling_or_crashing = entity.is_falling_down() || entity.crash.is_crashing();
         let state = entity.move_sound;
-        if changed_or_moving && !falling_or_crashing {
+        // NPBUG (NPExt bug-fix changelog item 19, issue #2956): a unit the
+        // Magnetron lifts is not self-propelled — held locomotion plays no
+        // move sounds. Native played the victim's own foot move-sound tail.
+        let magnetron_held = crate::rules::NPBUG_ENABLED && entity.lift.source().is_some();
+        if changed_or_moving && !falling_or_crashing && !magnetron_held {
             let sounds = interner
                 .object_type(entity.type_ref(), rules)
                 .map_or(&[][..], |object| object.move_sound.as_slice());

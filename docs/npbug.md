@@ -149,6 +149,11 @@ The sections follow the behavior chains of #3024.
   Health 0. Native's IsAlive-only gate misses the unmarked infantry death —
   InfDeath 1/2 play as the body's own Die1/Die2 — so a body dying inside a
   field took, and died to, radiation again during its death animation.
+- #2956 (NPExt changelog item 19, part 1 of 4): a unit the Magnetron lifts
+  is not self-propelled — held locomotion plays no move sounds. Native ran
+  the victim's own foot move-sound tail over the held jumpjet route. (The
+  lift speed, drop crash sounds and held-aircraft death parts of the chain
+  remain open.)
 
 ### Capture, mind control, lift and retaliation
 
