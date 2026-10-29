@@ -33,10 +33,6 @@ The sections follow the behavior chains of #3024.
   multiplying it by another 100 (`ReadGeneral67114F`, scale at
   `0x0067116E`). NPBUG compiles the same default rescale the Ares hook
   `RulesClass_Addition_General_PrismSupportModifier` (`0x1005D040`) uses.
-- #2929 (NPExt changelog item 88): re-defining a type without `Pip=` /
-  `OccupyPip=` keeps the retained pip frames; native `ReadPip4748A0`
-  re-derives the default name from the retained frame's slot in the
-  adjacent name array (`0x0081B9B0`), drifting every keyless pass.
 
 ### Superweapon and AI strategy
 
