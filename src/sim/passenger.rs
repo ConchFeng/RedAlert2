@@ -793,6 +793,9 @@ pub fn can_enter_transport(
 /// house is `MultiplayPassive=`), the building is neither full nor at red
 /// health, and the infantryman is not mind-controlled.
 ///
+/// Under npbug the red-health refusal exempts the building's own house
+/// (issue #2966).
+///
 /// Map5785F0 tests the building's actual GetCoords through the shared
 /// height-aware playfield owner, rather than the navigation rectangle.
 /// RESIDUALS: the `Assaulter=` arm (`0x00457DAD..0x00457DD3`: an
@@ -839,11 +842,19 @@ pub fn can_dock_occupier_garrison(
     if occupants.count() as u32 == building_obj.max_number_occupants {
         return false;
     }
-    if is_at_or_below_red_hp(
-        building.health.current(),
-        building_obj.strength,
-        rules.general.condition_red,
-    ) {
+    // NPBUG (NPExt bug-fix changelog item 34, issue #2966): CanBeOccupiedBy
+    // @ 0x00457CE0 / CanDock @ 0x00457D3E refuse a building at or below red
+    // health with no owner exemption, so infantry released from a bunker
+    // their own house let drop to red could never re-enter it. Under npbug
+    // the building's own house is exempt; every other house keeps the
+    // refusal.
+    if (!crate::rules::NPBUG_ENABLED || !same_owner)
+        && is_at_or_below_red_hp(
+            building.health.current(),
+            building_obj.strength,
+            rules.general.condition_red,
+        )
+    {
         return false;
     }
     // `0x00457D98`: `TechnoClass::IsMindControlled`.

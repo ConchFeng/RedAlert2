@@ -1868,7 +1868,9 @@ fn the_nearest_own_bunker_with_room_takes_an_occupier() {
     ));
     assert!(!entity(&sim, tank).building_entry.seeking());
 
-    // Full, then red: neither admits, and the latch clears.
+    // Full, then red: neither admits, and the latch clears. Under npbug the
+    // owner's own red building admits again (issue #2966), so once `near` is
+    // full the seek picks the red `far` and reissues its destination.
     for id in 1000..1005 {
         sim.substrate
             .entities
@@ -1884,8 +1886,54 @@ fn the_nearest_own_bunker_with_room_takes_an_occupier() {
         .unwrap()
         .health
         .set_for_test(100);
-    assert!(!garrison_seek(&mut sim, &rules, infantry));
-    assert!(!entity(&sim, infantry).building_entry.seeking());
+    if crate::rules::NPBUG_ENABLED {
+        assert!(garrison_seek(&mut sim, &rules, infantry));
+        let foot = entity(&sim, infantry);
+        assert!(foot.building_entry.should_enter_occupiable());
+        assert!(
+            matches!(foot.navigation.nav_com(), Some(NavTargetRef::Object { id }) if id == far)
+        );
+    } else {
+        assert!(!garrison_seek(&mut sim, &rules, infantry));
+        assert!(!entity(&sim, infantry).building_entry.seeking());
+    }
+}
+
+/// NPBUG #2966 (NPExt changelog item 34): `BuildingClass::CanBeOccupiedBy`
+/// @ 0x00457CE0 and `CanDock @ 0x00457D3E` refuse any `CanBeOccupied=`
+/// building at or below red health with no owner exemption, so infantry
+/// released from a battle bunker that dropped to red could never re-enter
+/// it. Under npbug the owner's own building admits again, exactly on the
+/// threshold (`condition_red` defaults to 0.5; 250 is half of NABNKR's 500).
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_own_red_health_bunker_admits_its_owner_again() {
+    let rules = rules();
+    let (mut sim, _) = arena(&rules);
+    let bunker = spawn(&mut sim, &rules, "NABNKR", "YuriCountry", 16, 10);
+    let outsider = spawn(&mut sim, &rules, "E1", "Americans", 10, 12);
+    let infantry = spawn(&mut sim, &rules, "E1", "YuriCountry", 10, 10);
+    sim.substrate
+        .entities
+        .get_mut(bunker)
+        .unwrap()
+        .health
+        .set_for_test(250);
+
+    let admits =
+        |sim: &Simulation, id| crate::sim::passenger::can_enter_transport(sim, &rules, id, bunker);
+    assert!(
+        !admits(&sim, outsider),
+        "another house keeps the red-health refusal"
+    );
+    assert!(
+        admits(&sim, infantry),
+        "the owner's own red bunker admits its occupier again"
+    );
+    assert!(
+        garrison_seek(&mut sim, &rules, infantry),
+        "the battle-bunker seek takes the own red bunker"
+    );
 }
 
 /// Script action 63 (`0x006E9EC8`) through the team pass: the occupier a

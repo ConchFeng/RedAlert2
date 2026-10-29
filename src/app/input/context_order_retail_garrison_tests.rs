@@ -311,6 +311,29 @@ fn retail_capture_walk_rechecks_admission_and_respects_a_replacement_order() {
             }
             _ => unreachable!(),
         };
+        if crate::rules::NPBUG_ENABLED && control == "red_health" {
+            // NPBUG #2966: the castle is the walker's own house's building,
+            // so under npbug it keeps admitting at red health and the walk
+            // completes instead of refusing.
+            let mut boarded = false;
+            for _ in 0..600 {
+                advance_garrison_frame(runtime);
+                if runtime
+                    .simulation
+                    .entities()
+                    .get(castle)
+                    .is_some_and(|b| b.passenger_role.occupants().count() == 1)
+                {
+                    boarded = true;
+                    break;
+                }
+            }
+            let actor = runtime.simulation.entities().get(gi).unwrap();
+            assert!(boarded, "red_health: the own red castle admits under npbug");
+            assert_eq!(actor.passenger_role.inside_transport_id(), Some(castle));
+            assert!(actor.lifecycle.in_limbo());
+            continue;
+        }
         let mut left_order = false;
         for _ in 0..600 {
             advance_garrison_frame(runtime);

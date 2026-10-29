@@ -152,6 +152,12 @@ The sections follow the behavior chains of #3024.
   feeding ShortGame's BaseUnit sum and the defeat gate
   (`HouseClass::Update` `0x004F8E92..0x004F8F77`) never declared the emptied
   house defeated.
+- #2966 (NPExt changelog item 34): a `CanBeOccupied=` building refuses every
+  entrant at or below red health, owner included
+  (`BuildingClass::CanBeOccupiedBy @ 0x00457CE0`, `CanDock @ 0x00457D3E`), so
+  infantry released from a battle bunker their own house let drop to red could
+  never re-garrison it. Under npbug the building's own house is exempt;
+  other houses keep the refusal.
 
 ### Movement, crash, ejection, garrison and lifecycle
 
