@@ -133,6 +133,10 @@ fn scene() -> Option<(SimRuntime, u64)> {
     ))
 }
 
+// NPBUG #2965 pins this retained-constructor behavior as native; under the
+// capability the refused conversion deletes the limbo Unit instead (see
+// `failed_undeploy_defeat_tests`).
+#[cfg(not(feature = "npbug"))]
 fn assert_retained(sim: &Simulation, owner: InternedId, id: u64) {
     let unit = sim
         .entities()
@@ -160,7 +164,11 @@ fn assert_retained(sim: &Simulation, owner: InternedId, id: u64) {
     assert_eq!(tracked.buildings(), 0);
 }
 
+/// NPBUG #2965: under the capability the refused conversion deletes the
+/// never-placed constructor instead of retaining it (native pin, see
+/// `failed_undeploy_defeat_tests`).
 #[test]
+#[cfg(not(feature = "npbug"))]
 fn authored_water_yard_refusal_refunds_keeps_constructor_and_survives_short_game() {
     let Some((mut runtime, yard)) = scene() else {
         return;
