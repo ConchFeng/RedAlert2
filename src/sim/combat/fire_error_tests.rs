@@ -212,7 +212,6 @@ fn facts(input: &Value) -> FireFacts {
         frame,
         weapon_index: int(&input["weapon_index"]),
         firer: FirerFacts {
-            crash_latched: false,
             enslaved: flag(&f["enslaved"]),
             warped_out: flag(&f["warped_out"]),
             warping_in: flag(&f["warping_in"]),
