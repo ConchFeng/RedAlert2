@@ -175,12 +175,28 @@ impl Simulation {
                 .is_some_and(|entity| entity.category() == EntityCategory::Unit),
             _ => false,
         };
+        let magnetic_range_leptons = (crate::rules::NPBUG_ENABLED && wave.wave_type() == 3)
+            .then(|| {
+                let entity = owner?;
+                let object = self.interner.object_type(entity.type_ref(), rules)?;
+                crate::sim::combat::combat_weapon::get_weapon(
+                    entity,
+                    object,
+                    wave.emitting_weapon_index(),
+                    &self.substrate.entities,
+                    rules,
+                    &self.interner,
+                )
+                .map(|weapon| weapon.range_leptons)
+            })
+            .flatten();
         crate::sim::wave::WaveUpdateContext {
             owner_position,
             owner_fire_coordinate,
             owner_current_target,
             target_position,
             target_is_unit,
+            magnetic_range_leptons,
         }
     }
 }

@@ -32,6 +32,7 @@ fn context(input: &Value) -> WaveUpdateContext {
         owner_current_target: Some(TargetKind::Entity(2)),
         target_position: Some(coord(&input["target_center"])),
         target_is_unit: true,
+        magnetic_range_leptons: None,
     }
 }
 
@@ -442,6 +443,7 @@ fn original_update_reverses_only_a_unit_target() {
         owner_current_target: Some(cell),
         target_position: Some(coord(&input["target_center"])),
         target_is_unit: false,
+        magnetic_range_leptons: None,
     };
     let terminal = wave.initialize(context, Some(&terrain));
     assert_state(&wave, &row["after"], !terminal);
@@ -453,10 +455,10 @@ fn original_update_reverses_only_a_unit_target() {
 /// hardcoded primary.
 #[test]
 fn npbug_a_secondary_sonic_wave_reads_the_emitting_weapon() {
-    use crate::rules::ruleset::RuleSet;
-    use crate::sim::world::Simulation;
     use crate::rules::ini_parser::IniFile;
+    use crate::rules::ruleset::RuleSet;
     use crate::sim::combat::combat_weapon::WeaponSlot;
+    use crate::sim::world::Simulation;
     let rules = RuleSet::from_ini(&IniFile::from_str(
         "[WeaponTypes]\n0=Ping\n1=LoudPing\n[ProjectileTypes]\n0=SonicP\n[VehicleTypes]\n0=SONIC\n1=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\n[SONIC]\nStrength=300\nArmor=light\nPrimary=Ping\nSecondary=LoudPing\n\
          [Ping]\nDamage=10\nROF=30\nRange=8\nWarhead=Sonic\nIsSonic=yes\nAmbientDamage=10\nProjectile=SonicP\n\
@@ -469,9 +471,15 @@ fn npbug_a_secondary_sonic_wave_reads_the_emitting_weapon() {
     crate::sim::arena_fixture::flat_arena(&mut sim, &rules);
     for (name, index) in [("Americans", 0i32), ("Russians", 1i32)] {
         let house = sim.intern(name);
-        sim.houses_mut_for_test().register(
-            crate::sim::house_state::HouseState::new(house, index, None, index == 0, 10_000, 10),
-        );
+        sim.houses_mut_for_test()
+            .register(crate::sim::house_state::HouseState::new(
+                house,
+                index,
+                None,
+                index == 0,
+                10_000,
+                10,
+            ));
     }
     sim.intern_rule_type_ids(&rules);
     sim.resolve_type_handles(&rules);
@@ -536,34 +544,30 @@ fn npbug_a_secondary_sonic_wave_reads_the_emitting_weapon() {
 }
 
 /// NPBUG (NPExt bug-fix changelog item 85, issue #2986): a magnetic wave
-/// takes the tracking-distance decay — native skipped type 3, so the beam
-/// followed a drifting held target across any distance. Stock keeps the
-/// unbounded follow.
+/// decays once its held target leaves the emitting weapon's range — native
+/// skips type 3 in the tracking decay, so the beam followed a drifting
+/// target across any distance. The retail MagneticBeam's `Range=12` bounds
+/// it: a target 10 cells out keeps the beam, one 13 cells out ends it.
+#[cfg(feature = "npbug")]
 #[test]
-fn npbug_a_magnetic_wave_decays_past_the_tracking_distance() {
-    use crate::sim::combat::TargetKind;
+fn npbug_a_magnetic_wave_decays_past_its_weapon_range() {
     let terrain = crate::map::resolved_terrain::test_flat_ground_grid(80);
-    let mut wave = from_native(&corpus()["birth_rows"][0]["after"]);
-    // The same target identity the wave holds, parked ~24 cells away — far
-    // past the 2172-lepton tracking bound.
-    let far = WaveUpdateContext {
-        owner_position: Some(ProjectileCoord::new(2560, 2560, 0)),
-        owner_fire_coordinate: Some(ProjectileCoord::new(2560, 2560, 0)),
-        owner_current_target: wave.target_ref(),
-        target_position: Some(ProjectileCoord::new(2560 + 24 * 256, 2560, 0)),
-        target_is_unit: true,
+    let wave_at = |cells: i32| {
+        let mut wave = from_native(&corpus()["birth_rows"][0]["after"]);
+        let owner = ProjectileCoord::new(2560, 2560, 0);
+        let context = WaveUpdateContext {
+            owner_position: Some(owner),
+            owner_fire_coordinate: Some(owner),
+            owner_current_target: wave.target_ref(),
+            target_position: Some(ProjectileCoord::new(2560 + cells * 256, 2560, 0)),
+            target_is_unit: true,
+            magnetic_range_leptons: Some(12 * 256),
+        };
+        wave.update_geometry_and_cells(context, Some(&terrain));
+        wave
     };
-    let _ = TargetKind::Cell(0, 0);
-    wave.update_geometry_and_cells(far, Some(&terrain));
-    if crate::rules::NPBUG_ENABLED {
-        assert!(
-            wave.decaying() && !wave.active_geometry(),
-            "the far beam decays under npbug"
-        );
-    } else {
-        assert!(
-            wave.active_geometry() && !wave.decaying(),
-            "stock follows the far target unbounded"
-        );
-    }
+    let near = wave_at(10);
+    assert!(near.active_geometry() && !near.decaying(), "in range");
+    let far = wave_at(13);
+    assert!(far.decaying() && !far.active_geometry(), "past Range=");
 }

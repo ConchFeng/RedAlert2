@@ -4848,6 +4848,7 @@ mod tests {
                 owner_current_target: Some(active_target),
                 target_position: Some(active_endpoint),
                 target_is_unit: false,
+                magnetic_range_leptons: None,
             },
             None,
         ));
@@ -4860,6 +4861,7 @@ mod tests {
                 owner_current_target: Some(active_target),
                 target_position: Some(moved_endpoint),
                 target_is_unit: false,
+                magnetic_range_leptons: None,
             },
             None,
         );

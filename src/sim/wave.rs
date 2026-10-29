@@ -158,6 +158,9 @@ pub struct WaveUpdateContext {
     pub target_position: Option<ProjectileCoord>,
     /// Native What_Am_I==1 reverses type3's geometry arguments.
     pub target_is_unit: bool,
+    /// NPBUG (#2986): the emitting weapon's `Range=`, the magnetic wave's
+    /// tracking bound. None without npbug.
+    pub magnetic_range_leptons: Option<i32>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -548,16 +551,22 @@ impl Wave {
             self.decaying = true;
         }
 
-        // NPBUG (NPExt bug-fix changelog item 85, issue #2986): the
-        // tracking-distance decay applies to the magnetic wave too. Native
-        // skips type 3, so a magnetron beam followed its held target at any
-        // distance with no weapon-range bound.
+        // NPBUG (NPExt bug-fix changelog item 85, issue #2986): the magnetic
+        // wave decays once its held target leaves the emitting weapon's
+        // range. Native skips type 3 in the tracking-distance decay, so a
+        // magnetron beam followed its target at any distance. The 2172-lepton
+        // bound of the other types would end beams inside the retail
+        // MagneticBeam's 12-cell range.
         if crate::rules::NPBUG_ENABLED
             && self.active_geometry
             && self.wave_type == 3
-            && let (Some(owner), Some(target)) = (context.owner_position, context.target_position)
+            && let (Some(range), Some(owner), Some(target)) = (
+                context.magnetic_range_leptons,
+                context.owner_position,
+                context.target_position,
+            )
             && distance_3d_leptons([owner.x, owner.z, owner.y], [target.x, target.z, target.y])
-                > MAX_TRACKING_DISTANCE_LEPTONS
+                > range
         {
             self.active_geometry = false;
             self.decaying = true;
