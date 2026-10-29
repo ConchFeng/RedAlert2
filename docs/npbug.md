@@ -93,6 +93,13 @@ The sections follow the behavior chains of #3024.
   attacked. Native's fall state covered only the parachute/bomb/flaming
   fall, so crash-latched aircraft absorbed fire and hit the ground
   shooting.
+- #2968 (NPExt changelog item 65): damage landing exactly on the yellow
+  threshold classifies as the `DamageState::Yellow` crossing, so the struck
+  building plays its damaged-building cue. Native `Object5F5390` tests the
+  post-damage HP strictly (`post < strength >> 1`), so the exact boundary
+  stayed Damaged and the `BuildingClass::ReceiveDamage @ 0x00442230` result
+  table (`0x00442476`) never reached the global `BuildingDamageSound` request
+  (`0x00442706`).
 
 ### Weapon, wave and projectile source, path and range
 

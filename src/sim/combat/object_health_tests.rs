@@ -130,6 +130,24 @@ fn actual_signed_object_commit_matches_original_packet_results_and_callbacks() {
             false,
         );
         drop(host);
+        let mut expected_result = output["result"].as_i64().unwrap() as i32;
+        // NPBUG #2968: a pinned Damaged row that lands exactly on
+        // `strength >> 1` is the yellow crossing under npbug, so its result
+        // is Yellow. Rows native already answers Yellow, Red or Dead keep
+        // their recorded answer.
+        if crate::rules::NPBUG_ENABLED && expected_result == DamageState::Damaged as i32 {
+            let current = input["current"].as_i64().unwrap() as i32;
+            let mut damage = input["damage"].as_i64().unwrap() as i32;
+            // The CanC4-less building receiver raises a negative packet to 1
+            // before the Object body sees it.
+            if input["kind"] == "building" && input["can_c4"] == false {
+                damage = damage.max(1);
+            }
+            let yellow = (input["strength"].as_i64().unwrap() as i32) >> 1;
+            if yellow > 0 && damage > 0 && current - damage.min(current) == yellow {
+                expected_result = DamageState::Yellow as i32;
+            }
+        }
         assert_eq!(
             entity.health.current(),
             output["actual"].as_i64().unwrap() as i32,
@@ -141,11 +159,7 @@ fn actual_signed_object_commit_matches_original_packet_results_and_callbacks() {
             output["damage_packet"].as_i64().unwrap() as i32,
             "{input}"
         );
-        assert_eq!(
-            result as i32,
-            output["result"].as_i64().unwrap() as i32,
-            "{input}"
-        );
+        assert_eq!(result as i32, expected_result, "{input}");
         assert_eq!(
             u8::from(entity.lifecycle.object_alive()),
             output["alive"].as_u64().unwrap() as u8,
@@ -262,6 +276,41 @@ fn is_full_matches_the_masked_ratio_compare() {
             let native = matches!(health.compare_ratio(strength, 1.0), Equal | Greater);
             assert_eq!(health.is_full(strength), native, "{health:?} / {strength}");
         }
+    }
+}
+
+/// NPBUG #2968 (NPExt bug-fix changelog item 65): a hit that lands exactly on
+/// `strength >> 1` is the yellow crossing, not a silent Damaged step.
+#[cfg(feature = "npbug")]
+#[test]
+fn npbug_damage_landing_exactly_on_yellow_classifies_as_the_crossing() {
+    for (damage, expected) in [
+        (50, DamageState::Yellow),  // 100 -> 50 lands exactly on the threshold
+        (49, DamageState::Damaged), // 100 -> 51 stays above it
+        (51, DamageState::Yellow),  // 100 -> 49 is strictly below it
+    ] {
+        let strength = Cell::new(100);
+        let mut entity = GameEntity::test_default(1, "X", "Americans", 2, 2);
+        entity.health.set_for_test(100);
+        entity.lifecycle.set_object_alive_for_test(true);
+        let mut host = LocalHealthHost {
+            entity: &mut entity,
+            strength: &strength,
+            callback: |_: &mut GameEntity, _: HealthCallback| {},
+        };
+        let mut packet = damage;
+        let result = commit(
+            &mut host,
+            &mut packet,
+            strength.get(),
+            true,
+            false,
+            0.25,
+            false,
+        );
+        drop(host);
+        assert_eq!(result, expected, "100 - {damage}");
+        assert_eq!(entity.health.current(), 100 - damage);
     }
 }
 

@@ -138,6 +138,22 @@ fn object_threshold_and_first_damage_order_matches_original_eighteen_controls() 
             )
         });
         drop(host);
+        // NPBUG #2968: the `half_equal_post` control lands exactly on
+        // `strength >> 1`, so under npbug it classifies as the yellow
+        // crossing and the yellow Tags (39 with the source, then 42) run
+        // before the recorded first-damage group at the same retained HP.
+        let mut expected_result = output["result"].as_i64().unwrap() as i32;
+        let mut expected_tags = normalized_tags(output);
+        if crate::rules::NPBUG_ENABLED && row["name"] == "half_equal_post" {
+            expected_result = DamageState::Yellow as i32;
+            let post = entity.health.current();
+            let mut tags = vec![
+                json!({"kind":39, "source":false, "health":post, "alive":1}),
+                json!({"kind":42, "source":false, "health":post, "alive":1}),
+            ];
+            tags.extend(expected_tags.as_array().unwrap().iter().cloned());
+            expected_tags = json!(tags);
+        }
         assert_eq!(
             entity.health.current(),
             output["actual"].as_i64().unwrap() as i32,
@@ -148,17 +164,12 @@ fn object_threshold_and_first_damage_order_matches_original_eighteen_controls() 
             output["estimated"].as_i64().unwrap() as i32
         );
         assert_eq!(packet, output["damage_packet"].as_i64().unwrap() as i32);
-        assert_eq!(
-            result as i32,
-            output["result"].as_i64().unwrap() as i32,
-            "{}",
-            row["name"]
-        );
+        assert_eq!(result as i32, expected_result, "{}", row["name"]);
         assert_eq!(
             u8::from(entity.lifecycle.object_alive()),
             output["alive"].as_u64().unwrap() as u8
         );
-        assert_eq!(json!(tags), normalized_tags(output), "{}", row["name"]);
+        assert_eq!(json!(tags), expected_tags, "{}", row["name"]);
         assert_eq!(
             json!(virtuals),
             normalized_virtuals(output),

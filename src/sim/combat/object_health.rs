@@ -190,7 +190,18 @@ pub(super) fn commit(
     let post = previous.wrapping_sub(*packet);
     let mut result = DamageState::Damaged;
     let yellow = strength >> 1;
-    if yellow <= previous && post < yellow {
+    // NPBUG (NPExt bug-fix changelog item 65, issue #2968): native
+    // Object5F5390 tests the post-damage HP strictly (`post < yellow`), so a
+    // hit landing exactly on `strength >> 1` classifies as merely Damaged and
+    // the BuildingClass receiver's result table (`0x00442476`, requested
+    // through `0x00442706`) never reaches its damaged-building arm. Under
+    // npbug the exact boundary counts as the yellow crossing too.
+    let yellow_crossed = if crate::rules::NPBUG_ENABLED {
+        post <= yellow
+    } else {
+        post < yellow
+    };
+    if yellow <= previous && yellow_crossed {
         result = DamageState::Yellow;
     }
     let red = X87::mul(
