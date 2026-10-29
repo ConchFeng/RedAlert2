@@ -2097,8 +2097,10 @@ fn evaluate_candidate(
     // NPBUG (NPExt bug-fix changelog item 41, issue #2937): the passive scan
     // refuses an invulnerable candidate. Native G1..G13 has no such arm —
     // the Iron Curtain is enforced receiver-side only — so auto-acquisition
-    // dumps fire into curtained units and every shot is wasted.
-    if crate::rules::NPBUG_ENABLED {
+    // dumps fire into curtained units and every shot is wasted. The capture
+    // and occupy scans (mask `0x200` engineer, `0x8000` occupiable, `0x10000`
+    // tech buildings) fire nothing and keep native.
+    if crate::rules::NPBUG_ENABLED && ctx.mask & 0x18200 == 0 {
         let frame = ctx
             .fire_world
             .map_or(0, |world| world.session.binary_frame());
