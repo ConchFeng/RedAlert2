@@ -210,3 +210,8 @@ The sections follow the behavior chains of #3024.
   (native `0x00700255..0x0070043E` tests only the type's `Immune=` flag).
   A forced order stays the override; NP-specific immunity flags and a
   vanilla virus pair are out of scope.
+- #2979 (NPExt changelog item 28): the action determination's warp rung also
+  catches a still-warping-in actor over an entity target. Native limits the
+  warp-in arm to Cell targets, so a pre-emergence chrono legionnaire fell
+  through to the attack rung's pure weapon-range alternative and showed a
+  force-attack cursor over friendlies.

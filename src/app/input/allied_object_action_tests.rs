@@ -960,3 +960,47 @@ fn npbug_the_attack_cursor_refuses_a_warhead_immune_target() {
         );
     }
 }
+
+/// NPBUG (NPExt bug-fix changelog item 28, issue #2979): a chrono
+/// legionnaire still warping in takes the warp rung over an entity target
+/// too — native's warp-in arm is Cell-only, so the pure weapon-range
+/// alternative showed a force-attack cursor over a friendly.
+#[test]
+fn npbug_a_warping_in_legionnaire_takes_no_attack_cursor_over_a_friendly() {
+    use crate::sim::movement::teleport_movement::{TeleportPhase, TeleportState};
+    let rules = RuleSet::from_ini(&crate::rules::ini_parser::IniFile::from_str(
+        "[InfantryTypes]\n0=CLEG\n1=GI\n[CLEG]\nStrength=200\nArmor=none\nPrimary=Tor\n[VehicleTypes]\n0=MTNK\n[MTNK]\nStrength=300\nArmor=heavy\n\
+         [GI]\nStrength=100\nArmor=none\n\n\
+         [Tor]\nDamage=120\nROF=50\nRange=6\nWarhead=WH\nOmniFire=yes\n\
+         [WH]\nCellSpread=0\nVersus.none=100%\nVersus.none=100%\n",
+    ))
+    .unwrap();
+    let (mut sim, actor, target) = object_pair(&rules, "CLEG", "own");
+    sim.entities_mut_for_test()
+        .get_mut(actor)
+        .unwrap()
+        .install_teleport_state_for_test(Some(TeleportState::for_test(
+            TeleportPhase::ChronoDelay,
+            8,
+            8,
+            1,
+        )));
+    assert!(
+        sim.entities().get(actor).unwrap().is_warping_in(),
+        "the fixture actor is still warping in"
+    );
+    let forced = attack_action(&sim, &rules, actor, &TargetKind::Entity(target), true, None);
+    if crate::rules::NPBUG_ENABLED {
+        assert_ne!(
+            forced,
+            AttackAction::Attack,
+            "a warping-in actor takes the warp rung over an entity"
+        );
+    } else {
+        assert_eq!(
+            forced,
+            AttackAction::Attack,
+            "stock shows the force-attack cursor over the friendly"
+        );
+    }
+}
