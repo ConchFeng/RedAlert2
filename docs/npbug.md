@@ -40,6 +40,16 @@ The sections follow the behavior chains of #3024.
 
 ### Superweapon and AI strategy
 
+- #2933 (NPExt changelog item 86): the secret-lab startup assignment draws
+  uniformly over the choices that remain, removes the granted one, and
+  refills the whole list for further labs. Native
+  `AssignSecretLabProduction68C050` (`68C112..68C1B5`) uses the drawn
+  position against the original arrays — shrinking range, duplicate grants —
+  and returns early when labs outnumber types, leaving every lab inert.
+  NPExt's exact rewrite was not disassembled; this implements the corrected
+  contract the report states, with a changed RNG draw pattern as a recorded
+  residual.
+
 ### Combat target, order, fire and damage eligibility
 
 ### Weapon, wave and projectile source, path and range
