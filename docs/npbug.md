@@ -53,6 +53,10 @@ The sections follow the behavior chains of #3024.
   (`AI_FindBestRallyTarget50CBF0`, choice `0x0050CF38..0x0050D16B`) skips a
   fully cloaked entry instead of letting its `RandomRanged(0, best + 10)`
   draw beat every real candidate.
+- #2936 (NPExt changelog item 11): insufficient house power refuses the
+  pre-selected ChronoWarp click (`ClickFire4FB1E0` admission, the PostClick=
+  exemption at `0x006CB933..0x006CB95F`) before any launch or paired Sphere
+  write, so the warp neither fires nor restarts the countdown while held.
 
 ### Combat target, order, fire and damage eligibility
 

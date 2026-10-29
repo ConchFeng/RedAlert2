@@ -200,6 +200,62 @@ fn click_fire_matches_native() {
     }
 }
 
+/// NPBUG (NPExt bug-fix changelog item 11, issue #2936): with power
+/// insufficient, a click on the pre-selected ChronoWarp refuses outright —
+/// no launch, and the paired Sphere keeps its charge and its timer instead
+/// of firing the warp and restarting while held.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_low_power_refuses_the_pre_selected_warp_click() {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[BuildingTypes]\n[SuperWeaponTypes]\n0=ChronoSphereSpecial\n1=ChronoWarpSpecial\n\
+         [ChronoSphereSpecial]\nType=ChronoSphere\nPreClick=yes\nRechargeTime=1\n\
+         [ChronoWarpSpecial]\nType=ChronoWarp\nPostClick=yes\nRechargeTime=1\n",
+    ))
+    .unwrap();
+    let mut sim = sim(&rules, true, &[]);
+    let owner = sim.interner.intern(OWNER);
+    let mut power = crate::sim::power_system::PowerState::default();
+    power.set_is_low_power_for_test(true);
+    sim.power_states_mut_for_test().insert(owner, power);
+    let sphere_id = sim.interner.intern("ChronoSphereSpecial");
+    let warp_id = sim.interner.intern("ChronoWarpSpecial");
+    let warp_sw = rules.super_weapon("ChronoWarpSpecial").unwrap().clone();
+    let mut sphere = SuperWeaponInstance::new(sphere_id, owner, 0);
+    sphere.is_active = true;
+    sphere.is_ready = true;
+    sphere.charge_start_tick = -1;
+    let mut warp = SuperWeaponInstance::new(warp_id, owner, 0);
+    warp.is_active = true;
+    warp.is_ready = true;
+    warp.charge_start_tick = -1;
+    let instances = sim.super_weapons.map_mut_for_test();
+    let entry = instances.entry(owner).or_default();
+    entry.insert(sphere_id, sphere);
+    entry.insert(warp_id, warp);
+    drop(instances);
+    let launched = click_fire(
+        &mut sim,
+        &rules,
+        owner,
+        warp_id,
+        &warp_sw,
+        (33, 44),
+        None,
+        crate::sim::world::FrameEffects::default(),
+        None,
+        false,
+    );
+    assert!(!launched, "low power refuses the pre-selected warp");
+    let instances = sim.super_weapons.map_mut_for_test();
+    let sphere = instances.get(&owner).unwrap().get(&sphere_id).unwrap();
+    assert!(sphere.is_ready, "the paired Sphere keeps its charge");
+    assert_eq!(
+        sphere.charge_start_tick, -1,
+        "no countdown restart while held"
+    );
+}
+
 /// The launch alert for one house, with the row's draw answer; the yard
 /// stands where its GetCoords is the row's.
 #[test]

@@ -524,6 +524,19 @@ fn click_fire_admission(
     if !instance.click_fire_admits() && !sw.post_click {
         return false;
     }
+    // NPBUG (NPExt bug-fix changelog item 11, issue #2936): the PostClick=
+    // exemption above let a pre-selected warp fire through low power, and the
+    // paired Sphere write restart its countdown while held. Insufficient
+    // power refuses the click before any launch, pairing or timer write.
+    if crate::rules::NPBUG_ENABLED
+        && sw.post_click
+        && sim
+            .power_states
+            .get(&owner)
+            .is_some_and(|state| state.low_power())
+    {
+        return false;
+    }
     if sw.kind == SuperWeaponKind::LightningStorm && super::lightning_storm::has_deferment(sim) {
         sim.sound_events
             .emit(SimSoundEvent::LightningStormRefused { owner });
