@@ -1147,14 +1147,23 @@ fn ares_prism_modifier_retains_percent_across_map_layers_and_scales_one_shot() {
 }
 
 /// NPBUG (NPExt bug-fix changelog item 5, issue #2928): a `[General]` pass
-/// without `PrismSupportModifier=` keeps the retained percentage — the mode
-/// and map layers of a rules pass naming it must not compound it by another
-/// 100, and a ruleset never naming it keeps the constructor value.
-#[cfg(feature = "npbug")]
+/// without `PrismSupportModifier=` keeps the retained percentage exactly —
+/// keyless mode and map layers neither compound it by another 100 nor chop
+/// it (130% is not a multiple of 25, which the Ares round trip would lose 1
+/// from per pass) — and a ruleset never naming it keeps the constructor value.
+#[cfg(all(feature = "npbug", not(feature = "ares")))]
 #[test]
 fn npbug_prism_modifier_stays_stable_across_keyless_general_passes() {
-    let mut layers =
-        RulesLayerStack::new(IniFile::from_str("[General]\nPrismSupportModifier=125%\n"));
+    let rules_layer = || IniFile::from_str("[General]\nPrismSupportModifier=130%\n");
+    let modifier = |layers: RulesLayerStack| {
+        RuleSet::from_processed_rules(&layers.process().unwrap())
+            .unwrap()
+            .general
+            .prism_support
+            .modifier
+    };
+    let read_once = modifier(RulesLayerStack::new(rules_layer()));
+    let mut layers = RulesLayerStack::new(rules_layer());
     layers.push(
         RulesLayerKind::GameMode,
         IniFile::from_str("[General]\nName=Mode without a prism override\n"),
@@ -1163,71 +1172,48 @@ fn npbug_prism_modifier_stays_stable_across_keyless_general_passes() {
         RulesLayerKind::Scenario,
         IniFile::from_str("[General]\nName=Map without a prism override\n"),
     );
-    let rules = RuleSet::from_processed_rules(&layers.process().unwrap()).unwrap();
-    assert_eq!(rules.general.prism_support.modifier, 125);
+    assert_eq!(modifier(layers), read_once);
 
-    let never_named = RuleSet::from_processed_rules(
-        &RulesLayerStack::new(IniFile::from_str("[General]\nName=No prism key anywhere\n"))
-            .process()
-            .unwrap(),
-    )
-    .unwrap();
-    assert_eq!(never_named.general.prism_support.modifier, 100);
+    let never_named = modifier(RulesLayerStack::new(IniFile::from_str(
+        "[General]\nName=No prism key anywhere\n",
+    )));
+    assert_eq!(never_named, 100);
 }
 
-/// NPBUG (NPExt changelog item 18, issue #2978): a tower still under
-/// construction supplies no support beam — native's supporter walk never
-/// asked the build state.
+/// NPBUG (NPExt changelog item 18, issue #2978): a tower in body state 0
+/// (Building+534: under construction, or selling) supplies no support beam;
+/// native's supporter walk (`0x0044B357..0x0044B4BD`) never asks it. The
+/// oracle's `x_range` row recruits tower `a`; the same tower in its
+/// Construction body does not.
+#[cfg(feature = "npbug")]
 #[test]
-fn npbug_an_unfinished_tower_supplies_no_support_beam() {
-    let mut fixture = Fixture::new(&golden()["recruitment"][0]["after"], "master");
-    let master = fixture.buildings["master"];
-    // A second tower of the same type, still constructing
-    // (Building+534 == 0): in the house list, alive, but not built.
-    let unfinished = fixture
-        .sim
-        .spawn_object("TWR", "Americans", 44, 40, 0, &fixture.rules)
+fn npbug_a_tower_in_its_construction_body_supplies_no_support_beam() {
+    let row = rows(golden(), "recruit")
+        .iter()
+        .find(|row| row["input"]["name"] == "x_range")
         .unwrap();
-    // Mark constructing through the mission: Building+534 follows.
-    fixture
-        .sim
-        .entities_mut_for_test()
-        .get_mut(unfinished)
-        .unwrap()
-        .mission
-        .apply_test_fixture(crate::sim::mission::state::MissionTestFixture {
-            current: crate::sim::mission::MissionId::from_known(
-                crate::sim::mission::MissionType::Construction,
-            ),
-            suspended: crate::sim::mission::MissionId::NONE,
-            queued: crate::sim::mission::MissionId::NONE,
-            movement_bypass_latch: 0,
-            handler_state: 0,
-            mission_start_frame: 0,
-            ai_counter: 0,
-            dispatch_timer: crate::sim::mission::MissionDispatchTimer::at_frame(0),
-        });
+    let mut fixture = Fixture::new(&row["input"], "master");
+    let master = fixture.id("master");
+    let tower = fixture.id("a");
+    let supporter = |fixture: &Fixture| {
+        let master_entity = fixture.sim.substrate.entities.get(master).unwrap();
+        let obj = fixture
+            .sim
+            .interner
+            .object_type(master_entity.type_ref(), &fixture.rules)
+            .unwrap();
+        super::prism_supporter(&fixture.sim, master, &fixture.rules, obj)
+    };
+    assert_eq!(supporter(&fixture), Some(tower));
     fixture
         .sim
         .substrate
         .entities
-        .get_mut(unfinished)
+        .get_mut(tower)
         .unwrap()
-        .health
-        .set_for_test(1000);
-    let rules = fixture.rules.clone();
-    let obj = fixture
-        .sim
-        .interner
-        .object_type(
-            fixture.sim.entities().get(master).unwrap().type_ref(),
-            &rules,
-        )
-        .unwrap();
-    let supporter = super::prism_supporter(&fixture.sim, master, &rules, obj);
-    assert_ne!(
-        supporter,
-        Some(unfinished),
-        "the constructing tower supplies no beam"
-    );
+        .begin_building_body(
+            crate::sim::building_construction::BuildingBodyMode::Construction,
+            FRAME,
+        );
+    assert_eq!(supporter(&fixture), None);
 }

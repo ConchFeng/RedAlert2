@@ -2402,10 +2402,7 @@ impl PrismSupportRules {
         // hook0x00671152: FILD Rules+49C; FDIV 100.0; pass that fraction to
         // ReadDouble. Without this, each keyless map/mode multiplies the
         // retained percentage by another 100 (original ReadGeneral67114F).
-        // NPBUG adopts the same corrected behavior (NPExt bug-fix changelog
-        // item 5, issue #2928): a `[General]` pass that omits the key keeps
-        // the retained percentage instead of compounding it.
-        #[cfg(any(feature = "ares", feature = "npbug"))]
+        #[cfg(feature = "ares")]
         let current = f64::from_bits(
             X87::store_f64_masked_chop(X87::div(
                 X87::load_f64(NativeF64Bits::from_bits(current.to_bits())),
@@ -2414,10 +2411,19 @@ impl PrismSupportRules {
             .bits(),
         );
         let percent = general.read_double("PrismSupportModifier", current);
-        let modifier = X87::ftol_i32_low_masked(X87::mul(
+        #[allow(unused_mut)]
+        let mut modifier = X87::ftol_i32_low_masked(X87::mul(
             X87::load_f64(NativeF64Bits::from_bits(percent.to_bits())),
             X87::load_f64(NativeF64Bits::from_bits(100.0_f64.to_bits())),
         ));
+        // NPBUG (NPExt bug-fix changelog item 5, issue #2928) without Ares: a
+        // `[General]` pass that omits the key keeps the retained percentage
+        // exactly instead of compounding it. Ares's round trip above still
+        // chops most values by one per keyless pass (a modded 130% reads 129).
+        #[cfg(all(feature = "npbug", not(feature = "ares")))]
+        if !general.is_present("PrismSupportModifier") {
+            modifier = self.modifier;
+        }
         Self {
             modifier,
             max: general.read_int("PrismSupportMax", self.max),
