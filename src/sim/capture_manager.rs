@@ -997,6 +997,11 @@ impl Simulation {
             .filter(|(_, node)| node.victim == victim_id)
             .map(|(index, node)| (index, node.original_owner))
             .collect();
+        let controller_owner = self
+            .substrate
+            .entities
+            .get(controller_id)
+            .map(|controller| controller.owner());
         for (index, original_owner) in matches {
             // The ring goes (`vt+0xF8` UnInit), then MindClearedSound: the
             // type's own, else the global.
@@ -1014,7 +1019,29 @@ impl Simulation {
                     .and_then(|object| object.mind_cleared_sound.clone())
                     .or_else(|| rules.mind_control.mind_cleared_sound.clone());
                 if let Some(sound) = sound {
-                    let event = SimSoundEvent::voc_at(sound, &victim.position);
+                    // NPBUG (NPExt bug-fix changelog item 70, issue #2984):
+                    // the removal sound is audible only to the two involved
+                    // parties — the (former) controller and the victim's
+                    // owner. Native emitted a plain positional sound with no
+                    // house filter, so every player heard it.
+                    let event = if crate::rules::NPBUG_ENABLED {
+                        // The victim's CURRENT owner is the controller
+                        // (mind control transferred it); the involved party
+                        // is the ORIGINAL owner the unit returns to.
+                        let event = match (controller_owner, Some(original_owner)) {
+                            (Some(controller), Some(original)) if crate::rules::NPBUG_ENABLED => {
+                                SimSoundEvent::voc_at_for(
+                                    sound,
+                                    Some([controller, original]),
+                                    &victim.position,
+                                )
+                            }
+                            _ => SimSoundEvent::voc_at(sound, &victim.position),
+                        };
+                        event
+                    } else {
+                        SimSoundEvent::voc_at(sound, &victim.position)
+                    };
                     self.sound_events.emit(event);
                 }
             }

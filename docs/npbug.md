@@ -228,3 +228,7 @@ The sections follow the behavior chains of #3024.
   the `DeploysInto`/`UndeploysInto` counterpart type (the 0x00732C30 ID match
   reads it at 0x00732C61..0x00732C83), so T with an MCV selected gathers MCVs
   only instead of also taking the Construction Yard, and vice versa.
+- #2984 (NPExt changelog item 70): the mind-control removal sound plays
+  only for the two involved parties — the (former) controller and the
+  owner the unit returns to. Native emitted a plain positional VocAt with
+  no house filter, so every player heard it.

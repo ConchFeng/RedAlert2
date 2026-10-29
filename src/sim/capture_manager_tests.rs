@@ -2412,3 +2412,56 @@ fn yuri_prime_building_capture_and_release_request_atlas_refresh() {
         "a consumed ownership change must not refresh every frame"
     );
 }
+
+/// NPBUG (NPExt bug-fix changelog item 70, issue #2984): the mind-control
+/// removal sound is audible only to the two involved parties — the
+/// (former) controller and the victim's owner. Native emitted a plain
+/// positional sound, so every player heard it.
+#[cfg(feature = "npbug")]
+#[test]
+fn npbug_the_mind_clear_sound_names_only_the_involved_parties() {
+    let rules = rules();
+    let mut sim = sim(5);
+    let yuri = spawn(&mut sim, &rules, "YURI", "YuriCountry", 10, 10);
+    let victim = spawn(&mut sim, &rules, "E1", "Americans", 12, 10);
+    assert!(sim.capture_unit(
+        yuri,
+        victim,
+        &rules,
+        None,
+        crate::sim::world::FrameEffects::default()
+    ));
+    sim.sound_events.clear_for_test();
+    assert!(sim.free_unit(
+        yuri,
+        victim,
+        &rules,
+        None,
+        crate::sim::world::FrameEffects::default()
+    ));
+    let audiences: Vec<Vec<String>> = sim
+        .sound_events
+        .iter()
+        .filter_map(|event| match event {
+            SimSoundEvent::VocAt {
+                sound_id,
+                audible_to: Some(houses),
+                ..
+            } => Some(
+                houses
+                    .iter()
+                    .map(|house| sim.interner.resolve(*house).to_string())
+                    .collect(),
+            ),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(audiences.len(), 1, "the removal sound carries a filter");
+    assert_eq!(
+        audiences[0].len(),
+        2,
+        "exactly the controller and the victim's owner"
+    );
+    assert!(audiences[0].contains(&"YuriCountry".to_string()));
+    assert!(audiences[0].contains(&"Americans".to_string()));
+}
