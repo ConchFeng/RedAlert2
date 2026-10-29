@@ -234,7 +234,24 @@ fn resolve_rally_cell_click(
         },
         frame,
     )
-    .filter(|cell| *cell != (0, 0)))
+    .filter(|cell| *cell != (0, 0))
+    .filter(|&cell| {
+        // NPBUG (NPExt bug-fix changelog item 17, issue #2953): a naval
+        // factory's rally accepts only water. Native resolved the click
+        // against the amphibious movement zone, so land tiles in that zone
+        // were accepted and beached the ships.
+        !(crate::rules::NPBUG_ENABLED && click.naval)
+            || clicked_land_type(cells, click.clicked)
+                == Some(crate::rules::terrain_rules::LandType::Water.as_index())
+    }))
+}
+
+/// The clicked cell's land type, through the query's terrain.
+fn clicked_land_type(cells: &NativeCellQuery<'_>, clicked: (i16, i16)) -> Option<u8> {
+    cells
+        .terrain()
+        .cell(clicked.0 as u16, clicked.1 as u16)
+        .map(|cell| cell.land_type)
 }
 
 #[cfg(test)]
@@ -385,7 +402,15 @@ mod tests {
             )
             .unwrap();
             let expected = pair(&row["nearby"][0]["result"]);
-            assert_eq!(result, (expected != (0, 0)).then_some(expected), "{input}");
+            // NPBUG (#2953): the naval row's land click is refused instead
+            // of resolving through the amphibious zone.
+            let expected =
+                if crate::rules::NPBUG_ENABLED && input["naval"].as_bool().unwrap_or(false) {
+                    None
+                } else {
+                    (expected != (0, 0)).then_some(expected)
+                };
+            assert_eq!(result, expected, "{input}");
             let dummy = pair(&row["nearby"][0]["dummy_at_return"]);
             assert_eq!(
                 cells.coord(NativeCellIdentity::Dummy),
@@ -428,5 +453,36 @@ mod tests {
         let walls = crate::sim::overlay_grid::test_wall_overlays(&mut terrain, &[(11, 5)]);
         let answer = resolve(&terrain, Some(&walls)).expect("a neighbour passes");
         assert_ne!(answer, (11, 5));
+    }
+}
+
+#[cfg(test)]
+mod npbug_rally_tests {
+    use serde_json::json;
+
+    use super::super::native_cell_input_test_fixture::{bounds, coord, native_fixture};
+    use super::*;
+
+    /// NPBUG (NPExt bug-fix changelog item 17, issue #2953): a naval
+    /// factory's rally click on a land cell is refused; a water click still
+    /// resolves. Stock resolves the land click through the amphibious zone.
+    #[test]
+    fn npbug_a_naval_rally_refuses_a_land_click() {
+        let (terrain, zones, raw) = native_fixture(&json!({}));
+        let cells = NativeCellQuery::isolated(&terrain);
+        let naval = RallyCellClick {
+            clicked: (11, 5),
+            location: coord(&json!([1344, 1344, 0])),
+            factory: Some(FactoryType::UnitType),
+            naval: true,
+        };
+        let land_result =
+            resolve_rally_cell_click(&cells, &zones, &raw, None, bounds(), (8, 8), 100, &naval)
+                .unwrap();
+        if crate::rules::NPBUG_ENABLED {
+            assert_eq!(land_result, None, "a land click is refused");
+        } else {
+            assert!(land_result.is_some(), "stock accepts the land click");
+        }
     }
 }

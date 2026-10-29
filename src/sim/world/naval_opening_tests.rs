@@ -436,8 +436,14 @@ fn two_searches_and_event_birth_match_the_original_supplied_map_control() {
         sim.session.set_binary_frame_for_test(frame);
         sim.initialize_naval_rally_point(1, &rules);
         let pending = sim.pending_command_snapshot();
-        assert_eq!(pending.len(), usize::from(!zero_speeds));
-        if !zero_speeds {
+        // NPBUG (#2953): the (7,7) control cell is land in this fixture, so
+        // a naval factory's rally refuses it and no command encodes.
+        assert_eq!(
+            pending.len(),
+            usize::from(!zero_speeds && !crate::rules::NPBUG_ENABLED),
+            "frame {frame}"
+        );
+        if !zero_speeds && !crate::rules::NPBUG_ENABLED {
             assert_eq!(
                 pending[0].payload,
                 Command::SetRally {
