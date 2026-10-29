@@ -582,7 +582,16 @@ pub(super) fn base_action(
         // received simulation missions: auto-targeting/scripts bypass UI.
         // Infantry's C4 and infiltration arms ask this Attack too
         // ([`infantry_arm_attacks`]).
+        // NPBUG (NPExt bug-fix changelog item 92, issue #2952): the rung
+        // also refuses an unforced attack on a target the selected weapon's
+        // warhead cannot affect through vanilla receiver-side immunity —
+        // native (0x00700255..0x0070043E) tests only the type's Immune=
+        // flag, so the cursor and the orders both aimed waste at immune
+        // targets. A forced order stays the player override.
         && !kind.no_manual_fire()
+        && (!crate::rules::NPBUG_ENABLED
+            || forced
+            || !sim.chosen_warhead_cannot_affect(rules, actor_id, *target))
     {
         AttackAction::Attack
     } else if let TargetKind::Entity(target_id) = *target
