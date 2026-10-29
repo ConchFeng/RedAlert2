@@ -75,6 +75,10 @@ The sections follow the behavior chains of #3024.
   (`0x0071A917..0x0071A978`, no alliance test) and Record_The_Kill's award
   (`0x00702D40`, zeroed for allies) together — friendly victims paid and
   enemy victims paid twice.
+- #2945 (NPExt changelog item 54): a NULL `Assign_Target` (`0x006FCF5B`)
+  mid-burst keeps the burst slot instead of resetting it, so the
+  interrupted burst resumes and the full ROF still separates bursts — the
+  cancellation no longer skips the reload.
 
 ### Weapon, wave and projectile source, path and range
 

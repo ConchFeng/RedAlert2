@@ -713,7 +713,14 @@ pub(crate) fn represented_assign_target_admitted(
         if let Some(manager) = entity.spawn_manager.as_mut() {
             manager.set_target(None);
         }
-        entity.weapon_burst.reset();
+        // NPBUG (NPExt bug-fix changelog item 54, issue #2945): a mid-burst
+        // reset let the next attack start a fresh burst inside the old
+        // per-shot rearm, cycling Burst weapons past their full reload. The
+        // interrupted burst resumes instead, so the full ROF still separates
+        // bursts.
+        if !(crate::rules::NPBUG_ENABLED && entity.weapon_burst.index() != 0) {
+            entity.weapon_burst.reset();
+        }
     }
     // The store (`0x006FCF3E`).
     entity.attack_target.set(requested);

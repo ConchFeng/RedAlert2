@@ -186,12 +186,54 @@ mod tests {
             let entity = sim.substrate.entities.get_mut(id).unwrap();
             assert!(entity.attack_target.target().is_none(), "{command:?}");
             assert!(!entity.passive_scan.acquired(), "{command:?}");
-            assert_eq!(entity.weapon_burst.index(), 0, "{command:?}");
+            // NPBUG (issue #2945): a mid-burst order keeps the index, so the
+            // interrupted burst resumes and the full reload still separates
+            // bursts; stock resets to 0 and the next attack re-bursts free.
+            let expected_index = if crate::rules::NPBUG_ENABLED { 1 } else { 0 };
+            assert_eq!(entity.weapon_burst.index(), expected_index, "{command:?}");
             // A later non-null assignment preserves the reset value, so FLH
             // and GetROF start the new burst at its first shot.
             represented_assign_target(entity, Some(TargetKind::Cell(6, 4)));
-            assert_eq!(entity.weapon_burst.index(), 0, "{command:?}");
+            assert_eq!(entity.weapon_burst.index(), expected_index, "{command:?}");
         }
+    }
+
+    /// NPBUG (NPExt bug-fix changelog item 54, issue #2945): the resumed
+    /// burst completes and wraps, so a Burst weapon cannot cycle fresh
+    /// bursts through a mid-burst cancellation.
+    #[test]
+    #[cfg(feature = "npbug")]
+    fn npbug_an_interrupted_burst_resumes_instead_of_reloading_free() {
+        use crate::rules::{ini_parser::IniFile, ruleset::RuleSet};
+        use crate::sim::command::Command;
+        use crate::sim::pathfinding::PathGrid;
+        use crate::sim::world::Simulation;
+
+        let rules = RuleSet::from_ini(&IniFile::from_str(
+            "[VehicleTypes]\n0=TANK\n[TANK]\nStrength=200\nSpeed=6\nPrimary=Gun\n\
+             [Gun]\nDamage=10\nROF=100\nRange=8\nBurst=2\n",
+        ))
+        .unwrap();
+        let grid = PathGrid::new(32, 32);
+        let mut sim = Simulation::with_seed(0);
+        sim.install_fixture_path_grid(Some(&grid));
+        let id = sim
+            .spawn_object("TANK", "Americans", 4, 4, 64, &rules)
+            .unwrap();
+        let entity = sim.substrate.entities.get_mut(id).unwrap();
+        represented_assign_target(entity, Some(TargetKind::Cell(5, 4)));
+        entity.weapon_burst.complete_shot(2);
+        assert_eq!(entity.weapon_burst.index(), 1, "mid-burst");
+        assert!(sim.apply_command("Americans", &Command::Stop { entity_id: id }, Some(&rules)));
+        assert_eq!(
+            sim.substrate.entities.get(id).unwrap().weapon_burst.index(),
+            1,
+            "the interruption keeps the burst slot"
+        );
+        // The resumed burst completes: the next shot wraps back to 0.
+        let entity = sim.substrate.entities.get_mut(id).unwrap();
+        entity.weapon_burst.complete_shot(2);
+        assert_eq!(entity.weapon_burst.index(), 0, "the burst wrapped");
     }
 
     #[test]
@@ -293,18 +335,16 @@ mod tests {
                 let actor = sim.substrate.entities.get_mut(id).unwrap();
                 assert!(actor.attack_target.target().is_none(), "{command:?}");
                 assert!(!actor.passive_scan.acquired(), "{command:?}");
-                assert_eq!(
-                    actor.weapon_burst.index(),
-                    i32::from(!had_target),
-                    "{command:?}"
-                );
+                // NPBUG (issue #2945): a mid-burst order keeps the slot.
+                let expected_index = if crate::rules::NPBUG_ENABLED {
+                    1
+                } else {
+                    i32::from(!had_target)
+                };
+                assert_eq!(actor.weapon_burst.index(), expected_index, "{command:?}");
                 // The next non-null assignment must retain the observed index.
                 represented_assign_target(actor, Some(TargetKind::Cell(7, 4)));
-                assert_eq!(
-                    actor.weapon_burst.index(),
-                    i32::from(!had_target),
-                    "{command:?}"
-                );
+                assert_eq!(actor.weapon_burst.index(), expected_index, "{command:?}");
             }
         }
     }
@@ -330,11 +370,17 @@ mod tests {
                 .passive_scan
                 .set_passively_acquired_target_for_test(row["passive"].as_u64().unwrap() != 0);
             represented_assign_target(&mut entity, target(&row["requested"]));
-            assert_eq!(
-                entity.weapon_burst.index(),
-                row["next_index"].as_i64().unwrap() as i32,
-                "{row}"
-            );
+            // NPBUG (issue #2945): a NULL request keeps a mid-burst slot
+            // instead of resetting it.
+            let expected_index = if crate::rules::NPBUG_ENABLED
+                && row["requested"].as_u64() == Some(0)
+                && row["index"].as_i64().unwrap() != 0
+            {
+                row["index"].as_i64().unwrap() as i32
+            } else {
+                row["next_index"].as_i64().unwrap() as i32
+            };
+            assert_eq!(entity.weapon_burst.index(), expected_index, "{row}");
             assert_eq!(
                 entity.passive_scan.acquired(),
                 row["next_passive"].as_u64().unwrap() != 0,
