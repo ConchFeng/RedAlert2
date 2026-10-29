@@ -106,12 +106,6 @@ The sections follow the behavior chains of #3024.
   also takes the ROF-ability reduction (`0x006FD0E2..0x006FD14C`), so
   veteran and elite dolphins, squids and effect weapons keep their reload
   bonus.
-- #2947 (NPExt changelog item 44): a `Suicide=` weapon works from any slot
-  — the shot launches first and the self Strength packet lands after it
-  (`Techno6FDDC0..6FDE0E`'s branch no longer returns before the launch), so
-  the weapon deals its own damage and the death still completes the nested
-  DeathWeapon. NPExt's exact slot gating was not disassembled; every slot
-  takes the corrected flow as a recorded residual.
 - #2948 (NPExt changelog item 84): the InRange arming ceiling over
   structural bridges (`0x006F74D7..0x006F7504`) consults the projectile's
   `SubjectToCliffs=` — a projectile that ignores cliffs may shell a deck

@@ -1185,36 +1185,6 @@ pub(crate) fn snapshot_get_rof(
     )
 }
 
-/// The suicide self packet: type Strength over the C4 warhead with
-/// `ignore_defenses` (`Techno6FDDC0..6FDE0E`). The real self receiver
-/// completes its nested DeathWeapon and class death.
-fn emit_suicide_self_packet(
-    world: &mut Simulation,
-    rules: &RuleSet,
-    overlay_registry: Option<&OverlayTypeRegistry>,
-    effects: FrameEffects<'_>,
-    out: &mut CombatEmit,
-    snap: &AttackerSnapshot,
-    obj: &ObjectType,
-) {
-    let c4 = world.interner.intern(&rules.bridge_warheads.c4_name);
-    let event = EntityDamageEvent::direct_receiver(
-        snap.stable_id,
-        obj.strength,
-        0,
-        RAD_NO_ATTACKER,
-        None,
-        c4,
-        ReceiverCallFlags {
-            ignore_defenses: true,
-            arg6: false,
-        },
-    );
-    world
-        .commit_direct_damage_receiver(rules, overlay_registry, event, effects)
-        .retain_frame_notifications(&mut out.effects);
-}
-
 /// Existing FireAt delivery and bookkeeping, shared by the world receiver.
 /// The caller still owns legality, fire-action timing and inline damage commit.
 /// Answers the bullet `TechnoClass::FireAt @ 0x006FDD50` returns: the one
@@ -1268,20 +1238,28 @@ pub(super) fn emit_admitted_fire(
             return None;
         }
     }
-    // NPBUG (NPExt bug-fix changelog item 44, issue #2947): a Suicide=
-    // weapon works from any slot — the shot launches first and the self
-    // Strength packet lands after it, so the weapon deals its own damage
-    // and the death still completes the nested DeathWeapon. Native
-    // (6FDDC0..6FDE0E) self-destructs instead of launching and never
-    // reaches the projectile.
-    let npbug_suicide = crate::rules::NPBUG_ENABLED && weapon.suicide;
-    if weapon.suicide && !npbug_suicide {
+    if weapon.suicide {
         // Techno6FDDC0..6FDE0E: the local packet is type Strength, not
         // current Health or weapon Damage. The real self receiver completes
         // its nested DeathWeapon and class death before FireAt returns NULL;
         // ordinary launch/GetROF/rearm/last-fire work is never reached.
         // Original execution: tools/spatial_oracle/suicide_fire.json.
-        emit_suicide_self_packet(world, rules, overlay_registry, effects, out, snap, obj);
+        let c4 = world.interner.intern(&rules.bridge_warheads.c4_name);
+        let event = EntityDamageEvent::direct_receiver(
+            snap.stable_id,
+            obj.strength,
+            0,
+            RAD_NO_ATTACKER,
+            None,
+            c4,
+            ReceiverCallFlags {
+                ignore_defenses: true,
+                arg6: false,
+            },
+        );
+        world
+            .commit_direct_damage_receiver(rules, overlay_registry, event, effects)
+            .retain_frame_notifications(&mut out.effects);
         return None;
     }
     if weapon.is_sonic && world.active_wave_id(snap.stable_id).is_some() {
@@ -1783,10 +1761,6 @@ pub(super) fn emit_admitted_fire(
     // `0x006FF749` still runs.
     if !launched {
         fireat_tail(world, rules, snap, weapon, None, overlay_registry, effects);
-        // NPBUG (#2947): a refused launch still completes the suicide.
-        if npbug_suicide {
-            emit_suicide_self_packet(world, rules, overlay_registry, effects, out, snap, obj);
-        }
         return None;
     }
 
@@ -2070,11 +2044,6 @@ pub(super) fn emit_admitted_fire(
             .and_then(|entity| entity.disguise.as_mut())
     {
         disguise.start_fire_blink(binary_frame, weapon.disguise_fake_blink_time);
-    }
-    // NPBUG (#2947): the shot is away — the self Strength packet lands
-    // after it, completing the suicide and its nested DeathWeapon.
-    if npbug_suicide {
-        emit_suicide_self_packet(world, rules, overlay_registry, effects, out, snap, obj);
     }
     Some(bullet_id)
 }
