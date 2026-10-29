@@ -23,6 +23,9 @@ mod expiry_tests;
 #[cfg(test)]
 #[path = "building_art_garrison_tests.rs"]
 mod garrison_tests;
+#[cfg(test)]
+#[path = "building_art_npbug_tests.rs"]
+mod npbug_tests;
 #[path = "building_art_power.rs"]
 mod power;
 #[path = "building_art_storage.rs"]
@@ -369,7 +372,17 @@ impl Simulation {
             id,
             rules,
         );
-        if first_opening && !refinery {
+        // NPBUG (NPExt bug-fix changelog item 95, issue #2971): a tech
+        // building (`NeedsEngineer=`) starts its active animations when a
+        // real house owns it. Native fills Idle18 + Active3..6 at first
+        // opening (0x0044632E..0x00446374) with no ownership arm, so an
+        // un-owned oil derrick pumped from scenario placement and kept
+        // pumping after the damaged-art swap; the capture's Grand_Opening
+        // re-run (Building 0x00448CEF) starts it.
+        // The placement arm holds for a tech type; the capture re-run —
+        // first_opening already consumed — fills the slots instead.
+        let tech = crate::rules::NPBUG_ENABLED && object.needs_engineer;
+        if (first_opening && !tech || captured && tech) && !refinery {
             for slot in [18, 3, 4, 5, 6] {
                 self.set_building_anim_slot(
                     id,
