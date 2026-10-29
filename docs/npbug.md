@@ -215,3 +215,7 @@ The sections follow the behavior chains of #3024.
   warp-in arm to Cell targets, so a pre-emergence chrono legionnaire fell
   through to the attack rung's pure weapon-range alternative and showed a
   force-attack cursor over friendlies.
+- #2980 (NPExt changelog item 45): the T type-select seed set no longer grows
+  the `DeploysInto`/`UndeploysInto` counterpart type (the 0x00732C30 ID match
+  reads it at 0x00732C61..0x00732C83), so T with an MCV selected gathers MCVs
+  only instead of also taking the Construction Yard, and vice versa.
