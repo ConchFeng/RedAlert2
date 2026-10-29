@@ -3069,8 +3069,7 @@ impl Simulation {
             if crate::rules::NPBUG_ENABLED {
                 self.uninit_with_context(
                     new_sid,
-                    super::UninitContext::new(rules, overlay_registry)
-                        .with_effects(frame_effects),
+                    super::UninitContext::new(rules, overlay_registry).with_effects(frame_effects),
                 );
             }
             return;
