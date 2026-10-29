@@ -1835,7 +1835,9 @@ fn idle_receiver_cancels_burst_through_the_shared_target_setter() {
                 crate::sim::world::FrameEffects::default(),
             );
             let entity = sim.substrate.entities.get(1).unwrap();
-            assert_eq!(entity.weapon_burst.index(), i32::from(has_destination));
+            // NPBUG (#2945) keeps the mid-burst slot through the NULL arm.
+            let index = i32::from(has_destination || crate::rules::NPBUG_ENABLED);
+            assert_eq!(entity.weapon_burst.index(), index);
             assert_eq!(entity.passive_scan.acquired(), has_destination);
             assert_eq!(
                 entity.attack_target.target(),

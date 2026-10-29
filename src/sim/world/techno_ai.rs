@@ -4970,7 +4970,9 @@ mod tests {
             "Assign_Target(NULL) on arrival"
         );
         assert!(!entity.passive_scan.acquired());
-        assert_eq!(entity.weapon_burst.index(), 0);
+        // NPBUG (#2945) keeps the mid-burst slot through the NULL arm.
+        let index = if crate::rules::NPBUG_ENABLED { 1 } else { 0 };
+        assert_eq!(entity.weapon_burst.index(), index);
         assert_eq!(
             entity.mission.dispatch_timer(),
             MissionDispatchTimer::from_raw(0, 1),

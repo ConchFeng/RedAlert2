@@ -764,7 +764,9 @@ fn ejection_keeps_the_passengers_target_unless_it_leaves_another_houses_open_tra
             // (`0x006FCF5B`), which a raw store would not.
             assert_eq!(pax.attack_target.target(), None, "{case}");
             assert!(!pax.passive_scan.acquired(), "{case}");
-            assert_eq!(pax.weapon_burst.index(), 0, "{case}");
+            // NPBUG (#2945) keeps the mid-burst slot through the NULL arm.
+            let index = if crate::rules::NPBUG_ENABLED { 1 } else { 0 };
+            assert_eq!(pax.weapon_burst.index(), index, "{case}");
         }
     }
 }
