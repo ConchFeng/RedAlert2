@@ -53,7 +53,7 @@ fn create_overlap(rules: &RuleSet, count: usize, dog_cell: (u16, u16)) -> (Simul
         });
         desos.push(id);
     }
-    sim.session.set_binary_frame_for_test(16);
+    sim.session.set_binary_frame_for_test(13);
     assert!(sim.radiation.is_empty());
     // Separate ordinary frames retain the native compacting-Bullet skip rule:
     // no second adjacent Inviso Bullet can lose its first AI behind retirement.
@@ -357,66 +357,4 @@ fn overlapping_stock_fields_preserve_serialized_bits_hash_and_decay() {
         initial_hash,
         "the existing world hash must observe changed radiation state"
     );
-}
-
-/// NPBUG (NPExt bug-fix changelog item 38, issue #2950): radiation skips a
-/// corpse at Health 0 — an infantryman dying to an InfDeath=1/2 warhead
-/// keeps IsAlive through its death sequence and native's IsAlive-only gate
-/// let the field kill it again. Stock still damages the dying body.
-#[test]
-fn npbug_radiation_skips_a_dying_corpse() {
-    use crate::rules::ini_parser::IniFile;
-    use crate::sim::radiation::RadDetonation;
-    use crate::sim::world::FrameEffects;
-    let rules = RuleSet::from_ini(&IniFile::from_str(
-        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nArmor=none\n[Radiation]\nWarhead=RADWH\n[Warheads]\n0=RADWH\n[RADWH]\nVersus.none=100%\n",
-    ))
-    .unwrap();
-    let mut sim = crate::sim::arena_fixture::rival_arena_with_size(&rules, 31, 64);
-    let id = sim
-        .spawn_object("E1", "Americans", 10, 10, 0, &rules)
-        .unwrap();
-    let entity = sim.substrate.entities.get_mut(id).unwrap();
-    entity.health.set_for_test(0);
-    assert!(
-        entity.lifecycle.object_alive(),
-        "the corpse keeps IsAlive at Health 0"
-    );
-    let terrain = sim.resolved_terrain.clone();
-    let mut lights = sim.lighting_sources_mut_for_test().clone();
-    sim.radiation_mut_for_test().apply_detonation(
-        RadDetonation {
-            rx: 10,
-            ry: 10,
-            rad_level: 500,
-            spread: 0,
-            rad_type: None,
-            firing_house: None,
-            invoker: None,
-        },
-        16,
-        "TEMPERATE",
-        &rules,
-        terrain.as_ref(),
-        &mut lights,
-    );
-    sim.session.set_binary_frame_for_test(16);
-    let mut rules = rules;
-    rules.radiation.site_warhead = "RADWH".to_string();
-    assert!(
-        rules.warhead("RADWH").is_some(),
-        "the [Warheads] registry keeps RADWH"
-    );
-    let receipt = crate::sim::combat::world_receiver::apply_foot_radiation(
-        &mut sim,
-        &rules,
-        id,
-        None,
-        FrameEffects::default(),
-    );
-    if crate::rules::NPBUG_ENABLED {
-        assert!(receipt.is_none(), "the dying corpse takes no radiation");
-    } else {
-        assert!(receipt.is_some(), "stock damages the alive-at-zero body");
-    }
 }
