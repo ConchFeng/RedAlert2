@@ -106,6 +106,12 @@ The sections follow the behavior chains of #3024.
   index, so the FLH parity alternates launch sides. Native's remainder
   (fire_coord parity read; Aegis `Burst=1` Medusa) never advanced, so every
   missile left from the same side.
+- #2951 (NPExt changelog item 99): a missile whose target dies while
+  landing or docking loses the target instead of taking the pad's ground
+  cell. Native's PointerExpired repair (`LoseTarget468430` /
+  `PointerExpired468517` cell substitution) treats the low aircraft as
+  ordinary, so anti-air fire that downs a landing aircraft flew into the
+  airbase.
 
 ### Building placement, construction, economy and sensors
 

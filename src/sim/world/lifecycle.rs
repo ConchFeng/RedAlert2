@@ -5521,6 +5521,17 @@ impl Simulation {
         context: UninitContext<'_>,
     ) -> ProjectileTarget {
         let entity = self.substrate.entities.get(target_id);
+        // NPBUG (NPExt bug-fix changelog item 99, issue #2951): a dying or
+        // docking aircraft is low, so native's repair substitutes the pad's
+        // ground cell and the missile flew into the airbase. The repair
+        // loses the target instead — the pad takes no stray damage.
+        if crate::rules::NPBUG_ENABLED
+            && let Some(entity) = entity
+            && entity.category() == EntityCategory::Aircraft
+            && (entity.death.is_dying() || entity.ammo().is_some_and(|ammo| ammo.dock().is_some()))
+        {
+            return ProjectileTarget::None;
+        }
         let xy = entity
             .map(crate::sim::movement::ground_pose::object_center_xy)
             .or_else(|| {
@@ -5754,10 +5765,8 @@ impl Simulation {
 
         // BuildingLight436A00; Ares1004EBC0 preserves a cloaking parent's
         // link on control0, while the target clear remains unconditional.
-        self.substrate.spotlights_pointer_expired(
-            expired_id,
-            control == PointerExpiryControl::Uninit,
-        );
+        self.substrate
+            .spotlights_pointer_expired(expired_id, control == PointerExpiryControl::Uninit);
 
         #[cfg(any(test, feature = "test-support"))]
         if let Some(smudge) = self
