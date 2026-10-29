@@ -214,22 +214,6 @@ pub(in crate::sim) fn exit_produced_object(
 ) -> crate::sim::ai_base_building::BuildingExit {
     use crate::sim::ai_base_building::{self, BuildingExit};
     use crate::sim::ai_unit_choice::UnitChoiceKind;
-    // NPBUG (NPExt bug-fix changelog item 49, issue #2954): a producer that
-    // is still constructing or selling does not emit — the exit ran before
-    // the constructing gate in native Factory_AI and through the Strip PLACE
-    // tail, so vehicles left unfinished factories and stuck there. The
-    // human sentinel-cell PLACE keeps its own admission and stays native.
-    if crate::rules::NPBUG_ENABLED
-        && sim
-            .substrate
-            .entities
-            .get(producer_id)
-            .is_some_and(|producer| {
-                producer.constructing_or_selling() || producer.in_construction_bstate()
-            })
-    {
-        return BuildingExit::TryLater;
-    }
     let Some(entity) = sim.substrate.entities.get_mut(stable_id) else {
         return BuildingExit::Failed;
     };
