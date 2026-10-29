@@ -49,8 +49,9 @@ pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
     crate::app::lan_service::return_transport(state);
     state.audio.restore_sound_master();
     // NPBUG (NPExt bug-fix changelog item 79, issue #2931): a mid-shake
-    // exit carries the offset into the next scenario — the process-global
-    // only decays while battle input runs. Clear it at every transition.
+    // exit carries the offset into the next scenario, as native's Map
+    // `+4`/`+8` only decays while battle input runs (`0x004F4BB0`). Clear it
+    // at every transition.
     if crate::rules::NPBUG_ENABLED {
         state
             .match_state
