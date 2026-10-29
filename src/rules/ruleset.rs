@@ -4694,6 +4694,11 @@ impl RuleSet {
 
     /// CollectSelectedIDs732D47 -> Ares10041990/10041A3F gates the
     /// DeploysInto/UndeploysInto seeds. Default builds keep retail behavior.
+    ///
+    /// NPBUG (NPExt bug-fix changelog item 45, issue #2980) drops the seeds:
+    /// native `TypeSelect__BuildSeedTypeIDs @ 0x00732D10` adds each selected
+    /// type's counterpart (Type+0x404/+0x408), so T with an MCV selected also
+    /// gathers Construction Yards and the reverse. Ares's explicit key wins.
     pub fn type_select_uses_deploy(&self) -> bool {
         #[cfg(feature = "ares")]
         {
@@ -4701,7 +4706,7 @@ impl RuleSet {
         }
         #[cfg(not(feature = "ares"))]
         {
-            true
+            !crate::rules::NPBUG_ENABLED
         }
     }
 

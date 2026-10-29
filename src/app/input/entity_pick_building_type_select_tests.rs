@@ -150,14 +150,19 @@ fn the_switch_is_read_from_the_general_section() {
 }
 
 /// NPBUG (NPExt bug-fix changelog item 45, issue #2980): the native seed set
-/// grows the `DeploysInto`/`UndeploysInto` counterpart type (the 0x00732C30
-/// ID match reads it at 0x00732C61..0x00732C83), so T gathers the MCV and the
-/// Construction Yard together. Under npbug the seed set stays the selected
-/// types alone, and neither side reaches for the other.
+/// grows the `DeploysInto`/`UndeploysInto` counterpart type
+/// (`TypeSelect__BuildSeedTypeIDs @ 0x00732D10`, Type+0x404/+0x408), so T
+/// gathers the MCV and the Construction Yard together. Under npbug the seed
+/// set stays the selected types alone, and neither side reaches for the other.
 #[test]
-#[cfg(feature = "npbug")]
+#[cfg(all(feature = "npbug", not(feature = "ares")))]
 fn npbug_type_select_keeps_the_mcv_and_the_yard_apart() {
-    let rules = rules("");
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[BuildingTypes]\n0=GACNST\n[VehicleTypes]\n0=AMCV\n\
+         [GACNST]\nStrength=1000\nUndeploysInto=AMCV\n\
+         [AMCV]\nStrength=200\nDeploysInto=GACNST\n",
+    ))
+    .expect("rules read");
     assert!(rules.structure_type_selectable("GACNST"));
     let mut sim = Simulation::new();
     let owner = sim.intern("me");
