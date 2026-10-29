@@ -64,6 +64,13 @@ The sections follow the behavior chains of #3024.
 
 ### Movement, crash, ejection, garrison and lifecycle
 
+- #2934 (NPExt changelog item 4): the `MakeInfantry=` anim end
+  (`AnimClass::AI @ 0x00423AC0`, refused-Unlimbo branch `0x00424B23`) frees
+  the failed creation instead of leaving it in limbo. Natively a Genetic
+  Mutator over an occupied cell allocated a fresh brute on every completed
+  frame and never destroyed the refused one — unbounded object growth while
+  the cell stayed blocked. The anim still steps its stage back and retries.
+
 ### Capture, mind control, lift and retaliation
 
 ### UI, presentation, audio and scenario lifetime

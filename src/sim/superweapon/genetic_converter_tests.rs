@@ -672,28 +672,35 @@ fn the_make_infantry_end_matches_native() {
             .filter(|id| !before.contains(id))
             .collect();
         let native_create: Vec<&Value> = events(row, "create").collect();
-        assert_eq!(created.len(), native_create.len(), "{row}");
-        if let (Some(&id), Some(create)) = (created.first(), native_create.first()) {
-            let infantry = sim.substrate.entities.get(id).unwrap();
-            assert_eq!(
-                sim.interner.resolve(infantry.type_ref()),
-                format!("INF{}", int(&create[1])),
-                "{row}"
-            );
-            assert_eq!(infantry.owner(), houses[int(&create[2]) as usize], "{row}");
-            if ends {
-                assert!(!infantry.lifecycle.in_limbo(), "{row}");
-                let lifted = events(row, "mark").count() == 2;
-                assert_eq!(infantry.on_bridge(), lifted, "{row}");
-                let hunt = events(row, "queue").next().is_some();
+        if !ends && crate::rules::NPBUG_ENABLED {
+            // NPBUG (issue #2934): the refused Unlimbo frees its creation, so
+            // the golden create event leaves no store object to compare. The
+            // anim still retries with the row's stepped-back stage.
+            assert!(created.is_empty(), "{row}");
+        } else {
+            assert_eq!(created.len(), native_create.len(), "{row}");
+            if let (Some(&id), Some(create)) = (created.first(), native_create.first()) {
+                let infantry = sim.substrate.entities.get(id).unwrap();
                 assert_eq!(
-                    infantry.mission.queued() == MissionId::from_known(MissionType::Hunt),
-                    hunt,
+                    sim.interner.resolve(infantry.type_ref()),
+                    format!("INF{}", int(&create[1])),
                     "{row}"
                 );
-            } else {
-                // The refused object stays in limbo, as natively.
-                assert!(infantry.lifecycle.in_limbo(), "{row}");
+                assert_eq!(infantry.owner(), houses[int(&create[2]) as usize], "{row}");
+                if ends {
+                    assert!(!infantry.lifecycle.in_limbo(), "{row}");
+                    let lifted = events(row, "mark").count() == 2;
+                    assert_eq!(infantry.on_bridge(), lifted, "{row}");
+                    let hunt = events(row, "queue").next().is_some();
+                    assert_eq!(
+                        infantry.mission.queued() == MissionId::from_known(MissionType::Hunt),
+                        hunt,
+                        "{row}"
+                    );
+                } else {
+                    // The refused object stays in limbo, as natively.
+                    assert!(infantry.lifecycle.in_limbo(), "{row}");
+                }
             }
         }
         let owner = row["anim_owner"].as_u64().map(|n| houses[n as usize]);
@@ -705,6 +712,59 @@ fn the_make_infantry_end_matches_native() {
         compared += 1;
     }
     assert_eq!(compared, 19);
+}
+
+/// NPBUG (NPExt bug-fix changelog item 4, issue #2934): a MakeInfantry end
+/// whose Unlimbo the occupied cell refuses frees the failed creation instead
+/// of leaving it in limbo. Natively every completed frame of the mutator's
+/// GENDEATH anim over a blocked cell allocates a fresh brute and never
+/// destroys the refused one, so memory shrinks until the game stalls. The
+/// anim still steps its stage back and retries on the next completed frame,
+/// as natively (`0x00424B23`); the fixture's location and stage come from
+/// the refused `make_infantry` capture row.
+#[test]
+#[cfg(feature = "npbug")]
+fn npbug_a_refused_make_infantry_creation_is_freed() {
+    let mut rules = rules("");
+    let (rules, mut sim, americans) = world_with(rules, 64, &[((40, 41), 2)]);
+    // The vehicle bit blocks the cell's infantry admission, as the capture's
+    // refused row does.
+    sim.substrate.raw_cell_occupation.mark_ground(
+        40,
+        41,
+        crate::sim::cell_kernel::INFANTRY_OCCUPATION_VEHICLE_BIT,
+    );
+    let anim = super::super::spawn_super_anim(&mut sim, &rules, "GENDEATH", [10340, 10556, 208])
+        .expect("the MakeInfantry anim");
+    sim.substrate.set_anim_owner_house(anim, americans);
+    sim.substrate
+        .anims
+        .get_mut(anim)
+        .unwrap()
+        .runtime_mut_for_test()
+        .current_frame = 11;
+
+    let ends = sim.anim_make_infantry(
+        anim,
+        0,
+        &rules,
+        None,
+        crate::sim::world::FrameEffects::default(),
+    );
+
+    assert!(!ends, "the refused Unlimbo keeps the anim for its retry");
+    assert_eq!(
+        sim.anim(anim).unwrap().runtime().current_frame,
+        10,
+        "the stage steps back one for the next completed frame"
+    );
+    assert!(
+        !sim.substrate
+            .entities
+            .values()
+            .any(|entity| entity.lifecycle.in_limbo()),
+        "the failed creation is freed, not left in limbo"
+    );
 }
 
 /// `InfantryClass::ReceiveDamage`'s NotHuman rung (`0x005184F7`): a dog
