@@ -74,6 +74,11 @@ impl Simulation {
         .zip(lists)
         .flat_map(|(category, list)| list.iter().map(move |name| (category, name)))
         .collect();
+        // Native also returns when no Secret list names a type
+        // (`0x0068C069..0x0068C071`).
+        if choices.is_empty() {
+            return;
+        }
         if crate::rules::NPBUG_ENABLED {
             // NPBUG (NPExt bug-fix changelog item 86, issue #2933): native
             // 68C112..68C1B5 removes a slot from a temporary index vector but
