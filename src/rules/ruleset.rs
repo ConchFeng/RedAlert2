@@ -2394,7 +2394,7 @@ impl PrismSupportRules {
     /// `fmul qword 100.0` (`0x0067116E`) on the value ReadDouble returns, then
     /// ftol (`0x007C5F00`), under the game's masked chop control word, which
     /// also chops ReadDouble's own percent product: a modded `35%` reads 34.
-    /// Ares fixes the default's units before that read (see below).
+    /// Ares and NPBUG fix the default's units before that read (see below).
     pub(crate) fn read_pass(self, general: &crate::rules::ini_parser::IniSection) -> Self {
         use crate::util::native_x87::{MaskedX87Chop53 as X87, NativeF64Bits};
         let current = f64::from(self.modifier);
@@ -2402,7 +2402,10 @@ impl PrismSupportRules {
         // hook0x00671152: FILD Rules+49C; FDIV 100.0; pass that fraction to
         // ReadDouble. Without this, each keyless map/mode multiplies the
         // retained percentage by another 100 (original ReadGeneral67114F).
-        #[cfg(feature = "ares")]
+        // NPBUG adopts the same corrected behavior (NPExt bug-fix changelog
+        // item 5, issue #2928): a `[General]` pass that omits the key keeps
+        // the retained percentage instead of compounding it.
+        #[cfg(any(feature = "ares", feature = "npbug"))]
         let current = f64::from_bits(
             X87::store_f64_masked_chop(X87::div(
                 X87::load_f64(NativeF64Bits::from_bits(current.to_bits())),

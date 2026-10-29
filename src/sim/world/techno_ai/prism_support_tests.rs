@@ -1033,7 +1033,7 @@ fn prism_cadence_matches_the_original() {
 /// entries is dropped, `rules::ini_parser`), so the replay gives it one key
 /// ReadGeneral does not read.
 #[test]
-#[cfg(not(feature = "ares"))]
+#[cfg(not(any(feature = "ares", feature = "npbug")))]
 fn prism_general_reader_matches_the_original() {
     let golden = golden();
     let reader = rows(&golden, "reader");
@@ -1144,4 +1144,33 @@ fn ares_prism_modifier_retains_percent_across_map_layers_and_scales_one_shot() {
     );
     let overridden = RuleSet::from_processed_rules(&layers.process().unwrap()).unwrap();
     assert_eq!(overridden.general.prism_support.modifier, 150);
+}
+
+/// NPBUG (NPExt bug-fix changelog item 5, issue #2928): a `[General]` pass
+/// without `PrismSupportModifier=` keeps the retained percentage — the mode
+/// and map layers of a rules pass naming it must not compound it by another
+/// 100, and a ruleset never naming it keeps the constructor value.
+#[cfg(feature = "npbug")]
+#[test]
+fn npbug_prism_modifier_stays_stable_across_keyless_general_passes() {
+    let mut layers =
+        RulesLayerStack::new(IniFile::from_str("[General]\nPrismSupportModifier=125%\n"));
+    layers.push(
+        RulesLayerKind::GameMode,
+        IniFile::from_str("[General]\nName=Mode without a prism override\n"),
+    );
+    layers.push(
+        RulesLayerKind::Scenario,
+        IniFile::from_str("[General]\nName=Map without a prism override\n"),
+    );
+    let rules = RuleSet::from_processed_rules(&layers.process().unwrap()).unwrap();
+    assert_eq!(rules.general.prism_support.modifier, 125);
+
+    let never_named = RuleSet::from_processed_rules(
+        &RulesLayerStack::new(IniFile::from_str("[General]\nName=No prism key anywhere\n"))
+            .process()
+            .unwrap(),
+    )
+    .unwrap();
+    assert_eq!(never_named.general.prism_support.modifier, 100);
 }

@@ -24,10 +24,15 @@ other capabilities (`RulesCompatibility`).
 
 Each implemented fix records its issue, the NPExt changelog item it adopts,
 and the native site the defect lives at, next to the Rust that changes it.
-The sections follow the behavior chains of #3024. The capability scaffold
-adds no behavior yet.
+The sections follow the behavior chains of #3024.
 
 ### Rules and repeated INI reads
+
+- #2928 (NPExt changelog item 5): a `[General]` pass that omits
+  `PrismSupportModifier=` keeps the retained percentage instead of
+  multiplying it by another 100 (`ReadGeneral67114F`, scale at
+  `0x0067116E`). NPBUG compiles the same default rescale the Ares hook
+  `RulesClass_Addition_General_PrismSupportModifier` (`0x1005D040`) uses.
 
 ### Superweapon and AI strategy
 
