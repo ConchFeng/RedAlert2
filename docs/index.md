@@ -36,6 +36,7 @@ affected owner and its callers before making a change.
 | Change LAN, online play or the relay | [Networking](Networking.md), [lobby service contract](lobby-protocol.md), [relay service](../services/relay/README.md). |
 | Work on browser builds | [WASM preview](wasm.md), [browser networking and LAN](wasm-net.md), [gateway](../tools/wasm/gateway/README.md). |
 | Integrate an external launcher | [Integration index](../integrations/README.md), [CnCNet single-player setup](../integrations/cncnet/README.md), [spawn adapter](../src/app/frontend/cncnet_spawn.rs). |
+| Change Skirmish past eight players or large random maps | [Large skirmish and random maps](large-skirmish.md), [skirmish shell](../src/ui/skirmish_shell/mod.rs), [random map generator](../src/map/rmg/mod.rs). |
 | Reproduce a map or inspect match output | [Map observation](../tools/map_observation.md), [test maps](capabilities.md#test-maps), [telemetry dashboard](../tools/telemetry-dashboard/README.md). |
 | Compare original-engine behavior | [Native inspection](../tools/native_inspect.md), [native oracle policy](../tools/native_oracle.md), [Ghidra workflow](ghidra-workflow.md). |
 | Package or publish an authorized build | [Release workflow](../.github/workflows/release.yml), [deployment prerequisites](../.github/release/downloads.md). |
