@@ -5,8 +5,8 @@ title: Documentation and agent index
 
 # Documentation and agent index
 
-`ConchFeng/RedAlert2` develops VERA20k, a Rust reimplementation of the Yuri's
-Revenge engine using player-supplied retail assets. The current code determines
+`ConchFeng/RedAlert2` develops VERA20k Conch Edit, a Rust reimplementation of the
+Yuri's Revenge engine using player-supplied retail assets. The current code determines
 behavior; documentation explains its owners and how to work with them.
 
 ## Start here
@@ -38,7 +38,7 @@ affected owner and its callers before making a change.
 | Integrate an external launcher | [Integration index](../integrations/README.md), [CnCNet single-player setup](../integrations/cncnet/README.md), [spawn adapter](../src/app/frontend/cncnet_spawn.rs). |
 | Reproduce a map or inspect match output | [Map observation](../tools/map_observation.md), [test maps](capabilities.md#test-maps), [telemetry dashboard](../tools/telemetry-dashboard/README.md). |
 | Compare original-engine behavior | [Native inspection](../tools/native_inspect.md), [native oracle policy](../tools/native_oracle.md), [Ghidra workflow](ghidra-workflow.md). |
-| Package or publish an authorized build | [Release skill](../.agents/skills/release/SKILL.md), [release workflow](../.github/workflows/release.yml), [deployment prerequisites](../.github/release/downloads.md). |
+| Package or publish an authorized build | [Release workflow](../.github/workflows/release.yml), [deployment prerequisites](../.github/release/downloads.md). |
 
 ## Gameplay extension references
 
@@ -70,10 +70,7 @@ list in a task prompt.
   and commits require the user's authority described in AGENTS.md.
 - Keep source and Git staging stable while the build runner validates a command.
   Choose focused checks for the affected owner rather than duplicating build work.
-- For sustained work, maintain one concise [checkpoint](../.agents/skills/_shared/handoff.md)
-  with actual state, scope, validation and the next safe action. Use an
-  [independent review](../.agents/skills/_shared/review.md) when requested or
-  justified by the change's risk.
+- Run an independent read-only review only when the user requests one.
 
 ## Language maintenance
 

@@ -109,8 +109,8 @@ fn embed_windows_resources() {
     let mut resource = winresource::WindowsResource::new();
     resource
         .set_icon(ICON)
-        .set("ProductName", "VERA20k")
-        .set("FileDescription", "VERA20k")
+        .set("ProductName", "VERA20k Conch Edit")
+        .set("FileDescription", "VERA20k Conch Edit")
         .set("OriginalFilename", "vera20k.exe")
         .set(
             "LegalCopyright",

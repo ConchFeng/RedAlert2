@@ -1,4 +1,4 @@
-# VERA20k — Project contract
+# VERA20k Conch Edit — Project contract
 
 Project repository: `ConchFeng/RedAlert2`. Use American English for code and docs.
 Coding and submission conventions live in the `code-style` and `code-submission`
@@ -11,11 +11,11 @@ Start with the [documentation index](docs/index.md) and
 In short: one small fix per PR, one to three regression tests that fail without it, the
 native function address cited next to the code, no native-execution corpora, and a PR
 description of about 15 lines. The rest is the contract for the maintainer's own agents:
-its build runner, retail-data checks, critic reviews, checkpoints and native comparisons
+its build runner, retail-data checks, critic reviews and native comparisons
 don't apply to you. Where the two differ, the README wins.
 
-VERA20k is a cross-platform Rust reimplementation of the Command & Conquer:
-Yuri's Revenge engine (`gamemd.exe`), using original retail rules and assets.
+VERA20k Conch Edit (VERA20k) is a cross-platform Rust reimplementation of the
+Command & Conquer: Yuri's Revenge engine (`gamemd.exe`), using original retail rules and assets.
 The goal is to reproduce native gameplay behavior through a Rust-native architecture,
 while scaling to **20,000 units and 30 players**. VERA20k must build and run on Linux,
 macOS and Windows; keep architecture and dependencies compatible.
@@ -191,10 +191,8 @@ when they are not ported. Behavior invented where a native body exists is a reco
 residual with a reason, never a silent default. Deferring required loop or
 determinism/authority/lifecycle work cannot close that loop.
 
-Delegate independent work with clear ownership when it benefits the task. Use a
-read-only critic when requested or justified by a risky gameplay change;
-[review.md](.agents/skills/_shared/review.md) describes the focused review. Keep a
-concise [checkpoint](.agents/skills/_shared/handoff.md) for sustained work.
+Delegate independent work with clear ownership when it benefits the task. Run a
+read-only critic review only when the user requests one.
 
 ## Git and validation
 

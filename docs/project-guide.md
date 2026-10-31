@@ -1,6 +1,6 @@
 # Project guide
 
-This repository, `ConchFeng/RedAlert2`, develops VERA20k: a Rust reimplementation
+This repository, `ConchFeng/RedAlert2`, develops VERA20k Conch Edit: a Rust reimplementation
 of the Red Alert 2: Yuri's Revenge engine. Players supply the original game assets.
 The project aims to reproduce native behavior while supporting larger battles;
 its scale targets do not establish a performance guarantee or complete parity.

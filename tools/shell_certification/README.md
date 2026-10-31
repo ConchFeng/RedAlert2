@@ -103,8 +103,8 @@ reports manifest, payload, and per-frame SHA-256 values as provenance.
 
 A valid Rust sequence is not native pixel parity evidence. Only the settled
 tail ticks have a native comparison (retail `to-mm.png`, recorded in
-`docs/research/shell/2026-09-24-slide-transitions-evidence.md`); movie phase,
-child text, cursor/focus behavior and every other native sequence row remain
+`docs/research/shell/2026-09-24-slide-transitions-evidence.md`, in git at
+78fba0275~1); movie phase, child text, cursor/focus behavior and every other native sequence row remain
 `UNVERIFIED`. The capture command must not
 be launched when the enrolled Oracle/capture safety status is invalid,
 unenrolled, stale, or ambiguous.

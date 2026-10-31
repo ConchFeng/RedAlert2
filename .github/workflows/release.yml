@@ -32,8 +32,7 @@ name: Release
 # a job can never start another workflow. A release's tag is the maintainer's:
 # the repository ruleset "Release tags" lets only repository admins create,
 # move or delete a tag other than a dev build's (v*-*), so `promote` refuses to
-# start until v<version> names the dev build's commit
-# (.agents/skills/release/SKILL.md).
+# start until v<version> names the dev build's commit.
 #
 # Every action, here and in the other workflows, names a full commit with its
 # version in a comment, so a moved tag cannot change what builds the

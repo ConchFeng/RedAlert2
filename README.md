@@ -1,4 +1,4 @@
-<img src="docs/images/new-conscirpt-hero-image.png" alt="VERA20K hero image" width="100%">
+<img src="docs/images/new-conscirpt-hero-image.png" alt="VERA20k Conch Edit hero image" width="100%">
 
 <p align="center" dir="ltr">
   <a href="https://github.com/ConchFeng/RedAlert2/actions/workflows/macos.yml?query=branch%3Amain" title="Latest macOS library test run (run manually)"><img src="https://github.com/ConchFeng/RedAlert2/actions/workflows/macos.yml/badge.svg?branch=main" alt="macOS library tests" height="23" align="middle"></a>
@@ -8,14 +8,15 @@
   <img src="https://img.shields.io/badge/QQ_group-1097193563-1EBAFC?style=flat&amp;logo=qq&amp;logoColor=white" alt="QQ group" height="23" align="middle">
 </p>
 
-# VERA20K
+# VERA20k Conch Edit
 
-VERA20K is a community-led rewrite of the original engine, `gamemd.exe`. It uses the original
-game files, so you'll need your own copy of Red Alert 2: Yuri's Revenge.
+VERA20k Conch Edit is ConchFeng's edition of VERA20K, a community-led rewrite of the original
+engine, `gamemd.exe`. It uses the original game files, so you'll need your own copy of
+Red Alert 2: Yuri's Revenge.
 
-VERA20K is made by gamers, for gamers, and gamers have the final say in where it goes.
+VERA20k Conch Edit is made by gamers, for gamers, and gamers have the final say in where it goes.
 
-<img src="docs/images/vera20k-screenshots.png" alt="VERA20K skirmish setup screen and in-game view" width="100%">
+<img src="docs/images/vera20k-screenshots.png" alt="VERA20k Conch Edit skirmish setup screen and in-game view" width="100%">
 
 ## Project goals
 
@@ -56,7 +57,7 @@ Help is welcome. You can write code, refactor the engine, test the game, share i
 it next to the original and tell us what feels wrong. Open a PR and we'll take it from there.
 
 Contributors can take responsibility for engine areas, with broad freedom to make changes that
-move VERA20K forward.
+move VERA20k Conch Edit forward.
 
 Maintainers will help with review, integration and merging. You'll keep full credit for your
 contribution.
@@ -91,7 +92,7 @@ You need:
   to install; on macOS, `xcode-select --install`; on Debian and Ubuntu,
   `sudo apt install build-essential libasound2-dev libxkbcommon-x11-0 pkg-config`.
 
-VERA20K has been played on Windows, Linux and macOS.
+VERA20k Conch Edit has been played on Windows, Linux and macOS.
 
 ```sh
 git clone https://github.com/ConchFeng/RedAlert2.git
@@ -123,7 +124,7 @@ and playtesting. Agents follow [AGENTS.md](AGENTS.md).
 
 ## Customization
 
-VERA20K plays like the original game by default. Map capacity is selected automatically as
+VERA20k Conch Edit plays like the original game by default. Map capacity is selected automatically as
 described above. Other new features, including extensions from mods such as Ares, stay off
 until they are turned on with one of:
 
@@ -156,8 +157,8 @@ many others.
 Copyright © 2026 Halvor Nikolai Rusten and VERA20K contributors.
 Licensed under the [GPLv3](LICENSE-GPL). This repository contains no game files. Command &
 Conquer and Red Alert are trademarks of Electronic Arts Inc., and the screenshots and the app
-icon, Red Alert 2's red star, show game art owned by Electronic Arts. VERA20K is not affiliated
-with or endorsed by Electronic Arts.
+icon, Red Alert 2's red star, show game art owned by Electronic Arts. VERA20k Conch Edit is not
+affiliated with or endorsed by Electronic Arts.
 
 ## Documentation
 
