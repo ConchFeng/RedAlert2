@@ -953,10 +953,6 @@ impl App {
         };
         modal.hide();
         let previous = modal.cancel_selection();
-        let options = state
-            .frontend
-            .multiplayer_shell_runtime
-            .random_map_options_for_setup();
         let available = Self::saved_seed_dir(state)
             .is_some_and(|dir| crate::map::rmg::saved_seeds::saved_seeds_available(&dir));
         // A network room's 'W' start staging carries eight cells.
@@ -965,6 +961,10 @@ impl App {
             crate::app::match_runtime::session::SessionMode::Lan
                 | crate::app::match_runtime::session::SessionMode::Wol
         );
+        let options = state
+            .frontend
+            .multiplayer_shell_runtime
+            .random_map_options_for_setup(!network);
         let max_players = if network {
             i32::from(crate::map::skirmish_scenarios::NETWORK_RANDOM_MAP_MAX_PLAYERS)
         } else {

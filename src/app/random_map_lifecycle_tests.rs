@@ -382,7 +382,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         "Cancel discards the generated candidate"
     );
     assert_eq!(
-        runtime.random_map_options_for_setup(),
+        runtime.random_map_options_for_setup(true),
         options,
         "Cancel/reopen preserves the process MapSeed record"
     );
@@ -392,7 +392,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         "Cancel/reopen continues the preview-advanced shell Scenario cursor"
     );
     let reopened = RandomMapSetupModalState::open(
-        runtime.random_map_options_for_setup(),
+        runtime.random_map_options_for_setup(true),
         Some(previous_selection),
         false,
     );

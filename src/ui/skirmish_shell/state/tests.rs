@@ -2312,6 +2312,48 @@ fn ares_country_catalog_sorts_hides_and_exposes_flag_and_status() {
 }
 
 #[test]
+fn random_map_preset_launches_twenty_nine_medium_random_opponents_and_resizes() {
+    let mut shell = controlled_country_shell();
+    shell.player_name_edit = PlayerNameEditState::with_name("Commander");
+    shell.player_country = LaunchCountry::Korea;
+    shell.player_color_index = 3;
+    shell.player_team = -1;
+    let modes = stock_skirmish_modes();
+    let maps = [
+        test_map_entry_with_starts("RandMap.Sed", 30),
+        test_map_entry_with_starts("Smaller.Sed", 6),
+    ];
+
+    shell.fill_random_map_opponents(30);
+    let session = launch_session(&shell, &maps, &modes, false).unwrap();
+    assert_eq!(session.opponents.len(), 29);
+    assert!(session.opponents.iter().all(|opponent| {
+        opponent.difficulty == AiDifficulty::Normal
+            && opponent.country_random
+            && opponent.color_random
+            && opponent.start_position == LaunchStartPosition::Auto
+    }));
+    assert_eq!(session.local_player().name, "Commander");
+    assert_eq!(session.local_slot().country, LaunchCountry::Korea);
+    assert_eq!(session.local_slot().color_index, 3);
+
+    accept_selected_map(&mut shell, &maps, 1);
+    shell.fill_random_map_opponents(6);
+    assert_eq!(
+        launch_session(&shell, &maps, &modes, false)
+            .unwrap()
+            .opponents
+            .len(),
+        5
+    );
+    assert!(
+        shell.opponents[5..]
+            .iter()
+            .all(|opponent| !opponent.is_active())
+    );
+}
+
+#[test]
 fn a_thirty_player_map_pages_its_opponents_through_the_seven_ai_rows() {
     let layout = compute_layout(800, 600);
     let maps = [

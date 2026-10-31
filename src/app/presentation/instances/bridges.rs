@@ -245,16 +245,19 @@ pub(crate) fn build_bridge_shadow_instances_inner(
     sh: f32,
     out: &mut Vec<SpriteInstance>,
 ) {
-    let mut cells: Vec<_> = terrain
-        .iter()
-        .filter_map(|cell| {
-            let live = live_grid?.cell(cell.rx, cell.ry);
+    // Scan the compact live overlay plane before touching the much larger
+    // terrain records. A Giant map otherwise reads every terrain cell per frame.
+    let mut cells: Vec<_> = live_grid
+        .into_iter()
+        .flat_map(|grid| grid.iter_occupied())
+        .filter_map(|(rx, ry, live)| {
             let overlay = live.overlay_id?;
             let name = overlay_names.get(&overlay)?;
             if !is_high_bridge_body_identity(overlay, name) {
                 return None;
             }
             let sprite = atlas.shadow_entry(name, u16::from(live.overlay_data))?;
+            let cell = terrain.cell(rx, ry)?;
             Some((cell, overlay, sprite, live.overlay_data, None))
         })
         .collect();

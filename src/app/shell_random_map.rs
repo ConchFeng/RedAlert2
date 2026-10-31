@@ -1285,6 +1285,12 @@ impl App {
                 return Ok(());
             }
             Self::commit_choose_map_use(state, selection);
+            if !state.frontend.shell_route.network_setup() {
+                state
+                    .frontend
+                    .skirmish_shell_state
+                    .fill_random_map_opponents(options.num_players);
+            }
         }
         Ok(())
     }

@@ -1478,8 +1478,18 @@ impl MultiplayerShellRuntime {
     /// gamemd provenance: setup `WM_INITDIALOG` at
     /// 0x00596BB1..0x00596BC8 calls Scenario `RandomRanged(0,0xFFFF)` only
     /// when MapSeed+0x74 is -1. The global MapSeed survives dialog teardown.
-    pub(crate) fn random_map_options_for_setup(&mut self) -> crate::map::rmg::RmgOptions {
+    pub(crate) fn random_map_options_for_setup(
+        &mut self,
+        offline: bool,
+    ) -> crate::map::rmg::RmgOptions {
         if self.random_map_options.seed == -1 {
+            // Conch Edit's offline preset leaves the native constructor and
+            // network defaults intact. Later visits retain the user's edits.
+            if offline {
+                self.random_map_options.num_players = crate::map::rmg::RMG_MAX_PLAYERS;
+                self.random_map_options.width = crate::map::rmg::RMG_MAX_SIZE_OPTION;
+                self.random_map_options.height = crate::map::rmg::RMG_MAX_SIZE_OPTION;
+            }
             self.random_map_options.seed =
                 self.scenario_rng.next_range_u32_inclusive(0, 0xFFFF) as i32;
         }
@@ -3252,7 +3262,7 @@ WOLTaunts=junk
         let mut reference = SimRng::new(u64::from(seed));
         let expected_seed = reference.next_range_u32_inclusive(0, 0xFFFF) as i32;
 
-        let mut first = runtime.random_map_options_for_setup();
+        let mut first = runtime.random_map_options_for_setup(true);
         assert_eq!(first.num_players, 30);
         assert_eq!((first.width, first.height), (5, 5));
         assert_eq!(first.seed, expected_seed);
@@ -3265,12 +3275,22 @@ WOLTaunts=junk
         first.num_players = 7;
         runtime.remember_random_map_options(&first);
         let before_reentry = runtime.scenario_rng.logical_state();
-        let reopened = runtime.random_map_options_for_setup();
+        let reopened = runtime.random_map_options_for_setup(true);
 
         assert_eq!(reopened.seed, expected_seed);
         assert_eq!(reopened.resources, 3);
         assert_eq!(reopened.num_players, 7);
         assert_eq!(runtime.scenario_rng.logical_state(), before_reentry);
+    }
+
+    #[test]
+    fn network_random_map_entry_keeps_the_native_size_and_player_defaults() {
+        let snapshot =
+            MultiplayerSetupSnapshot::from_global_defaults(defaults(), SetupProfile::Skirmish);
+        let mut runtime = runtime(snapshot, 0x4321);
+        let options = runtime.random_map_options_for_setup(false);
+        assert_eq!(options.num_players, 2);
+        assert_eq!((options.width, options.height), (0, 0));
     }
 
     #[test]

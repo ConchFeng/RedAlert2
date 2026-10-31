@@ -669,6 +669,44 @@ pub fn accept_selected_map(
     true
 }
 
+impl SkirmishShellState {
+    /// Conch Edit's offline random-map preset uses the same row mutations as
+    /// the AI, country, color, and start-position controls.
+    pub(crate) fn fill_random_map_opponents(&mut self, players: i32) {
+        use super::{SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice};
+
+        let active = visible_player_capacity(players).saturating_sub(1);
+        for index in 0..self.opponents.len() {
+            let row_type = if index < active {
+                SkirmishAiRowType::Normal
+            } else {
+                SkirmishAiRowType::None
+            };
+            for (id, item) in [
+                (
+                    SkirmishComboId::AiType(index),
+                    SkirmishComboItem::AiType(row_type),
+                ),
+                (
+                    SkirmishComboId::Side(index + 1),
+                    SkirmishComboItem::Country(SkirmishCountryChoice::Random),
+                ),
+                (
+                    SkirmishComboId::Color(index + 1),
+                    SkirmishComboItem::ColorSentinel(-2),
+                ),
+                (
+                    SkirmishComboId::Start(index + 1),
+                    SkirmishComboItem::Start(LaunchStartPosition::Auto),
+                ),
+            ] {
+                super::combos::apply_combo_selection(self, id, item);
+            }
+        }
+        self.first_opponent = 0;
+    }
+}
+
 /// Apply the native first-open row hide pass for the initially selected map.
 pub fn initialize_rows_for_selected_map(state: &mut SkirmishShellState, maps: &[MapMenuEntry]) {
     let capacity = maps
