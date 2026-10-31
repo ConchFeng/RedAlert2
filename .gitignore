@@ -86,6 +86,7 @@ Thumbs.db
 !/docs/_config.yml
 !/docs/index.md
 !/docs/project-guide.md
+!/docs/large-skirmish.md
 !/docs/Networking.md
 !/docs/ares-unit-delivery.md
 !/docs/ares-superweapon-building-gates.md
