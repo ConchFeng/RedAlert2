@@ -3253,6 +3253,8 @@ WOLTaunts=junk
         let expected_seed = reference.next_range_u32_inclusive(0, 0xFFFF) as i32;
 
         let mut first = runtime.random_map_options_for_setup();
+        assert_eq!(first.num_players, 30);
+        assert_eq!((first.width, first.height), (5, 5));
         assert_eq!(first.seed, expected_seed);
         assert_eq!(
             runtime.scenario_rng.logical_state(),
