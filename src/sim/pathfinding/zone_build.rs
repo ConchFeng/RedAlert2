@@ -372,6 +372,32 @@ fn rebuild_node_indices(
     (node_indices, next_node.saturating_sub(1), edge_buckets)
 }
 
+/// One row run of the fill and the adjacent-row scan it resumes after each
+/// child run returns.
+struct NodeRun {
+    seed_x: i32,
+    seed_y: i32,
+    left: i32,
+    right: i32,
+    scan_x: i32,
+    below: bool,
+}
+
+impl NodeRun {
+    /// Above advances beyond the returned child run; below rechecks its
+    /// rightmost cell once before advancing.
+    fn advance_past_child(&mut self, child_advance: i32) {
+        self.scan_x += if self.below {
+            child_advance
+        } else {
+            child_advance + 1
+        };
+    }
+}
+
+/// The native fill under 56C510 recurses once per adjacent-row run. An
+/// explicit stack keeps that visit order without the call depth, which on
+/// large maps exceeds the main-thread stack.
 fn flood_fill_node_index(
     start_x: u16,
     start_y: u16,
@@ -385,11 +411,76 @@ fn flood_fill_node_index(
 ) -> i32 {
     let start_idx = start_y as usize * width as usize + start_x as usize;
     let movement_class = movement_classes[start_idx];
-    let seed_x = i32::from(start_x);
-    let seed_y = i32::from(start_y);
-    let Some(mut carried_level) = base_level_at(levels, seed_x, seed_y, width, height) else {
+    let Some(root) = fill_node_run(
+        i32::from(start_x),
+        i32::from(start_y),
+        node_id,
+        movement_class,
+        movement_classes,
+        node_indices,
+        levels,
+        width,
+        height,
+        edge_buckets,
+    ) else {
         return 0;
     };
+    let mut runs = vec![root];
+    loop {
+        let run = runs
+            .last_mut()
+            .expect("the root run stays until it returns");
+        if let Some((child_x, child_y)) = next_unassigned_neighbor(
+            run,
+            node_id,
+            movement_class,
+            movement_classes,
+            node_indices,
+            levels,
+            width,
+            height,
+            edge_buckets,
+        ) {
+            match fill_node_run(
+                child_x,
+                child_y,
+                node_id,
+                movement_class,
+                movement_classes,
+                node_indices,
+                levels,
+                width,
+                height,
+                edge_buckets,
+            ) {
+                Some(child) => runs.push(child),
+                None => run.advance_past_child(0),
+            }
+            continue;
+        }
+        let finished = runs.pop().expect("the current run is on the stack");
+        let advance = finished.right - finished.seed_x - 1;
+        match runs.last_mut() {
+            Some(parent) => parent.advance_past_child(advance),
+            None => return advance,
+        }
+    }
+}
+
+/// Assign the seed's row run and register its two scanline edges.
+fn fill_node_run(
+    seed_x: i32,
+    seed_y: i32,
+    node_id: ZoneId,
+    movement_class: u8,
+    movement_classes: &[u8],
+    node_indices: &mut [ZoneId],
+    levels: &[u8],
+    width: u16,
+    height: u16,
+    edge_buckets: &mut BaseEdgeBuckets,
+) -> Option<NodeRun> {
+    let mut carried_level = base_level_at(levels, seed_x, seed_y, width, height)?;
 
     // The native scan first walks left with a carried <=1 height reference.
     // Horizontal scans overwrite prior zone IDs; only vertical recursion tests
@@ -454,36 +545,58 @@ fn flood_fill_node_index(
         height,
     );
 
+    Some(NodeRun {
+        seed_x,
+        seed_y,
+        left,
+        right,
+        scan_x: left,
+        below: false,
+    })
+}
+
+/// Resume the run's above-then-below scan up to the next unassigned cell the
+/// fill enters, registering edges to assigned neighbors on the way.
+fn next_unassigned_neighbor(
+    run: &mut NodeRun,
+    node_id: ZoneId,
+    movement_class: u8,
+    movement_classes: &[u8],
+    node_indices: &[ZoneId],
+    levels: &[u8],
+    width: u16,
+    height: u16,
+    edge_buckets: &mut BaseEdgeBuckets,
+) -> Option<(i32, i32)> {
     // Both adjacent-row scans include the two flanks [L-1, R+1]. Their
     // current-row reference is one cell right, clamped to R.
-    let mut scan_x = left;
-    let run_right = right - 1;
-    while scan_x <= right {
-        let candidate_y = seed_y - 1;
+    let run_right = run.right - 1;
+    loop {
+        if run.scan_x > run.right {
+            if run.below {
+                return None;
+            }
+            run.below = true;
+            run.scan_x = run.left;
+            continue;
+        }
+        let scan_x = run.scan_x;
+        let candidate_y = if run.below {
+            run.seed_y + 1
+        } else {
+            run.seed_y - 1
+        };
         let reference_x = (scan_x + 1).min(run_right);
         if let (Some(candidate), Some(candidate_level), Some(reference_level)) = (
             base_record_index(scan_x, candidate_y, width, height),
             base_level_at(levels, scan_x, candidate_y, width, height),
-            base_level_at(levels, reference_x, seed_y, width, height),
+            base_level_at(levels, reference_x, run.seed_y, width, height),
         ) {
             let neighbor = node_indices[candidate];
             let height_allowed =
                 (i16::from(candidate_level) - i16::from(reference_level)).abs() < 2;
             if neighbor == 0 && movement_classes[candidate] == movement_class && height_allowed {
-                let child_advance = flood_fill_node_index(
-                    scan_x as u16,
-                    candidate_y as u16,
-                    node_id,
-                    movement_classes,
-                    node_indices,
-                    levels,
-                    width,
-                    height,
-                    edge_buckets,
-                );
-                // Above advances beyond the returned child run.
-                scan_x += child_advance + 1;
-                continue;
+                return Some((scan_x, candidate_y));
             } else if neighbor != 0
                 && neighbor != node_id
                 && (height_allowed || movement_class == zone_class::IMPASSABLE)
@@ -491,48 +604,8 @@ fn flood_fill_node_index(
                 edge_buckets.register(neighbor, node_id);
             }
         }
-        scan_x += 1;
+        run.scan_x += 1;
     }
-
-    // Below uses the same range/reference mapping, but rechecks the returned
-    // child run's rightmost cell once before advancing.
-    scan_x = left;
-    while scan_x <= right {
-        let candidate_y = seed_y + 1;
-        let reference_x = (scan_x + 1).min(run_right);
-        if let (Some(candidate), Some(candidate_level), Some(reference_level)) = (
-            base_record_index(scan_x, candidate_y, width, height),
-            base_level_at(levels, scan_x, candidate_y, width, height),
-            base_level_at(levels, reference_x, seed_y, width, height),
-        ) {
-            let neighbor = node_indices[candidate];
-            let height_allowed =
-                (i16::from(candidate_level) - i16::from(reference_level)).abs() < 2;
-            if neighbor == 0 && movement_classes[candidate] == movement_class && height_allowed {
-                let child_advance = flood_fill_node_index(
-                    scan_x as u16,
-                    candidate_y as u16,
-                    node_id,
-                    movement_classes,
-                    node_indices,
-                    levels,
-                    width,
-                    height,
-                    edge_buckets,
-                );
-                scan_x += child_advance;
-                continue;
-            } else if neighbor != 0
-                && neighbor != node_id
-                && (height_allowed || movement_class == zone_class::IMPASSABLE)
-            {
-                edge_buckets.register(neighbor, node_id);
-            }
-        }
-        scan_x += 1;
-    }
-
-    right - seed_x - 1
 }
 
 fn base_record_index(x: i32, y: i32, width: u16, height: u16) -> Option<usize> {
@@ -1896,6 +1969,41 @@ mod tests {
 
         assert_eq!(zone_ids, vec![1, 2]);
         assert_eq!(zone_count, 2);
+    }
+
+    #[test]
+    fn a_giant_map_serpentine_fills_one_zone_without_deep_recursion() {
+        // Ground columns joined alternately at the top and bottom row make one
+        // run per cell along a path of about 131,000 cells.
+        let (width, height) = (512u16, 512u16);
+        let mut movement_classes = vec![zone_class::OUTSIDE; 512 * 512];
+        for y in 0..usize::from(height) {
+            for x in 0..usize::from(width) {
+                let joined = match x % 4 {
+                    1 => y == 0,
+                    3 => y == usize::from(height) - 1,
+                    _ => true,
+                };
+                if joined {
+                    movement_classes[y * usize::from(width) + x] = zone_class::GROUND;
+                }
+            }
+        }
+
+        let (zone_ids, zone_count, _) = rebuild_node_indices(
+            &movement_classes,
+            &vec![0; movement_classes.len()],
+            width,
+            height,
+        );
+
+        assert_eq!(zone_count, 1);
+        assert!(
+            zone_ids
+                .iter()
+                .zip(&movement_classes)
+                .all(|(&id, &class)| id == ZoneId::from(class == zone_class::GROUND))
+        );
     }
 
     #[test]

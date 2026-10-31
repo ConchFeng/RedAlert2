@@ -55,6 +55,7 @@ Huge 240 → 464, Giant 480 → 492 (capped).
 | Huge and Giant maps aborted with a stack overflow. | The shore, island-pinch and hill-corner passes recurse cell by cell, as the original does. | `generate_map_observed` ([build.rs](../src/map/rmg/build.rs)) runs on a thread with a 1 GiB stack reservation, keeping the native visit order. |
 | The Regions stage grew with the square of the area (23 s for one Huge map in a test build). | Each region rescanned every map cell to count and border itself. | [regions.rs](../src/map/rmg/phases/regions.rs) keeps each region's cells and sorts them into native scan order. 120 retail-sized maps were byte-identical before and after. |
 | A 30-player Huge islands map placed no starts. | The sea became the largest zone component, so no clear cell was reference ground; the original selects from nothing and faults. | [zones.rs](../src/map/rmg/phases/zones.rs) falls back to the largest clear component when the largest one holds no clear ground. |
+| Starting a Giant/30-player map aborted with a stack overflow in `flood_fill_node_index`. | The base-zone fill under native 56C510 recursed once per adjacent-row run, about 14,600 frames deep on that map, past the 8 MB main-thread stack. | [zone_build.rs](../src/sim/pathfinding/zone_build.rs) drives the same run order from an explicit stack. |
 
 An optimized build generates a 30-player Huge map in about 3 s and a Giant one in
 about 3.5 s; most of it is the Water stage, which reruns the whole-map shore pass
@@ -62,10 +63,9 @@ after each land blob.
 
 ## Residuals
 
-- Starting the captured Giant/30-player random map on macOS overflows the stack
-  in `sim::pathfinding::zone_build::flood_fill_node_index` while building zones.
-  Generation and setup succeed; that particular live-match demonstration is
-  blocked. See the [screenshot walkthrough](30-player-showcase.md).
+- No live match of the captured Giant/30-player random map has been captured
+  since the zone-fill fix above; long-match stability is unverified. See the
+  [screenshot walkthrough](30-player-showcase.md).
 - The browser build has no threads, so a Huge or Giant random map generates on
   the caller's stack and may overflow.
 - Network rooms keep eight retail colors past eight players and eight random-map
@@ -82,7 +82,8 @@ after each land blob.
 - Regression tests: `a_thirty_player_map_pages_its_opponents_through_the_seven_ai_rows`
   and `extended_colours_are_offered_and_launched_only_past_eight_players` in the
   shell tests; `vera_sizes_and_player_counts_extend_the_retail_dimensions` in
-  `rmg`; and the slow retail-tile test
+  `rmg`; `a_giant_map_serpentine_fills_one_zone_without_deep_recursion` in
+  `zone_build`; and the slow retail-tile test
   `thirty_player_huge_and_giant_maps_seat_every_start` in
   [random_map_ramp_end_tests.rs](../src/app/random_map_ramp_end_tests.rs), run with
   `--profile fast -- thirty_player_huge_and_giant --ignored`.

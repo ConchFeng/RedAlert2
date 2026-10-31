@@ -70,9 +70,9 @@ preview, additional opponent pages, extended colors, and the current runtime lim
 - **Multiplayer:** LAN and online play are available in current source builds on
   macOS and Linux.
 - **Large-map limit:** The captured Giant/30-player map generates and reaches
-  Skirmish setup, but starting that map currently overflows the pathfinding
-  zone builder's stack on macOS. The walkthrough records this limitation;
-  generation screenshots do not establish a completed match.
+  Skirmish setup. Its earlier pathfinding zone-builder stack overflow is fixed,
+  but a live match of that setup has not been captured; generation screenshots
+  do not establish a completed match.
 - **Scale:** 20,000 units remains a project target. Long-game stability and
   smooth performance at maximum map size and player count require further validation.
 

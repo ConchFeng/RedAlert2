@@ -67,10 +67,10 @@ color list to reach the later choices; these extend the original eight colors.
 ## Current gameplay limitation
 
 This specific Giant/30-player map generated successfully and reached the
-completed opponent setup. Starting it on macOS then overflowed the stack in
+completed opponent setup. Starting it on macOS first overflowed the stack in
 `sim::pathfinding::zone_build::flood_fill_node_index` while constructing pathfinding
-zones. A live-match screenshot is therefore not presented as a successful result
-for this setup.
+zones; the fill now uses an explicit stack. No live match of this setup has been
+captured since, so no live-match screenshot is presented as a result.
 
 The captures demonstrate the actual settings, generation, preview, colors,
 and opponent paging. They do not establish long-game stability, maximum-scale
