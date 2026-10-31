@@ -91,7 +91,12 @@ fn in_app_image(executable: &Path, app_dir: &Path) -> bool {
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]
-pub use first_launch::ensure_game_folder;
+pub use first_launch::{choose_game_folder, ensure_game_folder};
+
+#[cfg(not(any(target_os = "macos", target_os = "linux")))]
+pub fn choose_game_folder(_start: Option<&Path>) -> anyhow::Result<bool> {
+    anyhow::bail!("Select the game folder by setting [paths] ra2_dir in config.toml")
+}
 
 /// Only the macOS app bundle and the Linux AppImage set up a game folder.
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -173,6 +178,43 @@ mod first_launch {
         })
     }
 
+    pub fn choose_game_folder(start: Option<&Path>) -> Result<bool> {
+        let data_folder = std::env::current_dir()?;
+        choose_game_folder_with(&data_folder, start, &mut SystemDialogs::new()?)
+    }
+
+    pub(super) fn choose_game_folder_with(
+        data_folder: &Path,
+        start: Option<&Path>,
+        player: &mut impl Player,
+    ) -> Result<bool> {
+        let Some(folder) = choose_valid_game_folder(start, player)? else {
+            return Ok(false);
+        };
+        save_game_folder(data_folder, &folder)
+    }
+
+    fn choose_valid_game_folder(
+        start: Option<&Path>,
+        player: &mut impl Player,
+    ) -> Result<Option<PathBuf>> {
+        let mut retry = false;
+        loop {
+            let Some(folder) = player.choose(start, retry)? else {
+                return Ok(None);
+            };
+            if holds_master_archives(&folder) {
+                return Ok(Some(folder));
+            }
+            let assets = folder.join("assets");
+            if holds_master_archives(&assets) {
+                return Ok(Some(assets));
+            }
+            log::info!("No ra2md.mix and ra2.mix in {}", folder.display());
+            retry = true;
+        }
+    }
+
     pub(super) fn ensure_game_folder_with(
         data_folder: &Path,
         executable: &Path,
@@ -200,20 +242,17 @@ mod first_launch {
             None => {
                 // Beside the found folder, where any other copies are.
                 let start = found.first().and_then(|folder| folder.parent());
-                let mut retry = false;
-                loop {
-                    let Some(folder) = player.choose(start, retry)? else {
-                        return Ok(false);
-                    };
-                    if holds_master_archives(&folder) {
-                        break folder;
-                    }
-                    log::info!("No ra2md.mix and ra2.mix in {}", folder.display());
-                    retry = true;
-                }
+                let Some(folder) = choose_valid_game_folder(start, player)? else {
+                    return Ok(false);
+                };
+                folder
             }
         };
 
+        save_game_folder(data_folder, &folder)
+    }
+
+    fn save_game_folder(data_folder: &Path, folder: &Path) -> Result<bool> {
         let ra2_dir = folder
             .to_str()
             .context("The game folder's path is not valid UTF-8")?;
@@ -686,8 +725,8 @@ mod tests {
         use anyhow::Result;
 
         use super::super::first_launch::{
-            Offer, Player, ensure_game_folder_with, find_linux_game_folders, find_mac_game_folders,
-            steam_library_path,
+            Offer, Player, choose_game_folder_with, ensure_game_folder_with,
+            find_linux_game_folders, find_mac_game_folders, steam_library_path,
         };
         use crate::util::config::GameConfig;
 
@@ -760,6 +799,39 @@ mod tests {
                     .push(format!("choose from {start:?}, retry {retry}"));
                 Ok(self.choices.remove(0))
             }
+        }
+
+        #[test]
+        fn choosing_a_resource_container_retries_and_preserves_configuration() {
+            let fixture = Fixture::new();
+            let container = fixture.root.join("portable");
+            let assets = container.join("assets");
+            write_masters(&assets, ["ra2md.mix", "ra2.mix"]);
+            let config_path = fixture.data.join("config.toml");
+            let before = "[paths]\nra2_dir = 'missing'\nsettings_dir = '.'\n[graphics]\nwindow_width = 1920\nwindow_height = 1080\n";
+            std::fs::write(&config_path, before).unwrap();
+            let mut cancel = Script {
+                choices: vec![None],
+                ..Default::default()
+            };
+            assert!(!choose_game_folder_with(&fixture.data, None, &mut cancel).unwrap());
+            assert_eq!(std::fs::read_to_string(&config_path).unwrap(), before);
+            let mut player = Script {
+                choices: vec![Some(fixture.root.join("wrong")), Some(container)],
+                ..Default::default()
+            };
+            assert!(choose_game_folder_with(&fixture.data, None, &mut player).unwrap());
+            assert_eq!(
+                player.asked,
+                [
+                    "choose from None, retry false",
+                    "choose from None, retry true"
+                ]
+            );
+            let config = fixture.load();
+            assert_eq!(config.paths.ra2_dir, assets);
+            assert_eq!(config.paths.settings_dir(), fixture.data);
+            assert_eq!(config.graphics.window_size, Some((1920, 1080)));
         }
 
         #[test]

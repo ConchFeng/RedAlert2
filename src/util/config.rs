@@ -152,6 +152,8 @@ fn resolved_directory(path: &Path) -> PathBuf {
 /// is ignored.
 #[derive(Debug)]
 pub struct GraphicsConfig {
+    /// Optional startup client size in physical pixels, independent of DPI scaling.
+    pub window_size: Option<(u32, u32)>,
     /// Enable cosmetic per-frame effects: water/ore sparkles. Also intended to
     /// gate future cosmetic effects (laser beam pulses, particle systems, line
     /// trails) per gamemd's "Extra Animations" option. Default ON to match
@@ -165,6 +167,7 @@ pub struct GraphicsConfig {
 impl Default for GraphicsConfig {
     fn default() -> Self {
         Self {
+            window_size: None,
             extra_animations: true,
             translucent_fog: false,
         }
@@ -290,6 +293,8 @@ impl GameConfig {
     fn parse(contents: &str) -> Result<Self> {
         let mut ra2_dir = None;
         let mut settings_dir = None;
+        let mut window_width = None;
+        let mut window_height = None;
         let mut graphics = GraphicsConfig::default();
         let mut gameplay = GameplayConfig::default();
         let mut profile = ProfileConfig::default();
@@ -330,6 +335,12 @@ impl GameConfig {
                 ("graphics", "translucent_fog") => {
                     parse_bool(value).map(|on| graphics.translucent_fog = on)
                 }
+                ("graphics", "window_width") => {
+                    parse_u32(value).map(|width| window_width = Some(width))
+                }
+                ("graphics", "window_height") => {
+                    parse_u32(value).map(|height| window_height = Some(height))
+                }
                 ("gameplay", "input_delay_ticks") => {
                     parse_u32(value).map(|ticks| gameplay.input_delay_ticks = ticks)
                 }
@@ -351,6 +362,17 @@ impl GameConfig {
             read.with_context(|| format!("line {line_number}: [{section}] {key}"))?;
         }
         let ra2_dir = ra2_dir.context("missing `ra2_dir` in [paths]")?;
+        ensure!(
+            window_width.is_some() == window_height.is_some(),
+            "[graphics] window_width and window_height must be specified together"
+        );
+        if let (Some(width), Some(height)) = (window_width, window_height) {
+            ensure!(
+                width > 0 && height > 0,
+                "[graphics] window dimensions must be positive"
+            );
+            graphics.window_size = Some((width, height));
+        }
         ini.validate().map_err(anyhow::Error::msg)?;
         Ok(Self {
             ini,
@@ -808,6 +830,21 @@ extra_animations = false
             GameConfig::parse("[paths]\nra2_dir = 'retail'\n[graphics]\ntranslucent_fog = true\n")
                 .unwrap();
         assert!(config.graphics.translucent_fog);
+    }
+
+    #[test]
+    fn startup_window_size_requires_a_positive_pair() {
+        let base = "[paths]\nra2_dir = 'retail'\n[graphics]\n";
+        let config = GameConfig::parse(&format!(
+            "{base}window_width = 1920\nwindow_height = 1080\n"
+        ))
+        .unwrap();
+        assert_eq!(config.graphics.window_size, Some((1920, 1080)));
+        assert_eq!(GameConfig::parse(base).unwrap().graphics.window_size, None);
+        assert!(GameConfig::parse(&format!("{base}window_width = 1920\n")).is_err());
+        assert!(
+            GameConfig::parse(&format!("{base}window_width = 1920\nwindow_height = 0\n")).is_err()
+        );
     }
 
     #[test]

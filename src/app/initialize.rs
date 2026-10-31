@@ -134,12 +134,20 @@ impl InitializationJob {
 
 fn startup_window_projection(
     profile_screen: ScreenSize,
+    window_size: Option<(u32, u32)>,
     capture_dimensions: Option<(u32, u32)>,
-) -> (u32, u32, bool) {
-    capture_dimensions.map_or(
-        (profile_screen.width, profile_screen.height, true),
-        |(width, height)| (width, height, false),
-    )
+) -> (winit::dpi::Size, bool) {
+    if let Some((width, height)) = capture_dimensions.or(window_size) {
+        (
+            PhysicalSize::new(width, height).into(),
+            capture_dimensions.is_none(),
+        )
+    } else {
+        (
+            winit::dpi::LogicalSize::new(profile_screen.width, profile_screen.height).into(),
+            true,
+        )
+    }
 }
 
 /// Keep the first actionable failure while still constructing the error-screen state.
@@ -327,22 +335,15 @@ impl App {
                     .ok()
                     .as_deref(),
             );
-        let (window_width, window_height, window_visible) =
-            startup_window_projection(profile_screen, capture_dimensions);
+        let window_size = game_config
+            .as_ref()
+            .and_then(|config| config.graphics.window_size);
+        let (inner_size, window_visible) =
+            startup_window_projection(profile_screen, window_size, capture_dimensions);
         let window_visible = window_visible && !hidden_spawn_window;
         let startup_audio =
             StartupAudioDisposition::for_audio_enabled(startup_options.audio_enabled);
-        // The player's window has a title bar and any size they drag it to; it
-        // opens at the frontend size in logical units, so a high-DPI display
-        // shows it as large as a standard one. The menus fit whatever it gets
-        // and the match zoom follows it. A sealed capture keeps its exact,
-        // fixed, hidden physical surface.
         let capture = capture_dimensions.is_some();
-        let inner_size: winit::dpi::Size = if capture {
-            PhysicalSize::new(window_width, window_height).into()
-        } else {
-            winit::dpi::LogicalSize::new(window_width, window_height).into()
-        };
         // The saved Full Screen choice goes in at creation: macOS retries it
         // only then, when the first attempt fails (a launch from an app that
         // is itself full screen). The resize that ends the animation re-fits
@@ -1572,6 +1573,22 @@ mod tests {
     }
 
     #[test]
+    fn configured_startup_window_uses_physical_pixels() {
+        let shell = ScreenSize {
+            width: 800,
+            height: 600,
+        };
+        assert_eq!(
+            startup_window_projection(shell, Some((1920, 1080)), None),
+            (PhysicalSize::new(1920, 1080).into(), true)
+        );
+        assert_eq!(
+            startup_window_projection(shell, None, None),
+            (winit::dpi::LogicalSize::new(800, 600).into(), true)
+        );
+    }
+
+    #[test]
     fn capture_dimensions_override_profile_and_remain_hidden() {
         let capture_dimensions = Some((1024, 768));
         let startup_options = RetailStartupOptions {
@@ -1614,8 +1631,12 @@ mod tests {
             RetailOptionsLoad::without_settings(&RetailStartupOptions::default())
         );
         assert_eq!(
-            startup_window_projection(options_load.startup_shell_screen, capture_dimensions),
-            (1024, 768, false)
+            startup_window_projection(
+                options_load.startup_shell_screen,
+                Some((1920, 1080)),
+                capture_dimensions
+            ),
+            (PhysicalSize::new(1024, 768).into(), false)
         );
         assert_eq!(
             options_load.startup_shell_screen,

@@ -26,6 +26,7 @@ use crate::ui::shell::geom::RectPx;
 
 #[derive(Clone, Copy)]
 enum Action {
+    ChooseGameFolder,
     Quit,
     BackToMenu,
     Resume,
@@ -36,6 +37,7 @@ enum Action {
 impl Action {
     fn label(self, state: &AppState) -> Cow<'_, str> {
         let (key, fallback) = match self {
+            Self::ChooseGameFolder => (None, "Choose Folder"),
             Self::Quit => (None, "Quit"),
             Self::BackToMenu => (None, "Back To Menu"),
             Self::Resume => (Some("GUI:ResumeMission"), "Resume Mission"),
@@ -46,8 +48,24 @@ impl Action {
             .map_or(Cow::Borrowed(fallback), Cow::Borrowed)
     }
 
-    fn commit(self, state: &mut AppState, event_loop: &ActiveEventLoop) {
+    fn commit(self, state: &mut AppState, event_loop: &ActiveEventLoop) -> EventResponse {
         match self {
+            Self::ChooseGameFolder => {
+                let start = state
+                    .platform
+                    .game_config
+                    .as_ref()
+                    .map(|config| config.paths.ra2_dir.as_path());
+                match crate::app::app_bundle::choose_game_folder(start) {
+                    Ok(true) => return EventResponse::ReloadStartup,
+                    Ok(false) => {}
+                    Err(error) => {
+                        log::error!("Could not select the game folder: {error:#}");
+                        state.frontend.main_menu_shell_error =
+                            Some(format!("Could not select the game folder: {error:#}"));
+                    }
+                }
+            }
             // A startup failure must not write defaults over the retail profile.
             Self::Quit => event_loop.exit(),
             Self::BackToMenu => App::leave_mission_result_screen(state),
@@ -58,7 +76,14 @@ impl Action {
                 ModalOutcome::LeaveMatch { destruct: false },
             ),
         }
+        EventResponse::Handled
     }
+}
+
+pub(crate) enum EventResponse {
+    Ignored,
+    Handled,
+    ReloadStartup,
 }
 
 #[derive(Clone, Copy)]
@@ -67,6 +92,11 @@ pub(crate) struct Buttons([Option<Action>; 2]);
 impl Buttons {
     pub(crate) const NONE: Self = Self([None, None]);
     pub(crate) const QUIT: Self = Self([Some(Action::Quit), None]);
+    pub(crate) const GAME_FILES: Self = if cfg!(any(target_os = "macos", target_os = "linux")) {
+        Self([Some(Action::ChooseGameFolder), Some(Action::Quit)])
+    } else {
+        Self::QUIT
+    };
     pub(crate) const BACK_TO_MENU: Self = Self([Some(Action::BackToMenu), None]);
     pub(crate) const MISSING_MENU: Self = Self([Some(Action::Resume), Some(Action::Abort)]);
     pub(crate) const ABORT_CONFIRM: Self = Self([Some(Action::Leave), Some(Action::Resume)]);
@@ -75,7 +105,7 @@ impl Buttons {
     /// same decision (`input::precedence`).
     fn for_state(state: &AppState) -> Option<Self> {
         match crate::app::input::precedence::input_layer(state) {
-            InputLayer::Page(ModalPage::ShellError) => Some(Self::QUIT),
+            InputLayer::Page(ModalPage::ShellError) => Some(Self::GAME_FILES),
             InputLayer::Screen(ScreenPage::ResultCard) => Some(Self::BACK_TO_MENU),
             InputLayer::Screen(ScreenPage::InGameCard) => Some(
                 if state.match_state.match_presentation.in_game_menu
@@ -209,9 +239,9 @@ pub(crate) fn handle_event(
     state: &mut AppState,
     event: &WindowEvent,
     event_loop: &ActiveEventLoop,
-) -> bool {
+) -> EventResponse {
     let Some(buttons) = Buttons::for_state(state) else {
-        return false;
+        return EventResponse::Ignored;
     };
     let actions = buttons.actions();
     match event {
@@ -220,7 +250,7 @@ pub(crate) fn handle_event(
             // zoomed match; the card maps back through `window_cursor_position`.
             state.set_cursor_from_window(position.x as f32, position.y as f32);
             state.platform.window.request_redraw();
-            true
+            EventResponse::Handled
         }
         WindowEvent::MouseInput {
             state: ElementState::Released,
@@ -232,18 +262,21 @@ pub(crate) fn handle_event(
                 state.renderer.gpu.config.height,
             );
             let (x, y) = state.window_cursor_position();
-            if let Some((_, action)) = layout
+            let response = if let Some((_, action)) = layout
                 .button_rects(actions.len())
                 .into_iter()
                 .zip(actions)
                 .find(|(rect, _)| rect.contains(x as i32, y as i32))
             {
-                action.commit(state, event_loop);
-            }
+                action.commit(state, event_loop)
+            } else {
+                EventResponse::Handled
+            };
             state.platform.window.request_redraw();
-            true
+            response
         }
         WindowEvent::KeyboardInput { event, .. } => {
+            let mut response = EventResponse::Handled;
             if event.state.is_pressed() && !event.repeat {
                 let action = match event.physical_key {
                     PhysicalKey::Code(KeyCode::Enter | KeyCode::NumpadEnter) => {
@@ -255,15 +288,15 @@ pub(crate) fn handle_event(
                     _ => None,
                 };
                 if let Some(action) = action {
-                    action.commit(state, event_loop);
+                    response = action.commit(state, event_loop);
                 }
                 state.platform.window.request_redraw();
             }
-            true
+            response
         }
-        WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => true,
+        WindowEvent::MouseInput { .. } | WindowEvent::MouseWheel { .. } => EventResponse::Handled,
         // Focus, resize and close retain the platform lifecycle handler.
-        _ => false,
+        _ => EventResponse::Ignored,
     }
 }
 

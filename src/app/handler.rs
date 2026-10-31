@@ -831,8 +831,14 @@ impl ApplicationHandler for App {
                 _ => return,
             }
         }
-        if crate::app::frontend::status_screen::handle_event(state, &event, event_loop) {
-            return;
+        match crate::app::frontend::status_screen::handle_event(state, &event, event_loop) {
+            crate::app::frontend::status_screen::EventResponse::Ignored => {}
+            crate::app::frontend::status_screen::EventResponse::Handled => return,
+            crate::app::frontend::status_screen::EventResponse::ReloadStartup => {
+                self.state = None;
+                self.resumed(event_loop);
+                return;
+            }
         }
 
         match event {

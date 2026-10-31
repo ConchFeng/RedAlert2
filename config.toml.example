@@ -22,6 +22,9 @@ profile = "yr" # yr | mo | auto | custom
 # eva = "my-eva.ini"
 
 [graphics]
+# Optional startup window size in physical pixels; specify both dimensions.
+# window_width = 1920
+# window_height = 1080
 extra_animations = true   # cosmetic effects: water/ore sparkles (future: laser pulses, particle trails)
 translucent_fog = false   # show terrain through fog; unseen enemy objects remain concealed
 # Full screen, zoom and the original 4:3 shape are on the Options page (saved in VERA.INI).

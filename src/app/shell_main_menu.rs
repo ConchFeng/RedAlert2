@@ -942,6 +942,13 @@ impl App {
                 .to_owned()
         };
         let details = display_error(&error);
+        let folder_help = if cfg!(any(target_os = "macos", target_os = "linux")) {
+            "Choose Folder to select your game installation or its containing folder.\n\
+It must contain ra2.mix and ra2md.mix, directly or inside assets.\n\
+The selected path is saved to config.toml and startup retries automatically.\n\n"
+        } else {
+            ""
+        };
         crate::app::frontend::status_screen::render(
             state,
             encoder,
@@ -949,13 +956,12 @@ impl App {
             title,
             &format!(
                 "VERA20K needs Red Alert 2: Yuri's Revenge to run.\n\n\
-1. Copy vera20k.exe into your Red Alert 2: Yuri's Revenge folder and start it there.\n\n\
-2. Or set [paths] ra2_dir in config.toml, either in the folder you start it from or beside vera20k.exe.\n\n\
+{folder_help}Set [paths] ra2_dir in config.toml to the folder containing ra2.mix and ra2md.mix.\n\n\
 Game files: {asset_root}{path_note}\n\
 Log: logs/ra2.log\n\n\
 Details: {details}"
             ),
-            crate::app::frontend::status_screen::Buttons::QUIT,
+            crate::app::frontend::status_screen::Buttons::GAME_FILES,
         );
         Ok(())
     }
