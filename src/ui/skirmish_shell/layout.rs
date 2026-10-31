@@ -217,6 +217,10 @@ pub struct SkirmishShellLayout {
     pub rows: SkirmishRowRects,
     pub color_combos: [RectPx; 8],
     pub flags: [RectPx; 8],
+    /// VERA: Previous and Next players under the rows, and the page caption
+    /// between them, shown while the selected map pages its opponents.
+    pub roster_navigation: [RectPx; 2],
+    pub roster_page_label: RectPx,
     pub trackbars: SkirmishTrackbarRects,
     pub trackbar_labels: SkirmishTrackbarLabelRects,
     pub checkboxes: [SkirmishCheckboxRect; SKIRMISH_CHECKBOX_COUNT],
@@ -402,6 +406,10 @@ pub fn translate_layout(mut layout: SkirmishShellLayout, dx: i32, dy: i32) -> Sk
     for rect in &mut layout.flags {
         *rect = rect.translate(dx, dy);
     }
+    for rect in &mut layout.roster_navigation {
+        *rect = rect.translate(dx, dy);
+    }
+    layout.roster_page_label = layout.roster_page_label.translate(dx, dy);
     layout.trackbars.game_speed = layout.trackbars.game_speed.translate(dx, dy);
     layout.trackbars.credits = layout.trackbars.credits.translate(dx, dy);
     layout.trackbars.unit_count = layout.trackbars.unit_count.translate(dx, dy);
@@ -682,6 +690,10 @@ pub fn compute_layout(screen_w: u32, screen_h: u32) -> SkirmishShellLayout {
         rows,
         color_combos,
         flags,
+        // The gap between the last row (148 + 12 DLU) and the first
+        // checkbox (176 DLU).
+        roster_navigation: [dlu_rect(39, 163, 60, 11), dlu_rect(209, 163, 60, 11)],
+        roster_page_label: dlu_rect(99, 163, 110, 11),
         trackbars: SkirmishTrackbarRects {
             game_speed: child_window(269, 176, 85, 13),
             credits: child_window(269, 193, 85, 13),
@@ -1161,6 +1173,8 @@ impl ScaledRects for SkirmishShellLayout {
             rows: self.rows.scaled_rects(scale),
             color_combos: self.color_combos.scaled_rects(scale),
             flags: self.flags.scaled_rects(scale),
+            roster_navigation: self.roster_navigation.scaled_rects(scale),
+            roster_page_label: self.roster_page_label.scaled_rects(scale),
             trackbars: self.trackbars.scaled_rects(scale),
             trackbar_labels: self.trackbar_labels.scaled_rects(scale),
             checkboxes: self.checkboxes.scaled_rects(scale),

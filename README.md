@@ -109,6 +109,9 @@ A map whose sum is at most 512 keeps retail 512-stride cell addressing; larger
 maps automatically select 1024-stride addressing. This is a bounded VERA extension.
 Generate a literal 500×500 map with 30 starts using
 `python -m tools.scale_map large500.map --size 500 --starts 30`.
+A map whose `[Basic] MaxPlayers` names 9–30 authored starts seats that many players
+in Skirmish: **Previous** and **Next** page the computer opponents seven at a time,
+and players past the eighth choose from 22 extra colors.
 Retail overlay packs keep their 512×512 layout; extended packs use 1024×1024.
 Both map sizes use the same executable and versioned save machinery. Stored-layout
 changes are checked by the existing snapshot version guard; this change does not

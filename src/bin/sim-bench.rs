@@ -18,7 +18,7 @@
 //! `--scenario match` plays the middle of a multiplayer match instead (see
 //! `sim_bench_match`): the map loads as a Battle against `--computers`
 //! computer houses (by default the most the lobby admits on the map, at most
-//! 7), the other start waypoints get human players' houses, and every house
+//! 29), the other start waypoints get human players' houses, and every house
 //! has a finished base, harvesters, factories that keep building and a mixed
 //! army. Their own AI plays the computer houses; a script plays the human
 //! ones, sending their armies at the nearest bases in squads until those
@@ -254,7 +254,7 @@ fn parse_args_from(mut argv: impl Iterator<Item = String>) -> Result<Args, Strin
 
 /// `--computers`, by default the most the skirmish lobby admits on the map:
 /// it refuses more players than the map's capacity (`MapCapacityExceeded`,
-/// `TXT_SCENARIO_TOO_SMALL`), and a Battle has at most seven computer houses.
+/// `TXT_SCENARIO_TOO_SMALL`), and a Battle has at most 29 computer houses.
 /// More would seat houses the map has no start for.
 fn seated_computers(args: &Args) -> Result<usize, String> {
     let assets =
@@ -652,7 +652,7 @@ fn main() -> Result<(), String> {
             eprintln!(
                 "usage: sim-bench [--ra2-dir <retail path>] [--map Death.mmx] \
                  [--scenario march|match|skirmish] [--seed S] [--units 20000] [--houses N] \
-                 [--computers N (match, skirmish; default the map's most, at most 7)] \
+                 [--computers N (match, skirmish; default the map's most, at most 29)] \
                  [--ticks 300 (match: 1800, skirmish: 9000)] \
                  [--types E1,E2,MTNK,HTNK] [--order-spread 30] [--return-at T] (march) \
                  [--hash-every N] [--frame-hash-every 15] [--csv <path>] [--serial-paths] [--serial-scans] \
@@ -681,7 +681,7 @@ fn main() -> Result<(), String> {
             &args.ra2_dir,
             &args.map,
             args.seed,
-            battle_session(&args.map, &sim_bench_match::COMPUTER_ROSTER[..computers]),
+            battle_session(&args.map, &sim_bench_match::computer_roster(computers)),
         )?,
     };
     if !args.serial_paths {

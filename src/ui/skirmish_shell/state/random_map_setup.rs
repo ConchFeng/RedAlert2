@@ -125,11 +125,16 @@ const THEATER_ITEMS: [SetupComboItem; 2] = [
     item("Name:Snow", "Snow", 1),
 ];
 
-const SIZE_ITEMS: [SetupComboItem; 4] = [
+/// The retail four, then VERA's Huge and Giant: twice and four times the Very
+/// Large side ([`crate::map::rmg::generated_dimensions`]). gamemd has no string
+/// for either, so they show their fallback labels.
+const SIZE_ITEMS: [SetupComboItem; 6] = [
     item("TXT_MAPSIZE_SMALL", "Small", 0),
     item("TXT_MAPSIZE_MEDIUM", "Medium", 1),
     item("TXT_MAPSIZE_LARGE", "Large", 2),
     item("TXT_MAPSIZE_VERY_LARGE", "Very Large", 3),
+    item("VERA:MapSizeHuge", "Huge", 4),
+    item("VERA:MapSizeGiant", "Giant", 5),
 ];
 
 const RESOURCE_ITEMS: [SetupComboItem; 4] = [
@@ -159,8 +164,10 @@ pub enum AcceptOutcome {
     NeedsGenerate,
 }
 
-/// The Players slider's range, 2..8 in steps of 1 (`TBM_SETRANGE` at
-/// `0x0059722C`; no `0x4AB`).
+/// The retail Players slider's range, 2..8 in steps of 1 (`TBM_SETRANGE` at
+/// `0x0059722C`; no `0x4AB`). The network rooms keep it: their `'W'` start
+/// staging carries eight cells. Skirmish extends it
+/// ([`RandomMapSetupModalState::players_range`]).
 pub const PLAYERS_RANGE: TrackbarRange = TrackbarRange::new(2, 8, 1);
 
 /// The Create Random Map dialog.
@@ -179,6 +186,8 @@ pub struct RandomMapSetupModalState {
     /// The Players slider holding the mouse since a press on it.
     pub players_hold: Option<TrackbarHold>,
     pub pressed_control: Option<RandomMapSetupControl>,
+    /// VERA: the most players the Players slider reaches.
+    pub max_players: i32,
     /// The rasterised preview of the last generated map, shown in the preview
     /// box. `None` until a generate has produced one; any option edit clears it,
     /// because it no longer describes the configured map.
@@ -218,11 +227,24 @@ impl RandomMapSetupModalState {
             open_combo: None,
             players_hold: None,
             pressed_control: None,
+            max_players: crate::map::rmg::RMG_MAX_PLAYERS,
             generated_preview: None,
             preview_generation: 0,
             previous_selection,
             statics: DialogStatics::default(),
         }
+    }
+
+    /// Bound the Players slider to `max_players`, clamping the opened value.
+    pub fn with_player_limit(mut self, max_players: i32) -> Self {
+        self.max_players = max_players.clamp(2, crate::map::rmg::RMG_MAX_PLAYERS);
+        self.options.num_players = self.options.num_players.min(self.max_players);
+        self
+    }
+
+    /// The Players slider's range: [`PLAYERS_RANGE`] up to `max_players`.
+    pub fn players_range(&self) -> TrackbarRange {
+        TrackbarRange::new(2, self.max_players, 1)
     }
 
     /// Whether a control is currently interactive. Every control is inert
@@ -278,7 +300,9 @@ impl RandomMapSetupModalState {
     /// the value changed; the slider then clicks (GenericClick, `0x0061E6DD`),
     /// since `0x105` never turns its cue off (`0x4AE`).
     pub fn press_players(&mut self, x: i32, y: i32, window: RectPx, scale: ShellScale) -> bool {
-        let press = PLAYERS_RANGE.press_in(self.options.num_players, x, y, window, scale);
+        let press = self
+            .players_range()
+            .press_in(self.options.num_players, x, y, window, scale);
         self.players_hold = press.hold(());
         match press {
             TrackbarPress::Jump(value) => self.change_num_players(value),
@@ -290,7 +314,7 @@ impl RandomMapSetupModalState {
     /// device `x`. Returns whether the value changed.
     pub fn drag_players(&mut self, x: i32, window: RectPx, scale: ShellScale) -> bool {
         self.players_hold.is_some_and(|hold| hold.dragging)
-            && self.change_num_players(PLAYERS_RANGE.value_at_in(x, window, scale))
+            && self.change_num_players(self.players_range().value_at_in(x, window, scale))
     }
 
     /// The slider notifies (`WM_HSCROLL`, case `0x00596B04`) only when its
@@ -765,5 +789,19 @@ mod tests {
             (None, Some(2))
         );
         assert_eq!(state.press_combos(&layout, outside.0, outside.1), None);
+    }
+
+    #[test]
+    fn a_network_room_keeps_the_retail_eight_players() {
+        let skirmish = opened();
+        assert_eq!(skirmish.players_range(), TrackbarRange::new(2, 30, 1));
+
+        let mut options = skirmish.options.clone();
+        options.num_players = 20;
+        let room = RandomMapSetupModalState::open(options, None, false).with_player_limit(
+            i32::from(crate::map::skirmish_scenarios::NETWORK_RANDOM_MAP_MAX_PLAYERS),
+        );
+        assert_eq!(room.options.num_players, 8);
+        assert_eq!(room.players_range(), PLAYERS_RANGE);
     }
 }

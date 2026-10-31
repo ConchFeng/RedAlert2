@@ -261,7 +261,8 @@ impl App {
             }
             crate::ui::skirmish_shell::SkirmishShellAction::None
             | crate::ui::skirmish_shell::SkirmishShellAction::SelectColor(_)
-            | crate::ui::skirmish_shell::SkirmishShellAction::SelectMap(_) => {}
+            | crate::ui::skirmish_shell::SkirmishShellAction::SelectMap(_)
+            | crate::ui::skirmish_shell::SkirmishShellAction::PagePlayers { .. } => {}
         }
     }
 
@@ -958,12 +959,25 @@ impl App {
             .random_map_options_for_setup();
         let available = Self::saved_seed_dir(state)
             .is_some_and(|dir| crate::map::rmg::saved_seeds::saved_seeds_available(&dir));
-        state.frontend.skirmish_shell_state.random_map_setup_modal =
-            Some(crate::ui::skirmish_shell::RandomMapSetupModalState::open(
+        // A network room's 'W' start staging carries eight cells.
+        let network = matches!(
+            state.match_state.session_mode(),
+            crate::app::match_runtime::session::SessionMode::Lan
+                | crate::app::match_runtime::session::SessionMode::Wol
+        );
+        let max_players = if network {
+            i32::from(crate::map::skirmish_scenarios::NETWORK_RANDOM_MAP_MAX_PLAYERS)
+        } else {
+            crate::map::rmg::RMG_MAX_PLAYERS
+        };
+        state.frontend.skirmish_shell_state.random_map_setup_modal = Some(
+            crate::ui::skirmish_shell::RandomMapSetupModalState::open(
                 options,
                 Some(previous),
                 available,
-            ));
+            )
+            .with_player_limit(max_players),
+        );
     }
 
     fn sync_player_name_edit_scroll(state: &mut AppState) {
@@ -1081,7 +1095,9 @@ impl App {
             .skirmish_shell_state
             .choose_map_modal
             .as_mut()
-            && modal.statics.hover(&text, crate::util::time::Instant::now())
+            && modal
+                .statics
+                .hover(&text, crate::util::time::Instant::now())
         {
             state.platform.window.request_redraw();
         }
@@ -1264,8 +1280,13 @@ impl App {
         state
             .frontend
             .skirmish_shell_state
-            .pressed_owner_draw_button =
-            crate::ui::skirmish_shell::hit_test_owner_draw_button(&layout, x, y);
+            .pressed_owner_draw_button = crate::ui::skirmish_shell::hit_test_owner_draw_button(
+            &state.frontend.skirmish_shell_state,
+            state.frontend.scenario_catalog.shell_maps(),
+            &layout,
+            x,
+            y,
+        );
         if state
             .frontend
             .skirmish_shell_state
@@ -1309,7 +1330,13 @@ impl App {
         }
         let layout = Self::skirmish_shell_layout(state);
         let (x, y) = state.match_state.input.cursor_px();
-        let released_button = crate::ui::skirmish_shell::hit_test_owner_draw_button(&layout, x, y);
+        let released_button = crate::ui::skirmish_shell::hit_test_owner_draw_button(
+            &state.frontend.skirmish_shell_state,
+            state.frontend.scenario_catalog.shell_maps(),
+            &layout,
+            x,
+            y,
+        );
         let pressed_button = state
             .frontend
             .skirmish_shell_state

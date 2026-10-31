@@ -2,7 +2,7 @@
 
 use crate::map::scenario_menu::MapMenuEntry;
 use crate::skirmish_launch::{
-    HOUSE_COLOR_COUNT, LaunchCountry, LaunchStartPosition, SKIRMISH_PLAYER_SLOT_COUNT,
+    HOUSE_COLOR_COUNT, LaunchCountry, LaunchStartPosition, NETWORK_PLAYER_SLOT_COUNT,
 };
 use crate::ui::shell::combobox::{ComboPopup, ComboPress};
 
@@ -12,17 +12,46 @@ use super::{
     DropdownScrollDragState, DropdownScrollbarPart, DropdownScrollbarPressState, OpenComboDropdown,
     SkirmishAiRowType, SkirmishComboId, SkirmishComboItem, SkirmishCountryChoice,
     SkirmishShellOpponent, SkirmishShellState, SkirmishShellUiSound, inactive_ai_team_default,
-    player_row_visible,
+    player_row_visible, row_slot, selected_player_capacity,
 };
 
-pub fn combo_rect(layout: &SkirmishShellLayout, id: SkirmishComboId) -> Option<RectPx> {
+/// The control rect of a player's combo, in the dialog slot its page shows it
+/// in; `None` while the row is on another page.
+pub fn combo_rect(
+    state: &SkirmishShellState,
+    layout: &SkirmishShellLayout,
+    id: SkirmishComboId,
+) -> Option<RectPx> {
+    let row = match id {
+        SkirmishComboId::AiType(idx) => idx + 1,
+        SkirmishComboId::Side(row)
+        | SkirmishComboId::Color(row)
+        | SkirmishComboId::Start(row)
+        | SkirmishComboId::Team(row) => row,
+    };
+    let slot = row_slot(state, row)?;
     match id {
-        SkirmishComboId::AiType(idx) => layout.rows.ai_type_combos.get(idx).copied(),
-        SkirmishComboId::Side(row) => layout.rows.side_combos.get(row).copied(),
-        SkirmishComboId::Color(row) => layout.color_combos.get(row).copied(),
-        SkirmishComboId::Start(row) => layout.rows.start_combos.get(row).copied(),
-        SkirmishComboId::Team(row) => layout.rows.team_combos.get(row).copied(),
+        SkirmishComboId::AiType(_) => layout
+            .rows
+            .ai_type_combos
+            .get(slot.checked_sub(1)?)
+            .copied(),
+        SkirmishComboId::Side(_) => layout.rows.side_combos.get(slot).copied(),
+        SkirmishComboId::Color(_) => layout.color_combos.get(slot).copied(),
+        SkirmishComboId::Start(_) => layout.rows.start_combos.get(slot).copied(),
+        SkirmishComboId::Team(_) => layout.rows.team_combos.get(slot).copied(),
     }
+}
+
+/// The colour priorities a row may hold: the retail eight, then VERA's
+/// extended colours while the selected map holds more than eight players.
+pub fn color_palette(state: &SkirmishShellState, maps: &[MapMenuEntry]) -> Vec<usize> {
+    let extended = (selected_player_capacity(state, maps) > HOUSE_COLOR_COUNT)
+        .then_some(state.extended_colors.as_slice())
+        .unwrap_or_default();
+    (0..HOUSE_COLOR_COUNT)
+        .chain(extended.iter().map(|&color| usize::from(color)))
+        .collect()
 }
 
 pub fn combo_dropdown_rect(
@@ -44,7 +73,7 @@ fn combo_popup(
     if !combo_enabled(state, maps, id) {
         return None;
     }
-    let rect = combo_rect(layout, id)?;
+    let rect = combo_rect(state, layout, id)?;
     let item_count = combo_items(state, maps, id).len() as i32;
     if item_count == 0 {
         return None;
@@ -101,8 +130,16 @@ pub(super) fn combo_dropdown_max_top_index(
     ScrollModel::combo(combo_dropdown_max_visible_rows(id)).max_top_index(item_count, visible_rows)
 }
 
-fn normal_color_index(color_index: usize) -> usize {
-    color_index.min(HOUSE_COLOR_COUNT - 1)
+/// A held colour as the dropdowns compare it: a retail or extended priority
+/// stays; any other value reads as the last retail colour.
+fn normal_color_index(state: &SkirmishShellState, color_index: usize) -> usize {
+    let extended =
+        u8::try_from(color_index).is_ok_and(|color| state.extended_colors.contains(&color));
+    if extended {
+        color_index
+    } else {
+        color_index.min(HOUSE_COLOR_COUNT - 1)
+    }
 }
 
 pub fn combo_dropdown_scrollbar_rect(
@@ -253,22 +290,20 @@ pub fn combo_items(
         .map(SkirmishComboItem::AiType)
         .collect(),
         SkirmishComboId::Side(_) => state.country_catalog.items().to_vec(),
-        SkirmishComboId::Color(row) => available_color_choices(
-            selected_color_claim(state, row),
-            (0..HOUSE_COLOR_COUNT)
-                .filter(|color| color_claimed_by_other_row(state, row, *color).is_some()),
-        ),
+        SkirmishComboId::Color(row) => {
+            let palette = color_palette(state, maps);
+            let claimed = palette
+                .iter()
+                .copied()
+                .filter(|color| color_claimed_by_other_row(state, row, *color).is_some())
+                .collect::<Vec<_>>();
+            palette_color_choices(selected_color_claim(state, row), &palette, claimed)
+        }
         SkirmishComboId::Start(row) => {
-            let capacity = maps
-                .get(state.selected_map_idx)
-                .map(|map| {
-                    map.player_capacity
-                        .clamp(0, SKIRMISH_PLAYER_SLOT_COUNT as i32) as usize
-                })
-                .unwrap_or(SKIRMISH_PLAYER_SLOT_COUNT);
+            let capacity = selected_player_capacity(state, maps);
             available_start_choices(
                 selected_start_position(state, row),
-                (0..SKIRMISH_PLAYER_SLOT_COUNT)
+                (0..NETWORK_PLAYER_SLOT_COUNT)
                     .map(|index| LaunchStartPosition::Position(index as u8))
                     .filter(|start| start_position_taken_by_other_row(state, row, *start)),
                 capacity,
@@ -320,10 +355,22 @@ pub fn available_color_choices(
     selected: Option<usize>,
     claimed: impl IntoIterator<Item = usize>,
 ) -> Vec<SkirmishComboItem> {
+    let palette: Vec<_> = (0..HOUSE_COLOR_COUNT).collect();
+    palette_color_choices(selected, &palette, claimed)
+}
+
+/// [`available_color_choices`] over `palette`, in its order.
+fn palette_color_choices(
+    selected: Option<usize>,
+    palette: &[usize],
+    claimed: impl IntoIterator<Item = usize>,
+) -> Vec<SkirmishComboItem> {
     let claimed: Vec<_> = claimed.into_iter().collect();
     std::iter::once(SkirmishComboItem::ColorSentinel(-2))
         .chain(
-            (0..HOUSE_COLOR_COUNT)
+            palette
+                .iter()
+                .copied()
                 .filter(|color| selected == Some(*color) || !claimed.contains(color))
                 .map(SkirmishComboItem::Color),
         )
@@ -383,13 +430,13 @@ pub fn selected_combo_item(
             })
         }),
         SkirmishComboId::Color(0) => Some(if state.player_color_claimed {
-            SkirmishComboItem::Color(normal_color_index(state.player_color_index))
+            SkirmishComboItem::Color(normal_color_index(state, state.player_color_index))
         } else {
             SkirmishComboItem::ColorSentinel(-2)
         }),
         SkirmishComboId::Color(row) => state.opponents.get(row - 1).map(|opponent| {
             if opponent.color_claimed {
-                SkirmishComboItem::Color(normal_color_index(opponent.color_index))
+                SkirmishComboItem::Color(normal_color_index(state, opponent.color_index))
             } else {
                 SkirmishComboItem::ColorSentinel(-2)
             }
@@ -492,14 +539,14 @@ fn start_position_taken_by_other_row(
 fn selected_color_claim(state: &SkirmishShellState, row: usize) -> Option<usize> {
     if row == 0 {
         if state.player_color_claimed {
-            Some(normal_color_index(state.player_color_index))
+            Some(normal_color_index(state, state.player_color_index))
         } else {
             None
         }
     } else {
         state.opponents.get(row - 1).and_then(|opponent| {
             if opponent.color_claimed {
-                Some(normal_color_index(opponent.color_index))
+                Some(normal_color_index(state, opponent.color_index))
             } else {
                 None
             }
@@ -514,7 +561,7 @@ fn color_claimed_by_other_row(
 ) -> Option<usize> {
     if row != 0
         && state.player_color_claimed
-        && normal_color_index(state.player_color_index) == color
+        && normal_color_index(state, state.player_color_index) == color
     {
         return Some(0);
     }
@@ -526,7 +573,7 @@ fn color_claimed_by_other_row(
             let opponent_row = idx + 1;
             if opponent_row != row
                 && opponent.color_claimed
-                && normal_color_index(opponent.color_index) == color
+                && normal_color_index(state, opponent.color_index) == color
             {
                 Some(opponent_row)
             } else {
@@ -543,24 +590,26 @@ fn color_claimed_by_other_row(
 fn evict_other_color_claimants(state: &mut SkirmishShellState, row: usize, color: usize) {
     if row != 0
         && state.player_color_claimed
-        && normal_color_index(state.player_color_index) == color
+        && normal_color_index(state, state.player_color_index) == color
     {
         state.player_color_claimed = false;
     }
+    let held: Vec<_> = state
+        .opponents
+        .iter()
+        .map(|opponent| normal_color_index(state, opponent.color_index))
+        .collect();
     for (idx, opponent) in state.opponents.iter_mut().enumerate() {
         let opponent_row = idx + 1;
-        if opponent_row != row
-            && opponent.color_claimed
-            && normal_color_index(opponent.color_index) == color
-        {
+        if opponent_row != row && opponent.color_claimed && held[idx] == color {
             opponent.color_claimed = false;
         }
     }
 }
 
-fn combo_hit_order() -> Vec<SkirmishComboId> {
+fn combo_hit_order(state: &SkirmishShellState) -> Vec<SkirmishComboId> {
     let mut ids = Vec::new();
-    for row in (0..SKIRMISH_PLAYER_SLOT_COUNT).rev() {
+    for row in (0..=state.opponents.len()).rev() {
         ids.push(SkirmishComboId::Team(row));
         ids.push(SkirmishComboId::Start(row));
         ids.push(SkirmishComboId::Color(row));
@@ -581,8 +630,8 @@ fn combo_face_at(
     x: i32,
     y: i32,
 ) -> Option<(SkirmishComboId, RectPx)> {
-    combo_hit_order().into_iter().find_map(|id| {
-        let rect = combo_rect(layout, id)?;
+    combo_hit_order(state).into_iter().find_map(|id| {
+        let rect = combo_rect(state, layout, id)?;
         (combo_enabled(state, maps, id) && combo_face_rect(rect, layout.scale).contains(x, y))
             .then_some((id, rect))
     })
@@ -635,13 +684,13 @@ pub(super) fn apply_combo_selection(
             }
         }
         (SkirmishComboId::Color(0), SkirmishComboItem::Color(color)) => {
-            let color = color.min(HOUSE_COLOR_COUNT - 1);
+            let color = normal_color_index(state, color);
             evict_other_color_claimants(state, 0, color);
             state.player_color_index = color;
             state.player_color_claimed = true;
         }
         (SkirmishComboId::Color(row), SkirmishComboItem::Color(color)) => {
-            let color = color.min(HOUSE_COLOR_COUNT - 1);
+            let color = normal_color_index(state, color);
             evict_other_color_claimants(state, row, color);
             if let Some(opponent) = state.opponents.get_mut(row - 1) {
                 opponent.color_index = color;

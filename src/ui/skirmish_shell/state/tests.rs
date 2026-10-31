@@ -246,6 +246,10 @@ fn choose_map_modal_random_map_command_is_mode_gated_and_single_record() {
 #[test]
 fn owner_draw_button_hit_test_returns_control_identity() {
     let layout = compute_layout(800, 600);
+    let shell = SkirmishShellState::default();
+    let maps = [test_map_entry("map.mmx")];
+    let hit_test_owner_draw_button =
+        |layout, x, y| super::hit_test_owner_draw_button(&shell, &maps, layout, x, y);
     assert_eq!(
         hit_test_owner_draw_button(
             &layout,
@@ -1531,7 +1535,7 @@ fn dropdown_hover_uses_scrolled_rows_and_only_click_commits_the_choice() {
     let mut shell = controlled_country_shell();
     let maps = [test_map_entry("map.mmx")];
     let id = SkirmishComboId::Side(0);
-    let rect = combo_rect(&layout, id).unwrap();
+    let rect = combo_rect(&shell, &layout, id).unwrap();
     let saved = selected_combo_item(&shell, id);
 
     handle_option_mouse_down(&mut shell, &layout, &maps, rect.x + rect.w - 1, rect.y + 1);
@@ -2305,4 +2309,69 @@ fn ares_country_catalog_sorts_hides_and_exposes_flag_and_status() {
         ),
         Some("STT:PlayerSideRandom")
     );
+}
+
+#[test]
+fn a_thirty_player_map_pages_its_opponents_through_the_seven_ai_rows() {
+    let layout = compute_layout(800, 600);
+    let maps = [
+        test_map_entry_with_starts("Big", 30),
+        test_map_entry("Small"),
+    ];
+    let mut shell = SkirmishShellState::default();
+    assert!(opponents_paged(&shell, &maps));
+    assert!(!opponent_page_available(&shell, &maps, false));
+
+    // 29 opponents page from 0, 7, 14, 21 and 28; Next stops on the last.
+    for _ in 0..5 {
+        apply_action(
+            &mut shell,
+            SkirmishShellAction::PagePlayers { forward: true },
+            &maps,
+        );
+    }
+    assert_eq!(shell.first_opponent, 28);
+    assert!(!opponent_page_available(&shell, &maps, true));
+    assert_eq!(
+        combo_rect(&shell, &layout, SkirmishComboId::AiType(28)),
+        Some(layout.rows.ai_type_combos[0])
+    );
+    assert_eq!(
+        combo_rect(&shell, &layout, SkirmishComboId::Side(29)),
+        Some(layout.rows.side_combos[1])
+    );
+    assert_eq!(
+        combo_rect(&shell, &layout, SkirmishComboId::AiType(0)),
+        None
+    );
+    assert_eq!(
+        combo_rect(&shell, &layout, SkirmishComboId::Side(0)),
+        Some(layout.rows.side_combos[0])
+    );
+
+    // An eight-player map has one page and shows the first opponents again.
+    accept_selected_map(&mut shell, &maps, 1);
+    assert_eq!(shell.first_opponent, 0);
+    assert!(!opponents_paged(&shell, &maps));
+}
+
+#[test]
+fn extended_colours_are_offered_and_launched_only_past_eight_players() {
+    let mut shell = SkirmishShellState::default();
+    shell.extended_colors = vec![43, 45];
+    let small = [test_map_entry("Small")];
+    let big = [test_map_entry_with_starts("Big", 30)];
+    let offered = |shell: &SkirmishShellState, maps: &[MapMenuEntry]| {
+        combo_items(shell, maps, SkirmishComboId::Color(1)).contains(&SkirmishComboItem::Color(43))
+    };
+    assert!(!offered(&shell, &small));
+    assert!(offered(&shell, &big));
+
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Color(1),
+        SkirmishComboItem::Color(43),
+    );
+    let session = launch_session(&shell, &big, &stock_skirmish_modes(), false).expect("session");
+    assert_eq!(session.opponents[0].color_index, 43);
 }

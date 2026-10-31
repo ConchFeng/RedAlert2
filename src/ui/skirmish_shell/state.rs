@@ -17,7 +17,7 @@ use self::combos::{
 };
 
 pub use combos::{
-    available_color_choices, available_start_choices, combo_dropdown_content_rect,
+    available_color_choices, available_start_choices, color_palette, combo_dropdown_content_rect,
     combo_dropdown_needs_scrollbar, combo_dropdown_rect, combo_dropdown_scroll_thumb_rect,
     combo_dropdown_scrollbar_rect, combo_dropdown_visible_row_count, combo_enabled, combo_items,
     combo_rect, country_choices, selected_combo_item, selected_combo_item_index, team_choices,
@@ -42,9 +42,10 @@ pub use player_name::{
     drain_pending_ui_sounds, focus_player_name_edit, handle_player_name_backspace,
     handle_player_name_delete, handle_player_name_end, handle_player_name_home,
     handle_player_name_left, handle_player_name_right, handle_player_name_tab,
-    initialize_rows_for_selected_map, insert_player_name_text, player_name_caret_prefix,
-    player_name_edit_rect_hit, player_row_visible, repair_teams_for_selected_mode,
-    set_status_help_text, update_player_name_scroll_for_caret,
+    initialize_rows_for_selected_map, insert_player_name_text, opponent_page_available,
+    opponents_paged, page_opponents, player_name_caret_prefix, player_name_edit_rect_hit,
+    player_row_visible, repair_teams_for_selected_mode, row_slot, selected_player_capacity,
+    set_status_help_text, slot_row, update_player_name_scroll_for_caret,
 };
 pub use random_map_setup::{
     AcceptOutcome, MainRngRanged, PLAYERS_RANGE, RandomMapSetupModalState, SETUP_COMBO_ROWS,
@@ -72,6 +73,9 @@ pub enum OwnerDrawButton {
     StartGame0x617,
     ChooseMap0x5aa,
     Back0x5c0,
+    /// VERA: page the opponents of a map for more than eight players.
+    PreviousPlayers,
+    NextPlayers,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -82,6 +86,10 @@ pub enum SkirmishShellAction {
     ChooseMap,
     SelectColor(ColorComboId),
     SelectMap(usize),
+    /// VERA: show the previous or next page of opponents.
+    PagePlayers {
+        forward: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -279,6 +287,10 @@ impl SkirmishShellOpponent {
 /// opponent. When persisted slot reading is added, the per-row fallbacks must be
 /// the Easy code for row 1 and the None code for rows 2-7, mapped through the
 /// slot type-code table, not hardcoded all-None.
+///
+/// VERA keeps an opponent for every extended player
+/// ([`crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT`]); rows past the
+/// retail seven repeat its country list.
 fn default_opponents(first_country: LaunchCountry) -> Vec<SkirmishShellOpponent> {
     let countries = [
         first_country,
@@ -292,6 +304,8 @@ fn default_opponents(first_country: LaunchCountry) -> Vec<SkirmishShellOpponent>
 
     countries
         .into_iter()
+        .cycle()
+        .take(crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT - 1)
         .enumerate()
         .map(|(idx, country)| {
             let row_type = if idx == 0 {

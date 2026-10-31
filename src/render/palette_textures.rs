@@ -24,10 +24,11 @@ use crate::assets::pal_file::Palette;
 use crate::render::gpu::GpuContext;
 use crate::rules::house_colors::{HouseColorIndex, HouseColorRamps, NO_REMAP};
 
-/// Maximum number of houses supported in the per-house ramp texture
-/// (per project_scale_target). Row 0 is reserved for the no-remap fallback,
-/// so up to MAX_HOUSES - 1 distinct houses are addressable.
-pub const MAX_HOUSES: u32 = 32;
+/// Rows of the per-house ramp texture, keyed by `[Colors]` entry + 1. Row 0 is
+/// reserved for the no-remap fallback, so entries below MAX_HOUSES - 1 are
+/// addressable: the retail entries plus the appended
+/// [`crate::rules::color_scheme::VERA_PLAYER_COLORS`].
+pub const MAX_HOUSES: u32 = 64;
 
 /// Number of palette entries (RA2 standard: 256 colors).
 pub const PALETTE_ENTRIES: u32 = 256;

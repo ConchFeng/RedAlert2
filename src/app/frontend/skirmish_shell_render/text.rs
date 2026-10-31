@@ -23,9 +23,9 @@ use crate::ui::skirmish_shell::{
     SETUP_COMBO_ROWS, SavedSeedLayout, SkirmishAiRowType, SkirmishCheckboxId, SkirmishComboId,
     SkirmishComboItem, SkirmishCountryChoice, SkirmishShellLayout, SkirmishShellOpponent,
     SkirmishShellState, SkirmishTrackbarId, checkbox_text_rect, combo_dropdown_content_rect,
-    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_enabled, combo_items,
-    combo_text_rect, player_name_edit_text_rect, player_row_visible,
-    random_map_setup_dropdown_rect, setup_combo_items, trackbar_visual_value,
+    combo_dropdown_rect, combo_dropdown_visible_row_count, combo_enabled, combo_items, combo_rect,
+    combo_text_rect, opponent_page_available, opponents_paged, player_name_edit_text_rect,
+    player_row_visible, random_map_setup_dropdown_rect, setup_combo_items, trackbar_visual_value,
 };
 
 use super::controls::trackbar_rect_for_id;
@@ -42,6 +42,23 @@ pub(super) fn localized_label(state: &AppState, key: &str, fallback: &str) -> St
         .as_ref()
         .map(|csf| csf.text(key).into_owned())
         .unwrap_or_else(|| fallback.to_string())
+}
+
+/// [`localized_label`] for a label that may be VERA's own: a `VERA:` key that
+/// the string table lacks shows its fallback instead of gamemd's `MISSING:`
+/// text. Retail keys keep the native lookup.
+pub(super) fn localized_vera_label(state: &AppState, key: &str, fallback: &str) -> String {
+    let missing_vera_key = key.starts_with("VERA:")
+        && state
+            .process_assets
+            .csf
+            .as_ref()
+            .is_some_and(|csf| csf.get(key).is_none());
+    if missing_vera_key {
+        fallback.to_string()
+    } else {
+        localized_label(state, key, fallback)
+    }
 }
 
 pub(super) fn checkbox_label(id: SkirmishCheckboxId) -> (&'static str, &'static str) {
@@ -731,28 +748,30 @@ pub(super) fn build_shell_text_draws(
     );
 
     for (idx, opponent) in shell.opponents.iter().enumerate() {
-        if idx >= layout.rows.ai_type_combos.len() {
-            break;
-        }
         let row = idx + 1;
         if !player_row_visible(shell, maps, row) {
             continue;
         }
+        // VERA pages the opponents; a row on another page has no rects.
+        let rect = |id| combo_rect(shell, layout, id);
+        let (Some(ai_type), Some(side), Some(color), Some(start), Some(team)) = (
+            rect(SkirmishComboId::AiType(idx)),
+            rect(SkirmishComboId::Side(row)),
+            rect(SkirmishComboId::Color(row)),
+            rect(SkirmishComboId::Start(row)),
+            rect(SkirmishComboId::Team(row)),
+        ) else {
+            continue;
+        };
         let (key, fallback) = row_type_label(opponent.row_type);
         let row_type = localized_label(state, key, fallback);
-        push_combo_face_label_draw(
-            &mut shell_draws,
-            state,
-            &row_type,
-            layout.rows.ai_type_combos[idx],
-            scale,
-        );
+        push_combo_face_label_draw(&mut shell_draws, state, &row_type, ai_type, scale);
         let sibling_text_color = opponent_sibling_combo_text_color(opponent);
         push_combo_face_label_draw_with_color(
             &mut shell_draws,
             state,
             &country_choice_label(state, opponent.country_random, opponent.country),
-            layout.rows.side_combos[row],
+            side,
             sibling_text_color,
             scale,
         );
@@ -762,7 +781,7 @@ pub(super) fn build_shell_text_draws(
                 &mut shell_draws,
                 state,
                 &random_color,
-                layout.color_combos[row],
+                color,
                 sibling_text_color,
                 scale,
             );
@@ -771,7 +790,7 @@ pub(super) fn build_shell_text_draws(
             &mut shell_draws,
             state,
             &combo_item_label(state, SkirmishComboItem::Start(opponent.start_position)),
-            layout.rows.start_combos[row],
+            start,
             sibling_text_color,
             scale,
         );
@@ -779,15 +798,72 @@ pub(super) fn build_shell_text_draws(
             &mut shell_draws,
             state,
             &team_label(state, opponent.team),
-            layout.rows.team_combos[row],
+            team,
             // Row-active alone does not decide the Team face: the mode's
             // AlliesAllowed gate greys it as well.
             combo_face_text_color(!combo_enabled(shell, maps, SkirmishComboId::Team(row))),
             scale,
         );
     }
+    if opponents_paged(shell, maps) {
+        push_roster_page_text_draws(&mut shell_draws, state, layout, shell, maps);
+    }
 
     (shell_draws, bare_instances)
+}
+
+/// VERA's opponent pages: the Previous/Next captions, and which players the
+/// page shows, as the network room words it.
+fn push_roster_page_text_draws(
+    shell_draws: &mut Vec<ShellTextDraw>,
+    state: &AppState,
+    layout: &SkirmishShellLayout,
+    shell: &SkirmishShellState,
+    maps: &[MapMenuEntry],
+) {
+    for (rect, forward, button, caption) in [
+        (
+            layout.roster_navigation[0],
+            false,
+            OwnerDrawButton::PreviousPlayers,
+            "Previous",
+        ),
+        (
+            layout.roster_navigation[1],
+            true,
+            OwnerDrawButton::NextPlayers,
+            "Next",
+        ),
+    ] {
+        push_text_draw(
+            shell_draws,
+            state,
+            caption,
+            button_text_rect(
+                rect,
+                shell.pressed_owner_draw_button == Some(button),
+                layout.scale,
+            ),
+            button_label_color_for_disabled(!opponent_page_available(shell, maps, forward)),
+            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+            0.00041,
+            layout.scale.factor(),
+        );
+    }
+    let players = crate::ui::skirmish_shell::selected_player_capacity(shell, maps);
+    let first = shell.first_opponent + 2;
+    let last =
+        (shell.first_opponent + 1 + crate::ui::skirmish_shell::SKIRMISH_AI_ROW_COUNT).min(players);
+    push_text_draw(
+        shell_draws,
+        state,
+        &format!("Players {first}–{last} / {players}"),
+        rect_to_text_rect(layout.roster_page_label),
+        SHELL_LABEL_TEXT_RGB,
+        ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+        0.00041,
+        layout.scale.factor(),
+    );
 }
 
 /// The open ComboDropWin's row captions, painted after every dialog text and
@@ -1027,7 +1103,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
         push_text_draw(
             out,
             state,
-            &localized_label(state, entry.key, entry.fallback),
+            &localized_vera_label(state, entry.key, entry.fallback),
             rect_to_text_rect(rect),
             SHELL_LABEL_TEXT_RGB,
             ShellAlign::V_CENTER,
@@ -1081,7 +1157,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
             push_text_draw(
                 out,
                 state,
-                &localized_label(state, entry.key, entry.fallback),
+                &localized_vera_label(state, entry.key, entry.fallback),
                 rect_to_text_rect(row_rect),
                 SHELL_LABEL_TEXT_RGB,
                 ShellAlign::V_CENTER,

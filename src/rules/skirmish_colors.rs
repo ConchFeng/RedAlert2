@@ -91,6 +91,30 @@ impl SkirmishColorMode {
         }
     }
 
+    /// VERA: the colour priorities a skirmish roster past eight players offers
+    /// after the retail eight, one per [`VERA_PLAYER_COLORS`] entry in its
+    /// order. Priority `2 * entry + 1` is at least 9, so the native tail passes
+    /// it through as that odd runtime scheme ([`Self::entry_for_priority`]
+    /// gives the entry back). Under Phobos `SkirmishUnlimitedColors` the
+    /// spawner owns the colour indices, so the shell offers none.
+    ///
+    /// [`VERA_PLAYER_COLORS`]: crate::rules::color_scheme::VERA_PLAYER_COLORS
+    pub fn extended_player_priorities(
+        self,
+        schemes: &[crate::rules::color_scheme::ColorSchemeEntry],
+    ) -> Vec<u8> {
+        if self.unlimited {
+            return Vec::new();
+        }
+        crate::rules::color_scheme::VERA_PLAYER_COLORS
+            .iter()
+            .filter_map(|(name, _)| {
+                let entry = crate::rules::color_scheme::scheme_entry_by_name(schemes, name)?;
+                u8::try_from(2 * entry + 1).ok()
+            })
+            .collect()
+    }
+
     #[cfg(feature = "phobos")]
     pub(crate) fn from_ini(ini: &IniFile) -> Self {
         // Phobos reads the key with the native ReadBool semantics and its
@@ -160,5 +184,28 @@ mod tests {
             "[General]\nSkirmishUnlimitedColors=off\n",
         ));
         assert_eq!(off, SkirmishColorMode::VANILLA);
+    }
+
+    #[test]
+    fn retail_rules_append_the_vera_colours_after_every_colors_entry() {
+        let Some(rules) = crate::rules::retail_ini_fixture::retail_rulesmd_rules() else {
+            return;
+        };
+        let schemes = &rules.color_schemes;
+        let priorities = SkirmishColorMode::VANILLA.extended_player_priorities(schemes);
+        assert_eq!(
+            priorities.len(),
+            crate::rules::color_scheme::VERA_PLAYER_COLORS.len()
+        );
+        let first = SkirmishColorMode::VANILLA.entry_for_priority(i32::from(priorities[0]));
+        assert_eq!(schemes[first].name, "VeraBrown");
+        // Retail's last [Colors] entry keeps its index ahead of the VERA ones.
+        let sovietload = crate::rules::color_scheme::scheme_entry_by_name(schemes, "SovietLoad");
+        assert_eq!(sovietload, Some(first - 1));
+        assert!(
+            SkirmishColorMode::UNLIMITED
+                .extended_player_priorities(schemes)
+                .is_empty()
+        );
     }
 }

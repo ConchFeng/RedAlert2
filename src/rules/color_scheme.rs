@@ -100,6 +100,50 @@ pub fn parse_color_schemes(ini: &IniFile) -> Vec<ColorSchemeEntry> {
         .collect()
 }
 
+/// VERA's player colours past the retail eight, for skirmish rosters larger
+/// than eight players. gamemd has no such colours. Each is an `H,S,V` triple in
+/// `[Colors]` form, chosen by farthest-point selection in CIELAB against the
+/// eight retail player colours and the neutral `LightGrey`, in that order: the
+/// earlier an entry, the more distinct it is from every colour before it. The
+/// nearest pair is still more than 30 delta-E apart.
+pub const VERA_PLAYER_COLORS: [(&str, [u8; 3]); 22] = [
+    ("VeraBrown", [8, 140, 135]),
+    ("VeraOlive", [48, 200, 135]),
+    ("VeraUltramarine", [172, 255, 255]),
+    ("VeraRose", [236, 255, 255]),
+    ("VeraMint", [92, 90, 255]),
+    ("VeraSteel", [144, 140, 135]),
+    ("VeraPlum", [228, 255, 135]),
+    ("VeraJade", [112, 200, 135]),
+    ("VeraSalmon", [0, 90, 255]),
+    ("VeraPeriwinkle", [160, 90, 255]),
+    ("VeraFuchsia", [224, 255, 255]),
+    ("VeraRust", [16, 255, 175]),
+    ("VeraLemon", [36, 140, 255]),
+    ("VeraAzure", [156, 255, 255]),
+    ("VeraViolet", [208, 255, 255]),
+    ("VeraKhaki", [28, 90, 175]),
+    ("VeraForest", [92, 255, 135]),
+    ("VeraNavy", [164, 255, 135]),
+    ("VeraCrimson", [244, 255, 175]),
+    ("VeraMauve", [208, 90, 135]),
+    ("VeraPistachio", [60, 140, 255]),
+    ("VeraChartreuse", [56, 255, 255]),
+];
+
+/// Append the [`VERA_PLAYER_COLORS`] that the rules do not already name, after
+/// every `[Colors]` entry, so no retail or map-named entry changes index.
+pub fn append_vera_player_colors(schemes: &mut Vec<ColorSchemeEntry>) {
+    for (name, hsv) in VERA_PLAYER_COLORS {
+        if scheme_entry_by_name(schemes, name).is_none() {
+            schemes.push(ColorSchemeEntry {
+                name: name.to_string(),
+                hsv,
+            });
+        }
+    }
+}
+
 /// Original474C70's bounded string/sscanf read, shared by the compatibility
 /// projection and a retained ColorScheme observation before Scenario reset.
 pub(crate) fn read_scheme_hsv(section: &IniSection, key: &str) -> [u8; 3] {

@@ -29,8 +29,7 @@ use cooperative::{
 };
 pub(crate) use persistence::SetupProfile;
 use persistence::{
-    MultiplayerSetupSnapshot, SKIRMISH_PERSISTED_SLOT_COUNT, SkirmishGlobalDefaults,
-    SkirmishPersistedSlot, read_setup_snapshot,
+    MultiplayerSetupSnapshot, SkirmishGlobalDefaults, SkirmishPersistedSlot, read_setup_snapshot,
 };
 
 use crate::app::persistence::profile_file;
@@ -999,8 +998,10 @@ impl MultiplayerShellRuntime {
                 opponent.country_random = false;
             }
 
-            opponent.color_claimed =
-                (0..crate::skirmish_launch::HOUSE_COLOR_COUNT as i32).contains(&persisted.colour);
+            opponent.color_claimed = (0..crate::skirmish_launch::HOUSE_COLOR_COUNT as i32)
+                .contains(&persisted.colour)
+                || u8::try_from(persisted.colour)
+                    .is_ok_and(|colour| state.extended_colors.contains(&colour));
             if opponent.color_claimed {
                 opponent.color_index = persisted.colour as usize;
             }
@@ -1057,7 +1058,8 @@ impl MultiplayerShellRuntime {
         // no campaign record takes part here.
         let registry = &self.cooperative_registry;
         let roster = &self.cooperative_country_roster;
-        let mut assignments = ShellRandomAssignmentState::new(&staged_session);
+        let mut assignments = ShellRandomAssignmentState::new(&staged_session)
+            .with_extended_colors(state.extended_colors.clone());
         let mut draw_country =
             |role, rng: &mut SimRng| draw_shell_country(registry, None, roster, role, rng);
 
@@ -1827,8 +1829,6 @@ fn controlled_ten_country_roster() -> Vec<CooperativeCountryRosterEntry> {
     .map(|id| CooperativeCountryRosterEntry::new_with_random(id, None, true, 1, 1))
     .collect()
 }
-
-const _: [(); SKIRMISH_PERSISTED_SLOT_COUNT] = [(); crate::skirmish_launch::SKIRMISH_AI_SLOT_COUNT];
 
 #[cfg(test)]
 mod tests {

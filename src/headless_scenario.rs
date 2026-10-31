@@ -36,7 +36,8 @@ use crate::skirmish_launch::{AiDifficulty, LaunchCountry, SkirmishLaunchSession}
 
 /// A Battle session on `selected_map_file`: the local player against one
 /// computer house for each of `opponents` (its country and difficulty), every
-/// house on a start the launch draws. The lobby allows seven opponents.
+/// house on a start the launch draws. The lobby allows a map's capacity less
+/// one, at most 29; opponents past the seventh reuse the retail colours.
 pub fn battle_session(
     selected_map_file: &str,
     opponents: &[(LaunchCountry, AiDifficulty)],
@@ -46,7 +47,7 @@ pub fn battle_session(
         SkirmishLaunchMode, SkirmishLaunchOptions, SkirmishLocalSlot,
     };
 
-    SkirmishLaunchSession {
+    let mut session = SkirmishLaunchSession {
         mode: SkirmishLaunchMode::stock(BATTLE_MODE_ID).expect("stock Battle row"),
         selected_map_file: Some(selected_map_file.to_string()),
         humans: vec![crate::skirmish_launch::SkirmishHumanSlot {
@@ -71,16 +72,18 @@ pub fn battle_session(
                 raw_slot_index: (slot + 1) as u8,
                 country,
                 country_random: false,
-                color_index: slot as u8 + 1,
+                color_index: (slot as u8 + 1) % 8,
                 color_random: false,
                 start_position: LaunchStartPosition::Auto,
                 team: LaunchTeam::None,
                 difficulty,
             })
             .collect(),
-        pre_fill_house_roster: PreFillHouseRoster::from_compact_skirmish(opponents.len()),
+        pre_fill_house_roster: PreFillHouseRoster::from_compact_skirmish(0),
         options: SkirmishLaunchOptions::default(),
-    }
+    };
+    session.rebuild_house_roster();
+    session
 }
 
 /// A loaded scenario plus the per-tick inputs `advance_tick` needs.
