@@ -5,9 +5,9 @@ Run python -m tools.selfheal_oracle --check (or explicit --write).
 Four leaf functions, each executed in fresh state through tools.native_oracle.call:
 
 - predicate: `HouseClass::HasInfSelfHeal` 0x0050D9C0 and `HasUnitSelfHeal`
-  0x0050D9D0 鈥?the two `return count > 0` readers of `House+0x164` / `House+0x168`.
+  0x0050D9D0 — the two `return count > 0` readers of `House+0x164` / `House+0x168`.
 - step: `HouseClass::GetInfSelfHealStep` 0x0050D9E0 and `GetUnitSelfHealStep`
-  0x0050D9F0 鈥?`Rules[+0x34] * House[+0x164]` and `Rules[+0x3C] * House[+0x168]`.
+  0x0050D9F0 — `Rules[+0x34] * House[+0x164]` and `Rules[+0x3C] * House[+0x168]`.
   The Rules pointer is written at 0x008871E0 and the *other* amount field holds a
   sentinel, so every row also shows which Rules field the arm does **not** read.
 

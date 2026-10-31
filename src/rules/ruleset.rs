@@ -663,7 +663,7 @@ pub struct GeneralRules {
     /// Retail: yes.
     pub curley_shuffle: bool,
     /// `[General] EnableAIBuildLimitation=` — the older extension build's
-    /// switch (NPExt ext173, manual `AI克隆生产`'s predecessor): with yes, the
+    /// switch (NPExt ext173, the manual's earlier AI clone production behavior): with yes, the
     /// computer's production attempt checks the type's own `BuildLimit=`
     /// (`Type+0x3B8`) like a production event does, and a plan at its limit
     /// clears its choice and skips. Read by that build's `ReadGeneral` hook

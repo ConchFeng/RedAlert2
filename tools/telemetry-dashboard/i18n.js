@@ -589,7 +589,7 @@ const zh = {
     "side.soviet": "苏军",
     "side.yuri": "尤里",
     "side.civilian": "平民",
-    // FA2 (the Chinese map editor) calls the Mutant side 「治安」; follow it so
+    // FA2 uses a localized Chinese label for the Mutant side; follow it so
     // the dashboard and the editor name the same side the same way.
     "side.mutant": "治安",
     "side.unknown": "势力 {n}",

@@ -1254,7 +1254,7 @@
   /* The team's forming/suspended flag rides at the right of its own header, so
      the member count stays with the team name. It is an `<i>` like the category
      swatch, so it needs its own size: inheriting the swatch's 7px square turned
-     "组建中" into one character per line. */
+     the forming-state label into one character per line. */
   .house-modal .roster .roster-group .squad-flag {
     margin-left: auto; font-style: normal;
     flex: none; width: auto; height: auto; white-space: nowrap;

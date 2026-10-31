@@ -475,7 +475,7 @@ fn ai_build_limit_blocks(
 /// (`0xC33570..0xC33592`, NPSE 2.0; legacy ext173 C2D039 uses +160F8).
 /// A capped building is cleared too, and
 /// its plan node stays unsatisfied, so `choose_building` returns the same
-/// type: that is the manual's warning (`AI克隆生产`) that a building at its
+/// type: that is the manual's warning (AI clone production) that a building at its
 /// limit leaves the computer unable to build anything, not a recovery.
 fn clear_aibuild_limit_choice(sim: &mut Simulation, owner: InternedId, object: &ObjectType) {
     let Some(house) = sim.houses.get_mut(&owner) else {

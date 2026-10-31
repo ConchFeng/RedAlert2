@@ -3,6 +3,8 @@
 Project repository: `ConchFeng/RedAlert2`. Use American English for code and docs.
 Coding and submission conventions live in the `code-style` and `code-submission`
 skills. Build the entire project only when explicitly requested.
+Start with the [documentation index](docs/index.md) and
+[project guide](docs/project-guide.md) to locate code owners and entry points.
 
 **Outside contributors and their agents:** follow the README's
 [Contributing](README.md#contributing) section and your issue, and skip the rest of this file.

@@ -1672,7 +1672,7 @@ function updateFrameProfile(
     .join("");
 }
 
-// ---------------------------------------------------- process page (帧耗时 panel, page 2)
+// ---------------------------------------------------- process page (frame timing panel, page 2)
 
 /**
  * Host resources: CPU share of the whole machine, resident and peak working
@@ -1760,7 +1760,7 @@ function setupPager(): void {
   }
 }
 
-// ------------------------------------------------------- detail wall (副屏)
+// ------------------------------------------------------- detail wall (secondary screen)
 
 /**
  * The player-detail view: economy over time, live cash, spend, score, base,

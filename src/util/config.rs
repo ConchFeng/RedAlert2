@@ -7,7 +7,7 @@
 //! Without either config, assets are resolved beside the executable.
 //!
 //! ## Dependency rules
-//! - config.rs is part of util/ â€” no dependencies on game modules.
+//! - config.rs is part of util/ — no dependencies on game modules.
 
 use std::path::{Path, PathBuf};
 

@@ -1,4 +1,4 @@
-//! Map house parsing â€” extracts active house definitions and color assignments.
+//! Map house parsing — extracts active house definitions and color assignments.
 //!
 //! RA2 map files have a `[Houses]` section that lists active factions/owners.
 //! Each house also has its own section with keys such as `Color=`, `Country=`,

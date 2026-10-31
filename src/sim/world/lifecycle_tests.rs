@@ -8690,7 +8690,7 @@ fn attack_fixture(current: MissionType, suspended: MissionId) -> MissionTestFixt
     }
 }
 
-/// Two attackers share one target that then leaves play ALIVE â€” sold, captured,
+/// Two attackers share one target that then leaves play ALIVE — sold, captured,
 /// mind-controlled or teleported. Nothing dies, so the pointer-expiry broadcast
 /// never runs and this sweep is the only thing that releases them.
 ///
@@ -8774,7 +8774,7 @@ fn detach_sweep_restores_before_clearing_target_in_descending_id_order() {
 
 /// The other half of the sweep: an attacker with no suspended mission. The
 /// Restore writes nothing, so the conditional null-out is the clause that fires
-/// and the attacker is left with no target â€” which is what hands it to the
+/// and the attacker is left with no target — which is what hands it to the
 /// Attack handler's idle exit on its next dispatch.
 #[test]
 fn detach_sweep_clears_target_when_no_mission_was_suspended() {

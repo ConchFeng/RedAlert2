@@ -1405,7 +1405,7 @@ function updateFrameProfile(profile, render) {
         .map(([key, value]) => `<div class='row'><span>${key}</span><b>${value}</b></div>`)
         .join("");
 }
-// ---------------------------------------------------- process page (帧耗时 panel, page 2)
+// ---------------------------------------------------- process page (frame timing panel, page 2)
 /**
  * Host resources: CPU share of the whole machine, resident and peak working
  * set, live thread count, and the adapter plus this process's own resident
@@ -1482,7 +1482,7 @@ function setupPager() {
         }
     }
 }
-// ------------------------------------------------------- detail wall (副屏)
+// ------------------------------------------------------- detail wall (secondary screen)
 /**
  * The player-detail view: economy over time, live cash, spend, score, base,
  * force composition and the unit-type roster — one card per house. It reads
