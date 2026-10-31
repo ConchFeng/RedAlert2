@@ -10,7 +10,7 @@
 //! the world directly.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
 use crate::map::cell_index::NativeCellIdentity as Cell;
 use crate::map::entities::EntityCategory;
@@ -25,20 +25,66 @@ use crate::sim::occupancy::RawCellKey;
 use crate::sim::overlay_grid::OverlayCell;
 use crate::sim::world::Simulation;
 
+const CELLS_PER_BLOCK: usize = u64::BITS as usize;
+
+struct CellFactsBlock {
+    cells: [OnceLock<CellFacts>; CELLS_PER_BLOCK],
+    plain: [AtomicU32; CELLS_PER_BLOCK],
+    used: AtomicU64,
+}
+
+impl Default for CellFactsBlock {
+    fn default() -> Self {
+        Self {
+            cells: std::array::from_fn(|_| OnceLock::new()),
+            plain: std::array::from_fn(|_| AtomicU32::default()),
+            used: AtomicU64::new(0),
+        }
+    }
+}
+
+impl CellFactsBlock {
+    fn mark_used(&self, index: usize) {
+        let bit = 1u64 << index;
+        if self.used.load(Ordering::Relaxed) & bit == 0 {
+            self.used.fetch_or(bit, Ordering::Relaxed);
+        }
+    }
+
+    fn reset(&mut self) {
+        // Joined batch readers only set bits; this exclusive reset clears them.
+        let mut used = std::mem::take(self.used.get_mut());
+        if used == u64::MAX {
+            for cell in &mut self.cells {
+                cell.take();
+            }
+            for plain in &mut self.plain {
+                *plain.get_mut() = 0;
+            }
+            return;
+        }
+        while used != 0 {
+            let index = used.trailing_zeros() as usize;
+            self.cells[index].take();
+            *self.plain[index].get_mut() = 0;
+            used &= used - 1;
+        }
+    }
+}
+
 /// One batch's [`CellFacts`] and [`PlainCell`] by real cell index and
 /// [`BlockerFacts`] by entity slot, each kept from its first ask.
 #[derive(Default)]
 pub(crate) struct EntryFacts {
-    cells: Vec<OnceLock<CellFacts>>,
-    /// Each real cell's [`PlainCell`] bits, 0 until asked.
-    plain: Vec<AtomicU32>,
+    cells: Vec<CellFactsBlock>,
+    cell_count: usize,
     blockers: Vec<OnceLock<BlockerFacts>>,
 }
 
 impl std::fmt::Debug for EntryFacts {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         f.debug_struct("EntryFacts")
-            .field("cells", &self.cells.len())
+            .field("cells", &self.cell_count)
             .field("blockers", &self.blockers.len())
             .finish()
     }
@@ -48,14 +94,10 @@ impl EntryFacts {
     /// Forget every kept fact and fit the tables to `cells` real cells and
     /// `slots` entity slots, before a batch.
     pub(crate) fn reset(&mut self, cells: usize, slots: usize) {
-        crate::sim::parallel::for_each_mut(&mut self.cells, |kept| {
-            kept.take();
-        });
-        self.cells.resize_with(cells, OnceLock::new);
-        crate::sim::parallel::for_each_mut(&mut self.plain, |kept| {
-            *kept.get_mut() = 0;
-        });
-        self.plain.resize_with(cells, AtomicU32::default);
+        crate::sim::parallel::for_each_mut(&mut self.cells, CellFactsBlock::reset);
+        self.cells
+            .resize_with(cells.div_ceil(CELLS_PER_BLOCK), CellFactsBlock::default);
+        self.cell_count = cells;
         crate::sim::parallel::for_each_mut(&mut self.blockers, |kept| {
             kept.take();
         });
@@ -64,7 +106,12 @@ impl EntryFacts {
 
     /// Real cell `index`'s facts, kept from this batch's first ask.
     pub(super) fn cell(&self, index: usize, read: impl Fn() -> CellFacts) -> &CellFacts {
-        let kept = self.cells[index].get_or_init(&read);
+        let (block, offset) = self.cell_slot(index);
+        let kept = block.cells[offset].get_or_init(|| {
+            let value = read();
+            block.mark_used(offset);
+            value
+        });
         debug_assert!(
             !crate::sim::touch_log::live_read_check_enabled() || *kept == read(),
             "real cell {index} changed during a path batch"
@@ -76,10 +123,12 @@ impl EntryFacts {
     /// Searches asking at once may each read it and store the same bits:
     /// every read sees the one unchanged world.
     pub(super) fn plain(&self, index: usize, read: impl Fn() -> PlainCell) -> PlainCell {
-        let kept = &self.plain[index];
+        let (block, offset) = self.cell_slot(index);
+        let kept = &block.plain[offset];
         let cell = match kept.load(Ordering::Relaxed) {
             0 => {
                 let cell = read();
+                block.mark_used(offset);
                 kept.store(cell.0, Ordering::Relaxed);
                 cell
             }
@@ -90,6 +139,14 @@ impl EntryFacts {
             "real cell {index} changed during a path batch"
         );
         cell
+    }
+
+    fn cell_slot(&self, index: usize) -> (&CellFactsBlock, usize) {
+        assert!(index < self.cell_count, "cell facts index out of bounds");
+        (
+            &self.cells[index / CELLS_PER_BLOCK],
+            index % CELLS_PER_BLOCK,
+        )
     }
 
     /// The facts of the entity in `slot`, kept from this batch's first ask.
@@ -336,5 +393,98 @@ impl EntryFacts {
             sim.substrate.entities.slot_count(),
         );
         facts
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn concurrent_first_fills_keep_exact_bounds_across_shrink_and_regrow() {
+        let (sim, _, _) = crate::sim::world::entry_test_fixture::fixture();
+        let mut value = CellFacts::of(&sim, 511);
+        let mut facts = EntryFacts::default();
+        facts.reset(65, 0);
+        std::thread::scope(|scope| {
+            for _ in 0..4 {
+                let facts = &facts;
+                scope.spawn(move || {
+                    for _ in 0..32 {
+                        for index in [63, 64] {
+                            assert_eq!(*facts.cell(index, || value), value);
+                            assert_eq!(
+                                facts.plain(index, || PlainCell::new(&value, false)),
+                                PlainCell::new(&value, false),
+                            );
+                        }
+                    }
+                });
+            }
+        });
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                facts.cell(65, || value);
+            }))
+            .is_err()
+        );
+        value.level = 3;
+        facts.reset(64, 0);
+        assert_eq!(*facts.cell(63, || value), value);
+        assert_eq!(facts.plain(63, || PlainCell::new(&value, false)).level(), 3);
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                facts.cell(64, || value);
+            }))
+            .is_err()
+        );
+        value.level = 6;
+        facts.reset(65, 0);
+        assert_eq!(*facts.cell(64, || value), value);
+        assert_eq!(facts.plain(64, || PlainCell::new(&value, false)).level(), 6);
+    }
+
+    #[test]
+    #[ignore = "manual cache performance probe; run release alone with --nocapture"]
+    fn sparse_and_dense_first_use_and_reset_cost() {
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        const CELLS: usize = 1024 * 1024;
+        const MEASURED: u32 = 12;
+        let (sim, _, _) = crate::sim::world::entry_test_fixture::fixture();
+        let value = black_box(CellFacts::of(&sim, 511));
+        for (name, indices) in [
+            (
+                "sparse",
+                (0..4096)
+                    .map(|i| (i / 64) * 1024 + i % 64)
+                    .collect::<Vec<_>>(),
+            ),
+            ("dense", (0..CELLS).collect()),
+        ] {
+            let mut facts = EntryFacts::default();
+            facts.reset(CELLS, 0);
+            let mut cycle = || {
+                let cached = black_box(&facts);
+                crate::sim::parallel::map(&indices, |&index| {
+                    let cell = cached.cell(index, || value);
+                    black_box(cached.plain(index, || PlainCell::new(cell, false)));
+                });
+                facts.reset(CELLS, 0);
+            };
+            for _ in 0..3 {
+                cycle();
+            }
+            let started = Instant::now();
+            for _ in 0..MEASURED {
+                cycle();
+            }
+            println!(
+                "entry_facts_cycle case={name} cells={CELLS} queried={} mean_ms={:.6}",
+                indices.len(),
+                started.elapsed().as_secs_f64() * 1000.0 / f64::from(MEASURED),
+            );
+        }
     }
 }

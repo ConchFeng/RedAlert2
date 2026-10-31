@@ -340,6 +340,7 @@ pub struct SkirmishShellState {
     pub selected_map_idx: usize,
     pub selected_mode_id: i32,
     pub player_name_edit: PlayerNameEditState,
+    pub player_role: crate::skirmish_launch::LaunchHumanRole,
     pub player_country: LaunchCountry,
     pub player_country_random: bool,
     pub player_color_index: usize,
@@ -440,6 +441,7 @@ impl Default for SkirmishShellState {
             selected_map_idx: 0,
             selected_mode_id: 1,
             player_name_edit: PlayerNameEditState::default(),
+            player_role: crate::skirmish_launch::LaunchHumanRole::default(),
             player_country: LaunchCountry::default(),
             player_country_random: false,
             player_color_index: 0,
@@ -549,12 +551,20 @@ pub fn player_row_visible(state: &SkirmishShellState, maps: &[MapMenuEntry], row
 /// Players the selected map holds, bounded by the shell's rows.
 pub fn selected_player_capacity(state: &SkirmishShellState, maps: &[MapMenuEntry]) -> usize {
     maps.get(state.selected_map_idx)
-        .map(|map| visible_player_capacity(map.player_capacity))
+        .map(|map| map_row_capacity(state, map.player_capacity))
         .unwrap_or(SKIRMISH_PLAYER_SLOT_COUNT)
 }
 
 fn visible_player_capacity(capacity: i32) -> usize {
     capacity.clamp(0, NETWORK_PLAYER_SLOT_COUNT as i32) as usize
+}
+
+fn map_row_capacity(state: &SkirmishShellState, capacity: i32) -> usize {
+    let observing = matches!(
+        state.player_role,
+        crate::skirmish_launch::LaunchHumanRole::Observer
+    );
+    visible_player_capacity(capacity.saturating_add(i32::from(observing)))
 }
 
 /// VERA: the dialog slot (`0..8`) that shows player `row`, or `None` while the
@@ -626,7 +636,7 @@ fn clamp_opponent_page(state: &mut SkirmishShellState, capacity: usize) {
 }
 
 fn reset_rows_hidden_by_capacity(state: &mut SkirmishShellState, capacity: i32) {
-    let capacity = visible_player_capacity(capacity);
+    let capacity = map_row_capacity(state, capacity);
     clamp_opponent_page(state, capacity);
     let visible_opponents = capacity.saturating_sub(1);
     let team_default = inactive_ai_team_default(state);

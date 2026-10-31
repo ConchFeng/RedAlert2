@@ -927,7 +927,9 @@ pub(crate) fn try_schedule_command(
     owner: &str,
     payload: Command,
 ) -> Option<u64> {
-    if state.match_state.match_diagnostics.is_replay_playback() {
+    if state.match_state.match_diagnostics.is_replay_playback()
+        || crate::app::match_runtime::post_match::viewing_battlefield(state)
+    {
         return None;
     }
     // The relay owns a fixed match clock. Native connection/speed controls

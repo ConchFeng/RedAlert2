@@ -1199,9 +1199,9 @@ impl App {
                 if score_rendered {
                     presented_shell = PresentedShell::Score;
                 } else {
+                    let buttons = crate::app::frontend::status_screen::Buttons::result(state);
                     crate::app::frontend::status_screen::render(
-                        state, &mut encoder, &view, &title, &detail,
-                        crate::app::frontend::status_screen::Buttons::BACK_TO_MENU,
+                        state, &mut encoder, &view, &title, &detail, buttons,
                     );
                 }
             }
@@ -1217,6 +1217,7 @@ impl App {
                 .match_state
                 .match_diagnostics
                 .playback_status()
+                .or_else(|| crate::app::match_runtime::post_match::status(state).map(str::to_owned))
                 .or_else(|| {
                     let live = state.match_state.live_network.as_ref()?;
                     let frame = state

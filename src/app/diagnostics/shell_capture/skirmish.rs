@@ -61,6 +61,8 @@ enum Phase {
     Defeating,
     /// The score page `0x108` is up after the defeat.
     Scoring,
+    BattlefieldInspection,
+    Replaying,
     /// Tab opened Diplomacy `0x73` over the running game.
     Diplomacy,
     /// Continue was pressed on the settled score page.
@@ -82,6 +84,7 @@ pub(super) enum LoadingTarget {
     DefeatScore,
     /// The same, then Continue: the new `0x102` settled.
     DefeatContinue,
+    DefeatReplay,
     /// The game runs [`QUIT_AFTER_FRAMES`] frames, then Tab opens the
     /// Diplomacy dialog `0x73` through the production key path; it settled.
     Diplomacy,
@@ -197,6 +200,15 @@ pub(super) struct SkirmishCapture {
     diplomacy_frames: u32,
     deploy_sent: bool,
     sell_sent: bool,
+    battlefield_inspection: Option<(crate::ui::score_shell::ScoreScreenModel, (u64, u32, u64))>,
+    battlefield_inspected: bool,
+    default_observer_setup: bool,
+    replay_setup: Option<(u64, crate::skirmish_launch::SkirmishLaunchSession)>,
+    replay_completed: bool,
+    observer_client: bool,
+    observer_initial_entities: Option<usize>,
+    observer_focused: bool,
+    observer_battlefield_ready: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -395,6 +407,125 @@ impl SkirmishCapture {
         }
     }
 
+    pub(super) fn observer_generated_battlefield() -> Self {
+        Self {
+            observer_client: true,
+            chooser: Some(ChooserTarget::RandomMap(RandomMapTarget::UseMap)),
+            ..Self::default()
+        }
+    }
+
+    fn observe_generated_battlefield(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        let sim = &state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .context("observer simulation missing")?
+            .simulation;
+        let observer = sim
+            .session()
+            .current_house()
+            .context("observer house missing")?;
+        ensure!(
+            sim.session().is_observer_house(observer),
+            "client did not load the canonical observer"
+        );
+        let completed = matches!(state.frontend.screen, GameScreen::MissionResult { .. });
+        if self.observer_battlefield_ready
+            || (self.observer_initial_entities.is_some()
+                && self.observer_focused
+                && !completed
+                && sim.session().tick() < 9_000)
+        {
+            return Ok(());
+        }
+        let ai: Vec<_> = sim
+            .houses()
+            .values()
+            .filter(|house| !house.is_human() && !house.multiplay_passive() && !house.is_defeated())
+            .collect();
+        let observer_entities = sim
+            .entities()
+            .values_sorted()
+            .filter(|entity| entity.owner() == observer)
+            .count();
+        ensure!(
+            observer_entities == 0,
+            "observer acquired gameplay entities"
+        );
+        ensure!(
+            sim.houses()
+                .get(&observer)
+                .is_some_and(|house| house.map_is_clear())
+                && sim.fog().whole_map_revealed_for_owner(observer),
+            "observer client did not reveal the whole map"
+        );
+        if self.observer_initial_entities.is_none() {
+            ensure!(
+                ai.len() == 29
+                    && ai.iter().all(|house| house.difficulty()
+                        == crate::sim::house_state::HouseDifficulty::Normal),
+                "observer client did not start 29 live Normal AI houses"
+            );
+            self.observer_initial_entities = Some(observer_entities);
+            self.route.push(json!({"screen": "in game", "frame": frame, "action": "observer initial battlefield", "tick": sim.session().tick(), "live_ai": ai.len(), "ai_difficulty": "Normal", "observer_entities": observer_entities, "whole_map_revealed": true}));
+        }
+        if !self.observer_focused && !completed {
+            let anchor = sim
+                .entities()
+                .values_sorted()
+                .find(|entity| {
+                    entity.is_active() && ai.iter().any(|house| house.name() == entity.owner())
+                })
+                .context("no live AI entity to observe")?;
+            let cell = (anchor.position.rx(), anchor.position.ry());
+            crate::app::input::camera::center_camera_on_cell(state, cell.0, cell.1);
+            self.observer_focused = true;
+            return Ok(());
+        }
+        if !completed && sim.session().tick() < 9_000 {
+            return Ok(());
+        }
+        let hostile_ai = ai.iter().enumerate().any(|(index, left)| {
+            ai[index + 1..].iter().any(|right| {
+                !crate::map::houses::are_houses_mutually_allied(
+                    sim.house_alliances(),
+                    sim.interner().resolve(left.name()),
+                    sim.interner().resolve(right.name()),
+                )
+            })
+        });
+        if completed {
+            ensure!(
+                !hostile_ai,
+                "observer ended the match while hostile AIs remained"
+            );
+            if !Self::score_settled(state) {
+                return Ok(());
+            }
+        } else {
+            ensure!(
+                sim.ready_outcome_for_owner(observer).is_none(),
+                "observer prematurely received a terminal result"
+            );
+            if ai.len() < 2 || !hostile_ai {
+                return Ok(());
+            }
+        }
+        let samples = [(375.0, 495.0), (460.0, 540.0), (500.0, 500.0)].map(|screen| {
+            let cell = crate::app::match_runtime::sim_tick::screen_point_to_world_cell(state, screen.0, screen.1);
+            let terrain = sim.resolved_terrain().and_then(|terrain| terrain.cell(cell.0, cell.1));
+            json!({"screen": [screen.0, screen.1], "cell": [cell.0, cell.1],
+                "in_size": sim.map_cell_in_bounds((cell.0 as i16, cell.1 as i16)),
+                "in_local_playfield": sim.playfield_bounds().zip(terrain).is_some_and(|(bounds, terrain)| bounds.contains_height_aware_packed(i32::from(cell.0), i32::from(cell.1), terrain.level as i8, terrain.slope_type)),
+                "terrain_present": terrain.is_some(), "revealed": sim.fog().is_cell_revealed(observer, cell.0, cell.1),
+                "gap_covered": sim.fog().is_cell_gap_covered(observer, cell.0, cell.1)})
+        });
+        self.route.push(json!({"screen": if completed {"results"} else {"in game"}, "frame": frame, "action": "observer battlefield", "target_ticks": 9000, "tick": sim.session().tick(), "binary_frame": sim.session().binary_frame(), "seed": sim.session().seed(), "map": sim.session().map_name(), "live_ai": ai.len(), "observer": sim.interner().resolve(observer), "observer_starting_entities": self.observer_initial_entities, "observer_entities": observer_entities, "whole_map_revealed": true, "hostile_ai": hostile_ai, "completed": completed, "camera": [state.match_state.input.camera_x, state.match_state.input.camera_y], "zoom": state.match_state.input.zoom_level, "playfield": sim.playfield_bounds(), "bottom_screen_samples": samples}));
+        self.observer_battlefield_ready = true;
+        Ok(())
+    }
+
     pub(super) fn random_map(target: RandomMapTarget) -> Self {
         Self::chooser(ChooserTarget::RandomMap(target))
     }
@@ -430,6 +561,8 @@ impl SkirmishCapture {
                     | Phase::Quitting
                     | Phase::Defeating
                     | Phase::Scoring
+                    | Phase::BattlefieldInspection
+                    | Phase::Replaying
                     | Phase::Continuing
                     | Phase::Diplomacy
             ),
@@ -489,7 +622,11 @@ impl SkirmishCapture {
     fn defeat_route(&self) -> bool {
         matches!(
             self.loading,
-            Some(LoadingTarget::DefeatScore | LoadingTarget::DefeatContinue)
+            Some(
+                LoadingTarget::DefeatScore
+                    | LoadingTarget::DefeatContinue
+                    | LoadingTarget::DefeatReplay
+            )
         )
     }
 
@@ -572,6 +709,210 @@ impl SkirmishCapture {
         Ok(())
     }
 
+    fn click_score_action(&self, state: &mut AppState, id: u16) -> Result<()> {
+        let button = crate::app::frontend::shell_layout::score_layout(state)
+            .result_action_button(id)
+            .context("score action button missing")?;
+        Self::set_pointer(state, (button.x + button.w / 2, button.y + button.h / 2));
+        App::handle_score_shell_mouse_move(state);
+        App::handle_score_shell_mouse_down(state);
+        App::handle_score_shell_mouse_up(state);
+        Self::set_pointer(state, self.rest_point());
+        Ok(())
+    }
+
+    fn current_launch_setup(
+        state: &AppState,
+    ) -> Result<crate::skirmish_launch::SkirmishLaunchSession> {
+        crate::ui::skirmish_shell::pack_launch_session_without_start_validation(
+            &state.frontend.skirmish_shell_state,
+            state.frontend.scenario_catalog.shell_maps(),
+            &state.frontend.skirmish_modes,
+        )
+        .map_err(|error| anyhow::anyhow!("replay setup is invalid: {error:?}"))
+    }
+
+    fn replay_the_game(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        if self.phase == Phase::Scoring {
+            let seed = state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .context("finished simulation missing")?
+                .simulation
+                .session()
+                .seed();
+            self.replay_setup = Some((seed, Self::current_launch_setup(state)?));
+            self.click_score_action(state, crate::ui::score_shell::PLAY_AGAIN)?;
+            ensure!(
+                state.frontend.shell_exit.is_some() || state.frontend.screen == GameScreen::Loading,
+                "Play Again did not start the fresh match"
+            );
+            self.phase = Phase::Replaying;
+            self.route.push(
+                json!({"dialog": 0x108, "frame": frame, "action": "PlayAgain", "seed": seed}),
+            );
+        } else if !self.replay_completed && state.frontend.screen == GameScreen::InGame {
+            let (old_seed, expected) =
+                self.replay_setup.as_ref().context("replay setup missing")?;
+            let sim = &state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .context("replayed simulation missing")?
+                .simulation;
+            ensure!(
+                sim.session().started() && sim.session().seed() != *old_seed,
+                "Play Again did not install a fresh started scenario with a new seed"
+            );
+            ensure!(
+                Some(sim.session().map_name()) == expected.selected_map_file.as_deref(),
+                "Play Again changed the selected map"
+            );
+            ensure!(
+                Self::current_launch_setup(state)? == *expected,
+                "Play Again changed the raw match setup"
+            );
+            ensure!(
+                !state.match_state.sandbox_full_visibility,
+                "finished battlefield visibility leaked into the replay"
+            );
+            self.replay_completed = true;
+            self.route.push(json!({"screen": "in game", "frame": frame, "action": "ReplayStarted", "seed_before": old_seed, "seed_after": sim.session().seed(), "map": sim.session().map_name(), "tick": sim.session().tick(), "setup_unchanged": true, "visibility_override": state.match_state.sandbox_full_visibility}));
+        }
+        Ok(())
+    }
+
+    fn record_generated_selection(&mut self, state: &AppState, frame: u32) -> Result<()> {
+        let selection = selected_scene(state)?;
+        if self.default_observer_setup {
+            let shell = &state.frontend.skirmish_shell_state;
+            let active: Vec<_> = shell
+                .opponents
+                .iter()
+                .filter(|opponent| opponent.is_active())
+                .collect();
+            ensure!(
+                matches!(
+                    shell.player_role,
+                    crate::skirmish_launch::LaunchHumanRole::Observer
+                ),
+                "generated observer setup changed the local role"
+            );
+            ensure!(
+                active.len() == 29
+                    && active.iter().all(|opponent| opponent.row_type
+                        == crate::ui::skirmish_shell::SkirmishAiRowType::Normal),
+                "generated observer setup did not retain 29 Normal AIs"
+            );
+            ensure!(
+                state
+                    .frontend
+                    .skirmish_modes
+                    .iter()
+                    .any(|mode| mode.id == shell.selected_mode_id
+                        && mode.class == crate::skirmish_modes::MpModeClass::FreeForAll),
+                "default observer setup did not retain Free For All"
+            );
+            self.route.push(json!({"dialog": 0x102, "frame": frame, "action": "generated observer setup", "observer": true, "active_ai": active.len(), "ai_difficulty": "Normal", "mode_class": "FreeForAll"}));
+        }
+        self.selected_scene = Some(selection);
+        if self.observer_client {
+            self.chooser = None;
+            self.loading = Some(LoadingTarget::FirstFrame);
+            self.phase = Phase::Skirmish;
+        }
+        Ok(())
+    }
+
+    fn simulation_identity(state: &AppState) -> Result<(u64, u32, u64)> {
+        let sim = &state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .context("retained simulation missing")?
+            .simulation;
+        Ok((
+            sim.session().tick(),
+            sim.session().binary_frame(),
+            sim.state_hash(),
+        ))
+    }
+
+    fn begin_battlefield_inspection(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        let score = state
+            .frontend
+            .score_page
+            .as_ref()
+            .context("score page missing")?
+            .model
+            .clone();
+        let identity = Self::simulation_identity(state)?;
+        self.click_score_action(state, crate::ui::score_shell::VIEW_BATTLEFIELD)?;
+        ensure!(
+            crate::app::match_runtime::post_match::viewing_battlefield(state),
+            "View Battlefield did not retain the finished game"
+        );
+        self.battlefield_inspection = Some((score, identity));
+        self.phase = Phase::BattlefieldInspection;
+        self.route.push(json!({"dialog": 0x108, "frame": frame, "action": "ViewBattlefield", "tick": identity.0, "binary_frame": identity.1, "visibility_override": state.match_state.sandbox_full_visibility}));
+        Ok(())
+    }
+
+    fn finish_battlefield_inspection(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        ensure!(
+            crate::app::match_runtime::post_match::viewing_battlefield(state),
+            "finished battlefield did not present"
+        );
+        let (score, identity) = self
+            .battlefield_inspection
+            .take()
+            .context("battlefield inspection missing")?;
+        crate::app::match_runtime::sim_tick::advance_in_game_runtime(
+            state,
+            crate::app::match_runtime::frame_pacer::wall_clock_ms().saturating_add(1_000),
+            false,
+        );
+        ensure!(
+            Self::simulation_identity(state)? == identity,
+            "finished battlefield advanced its retained simulation"
+        );
+        let escape = winit::keyboard::Key::Named(winit::keyboard::NamedKey::Escape);
+        crate::app::input::keyboard::in_game_key_edge(
+            state,
+            crate::app::input::keyboard::InGameKeyEdge {
+                physical: winit::keyboard::KeyCode::Escape,
+                logical: &escape,
+                unmodified: &escape,
+                location: winit::keyboard::KeyLocation::Standard,
+                state: winit::event::ElementState::Pressed,
+                repeat: false,
+                text: None,
+            },
+            false,
+        );
+        ensure!(
+            App::score_shell_active(state),
+            "Escape did not reopen the retained score page"
+        );
+        ensure!(
+            state
+                .frontend
+                .score_page
+                .as_ref()
+                .is_some_and(|page| page.model == score),
+            "battlefield inspection changed the result model"
+        );
+        ensure!(
+            Self::simulation_identity(state)? == identity,
+            "returning to results changed the retained simulation"
+        );
+        self.battlefield_inspected = true;
+        self.phase = Phase::Scoring;
+        self.route.push(json!({"dialog": 0x108, "frame": frame, "action": "EscapeToResults", "tick": identity.0, "binary_frame": identity.1, "state_hash": format!("{:016x}", identity.2), "score_unchanged": true}));
+        Ok(())
+    }
+
     /// The score page shows with no slide and every reveal finished.
     fn score_settled(state: &AppState) -> bool {
         state.frontend.shell_first_paint_slide.is_none()
@@ -588,12 +929,16 @@ impl SkirmishCapture {
     /// The route's time budget: the quit and defeat routes load and play a
     /// game.
     pub(super) fn timeout(&self) -> std::time::Duration {
+        if self.observer_client {
+            return std::time::Duration::from_secs(600);
+        }
         if matches!(
             self.loading,
             Some(
                 LoadingTarget::AfterQuit
                     | LoadingTarget::DefeatScore
                     | LoadingTarget::DefeatContinue
+                    | LoadingTarget::DefeatReplay
                     | LoadingTarget::Diplomacy
             )
         ) {
@@ -731,6 +1076,9 @@ impl SkirmishCapture {
             Some(((track.x + 3, track.y + track.h / 2), "Players 2"))
         } else if !self.generate_pressed {
             self.generate_pressed = true;
+            if self.chooser == Some(ChooserTarget::RandomMap(RandomMapTarget::UseMap)) {
+                self.selected_scene = None;
+            }
             Some((RANDOM_MAP_GENERATE_POINT, "GenerateMap"))
         } else if generated && !self.pointer_rested {
             self.pointer_rested = true;
@@ -998,6 +1346,26 @@ impl SkirmishCapture {
                     self.phase = Phase::Skirmish;
                 }
             }
+            (Phase::Skirmish, PresentedShell::Other | PresentedShell::Skirmish)
+                if matches!(self.chooser, Some(ChooserTarget::RandomMap(_)))
+                    && state
+                        .frontend
+                        .skirmish_shell_state
+                        .random_map_setup_modal
+                        .is_some() =>
+            {
+                let shell = &state.frontend.skirmish_shell_state;
+                let setup = shell
+                    .random_map_setup_modal
+                    .as_ref()
+                    .context("default random-map setup missing")?;
+                self.route.push(json!({"dialog": 0x105, "frame": frame,
+                    "action": "default observer map setup", "observer": matches!(shell.player_role, crate::skirmish_launch::LaunchHumanRole::Observer),
+                    "mode_id": shell.selected_mode_id, "players": setup.options.num_players,
+                    "width": setup.options.width, "height": setup.options.height}));
+                self.default_observer_setup = true;
+                self.phase = Phase::RandomMap;
+            }
             // The first-paint slide frames present through the generic slide
             // renderer, so they arrive as `Other`.
             (Phase::Skirmish, PresentedShell::Other | PresentedShell::Skirmish)
@@ -1237,6 +1605,18 @@ impl SkirmishCapture {
                     RandomMapTarget::UseMap if Self::random_map_settled(state) => {
                         self.use_map_step(state, frame, false);
                     }
+                    RandomMapTarget::UseMap
+                        if self.pointer_rested
+                            && self.selected_scene.is_none()
+                            && state
+                                .frontend
+                                .skirmish_shell_state
+                                .choose_map_modal
+                                .is_none()
+                            && self.settled(state)? =>
+                    {
+                        self.record_generated_selection(state, frame)?;
+                    }
                     RandomMapTarget::SeedBrowserReturn => self.seed_browser_step(state, frame)?,
                     RandomMapTarget::Eject(answer) => {
                         self.eject_step(state, Some(answer), frame)?
@@ -1318,6 +1698,13 @@ impl SkirmishCapture {
                 }
             }
             (Phase::Starting, _)
+                if self.observer_client
+                    && (state.frontend.screen == GameScreen::InGame
+                        || App::score_shell_active(state)) =>
+            {
+                self.observe_generated_battlefield(state, frame)?;
+            }
+            (Phase::Starting, _)
                 if self.loading == Some(LoadingTarget::AfterQuit)
                     && state.frontend.screen == GameScreen::InGame =>
             {
@@ -1391,8 +1778,20 @@ impl SkirmishCapture {
                 }
             }
             (Phase::Defeating, _) => self.lose_the_game(state, frame)?,
+            (Phase::BattlefieldInspection, _) => {
+                self.finish_battlefield_inspection(state, frame)?
+            }
+            (Phase::Replaying, _) => self.replay_the_game(state, frame)?,
             (Phase::Scoring, PresentedShell::Score) if Self::score_settled(state) => {
-                if self.loading == Some(LoadingTarget::DefeatContinue) {
+                if matches!(
+                    self.loading,
+                    Some(LoadingTarget::DefeatScore | LoadingTarget::DefeatReplay)
+                ) && !self.battlefield_inspected
+                {
+                    self.begin_battlefield_inspection(state, frame)?;
+                } else if self.loading == Some(LoadingTarget::DefeatReplay) {
+                    self.replay_the_game(state, frame)?;
+                } else if self.loading == Some(LoadingTarget::DefeatContinue) {
                     // Continue through the page's production handlers.
                     state.match_state.input.cursor_x = 720.0;
                     state.match_state.input.cursor_y = 556.0;
@@ -1454,6 +1853,11 @@ impl SkirmishCapture {
 
     pub(super) fn ready(&self, state: &AppState) -> Result<bool> {
         self.guard(state)?;
+        if self.observer_client {
+            return Ok(self.observer_battlefield_ready
+                && (state.frontend.screen == GameScreen::InGame
+                    || (App::score_shell_active(state) && Self::score_settled(state))));
+        }
         if let Some(target) = self.entry_tick {
             return Ok(
                 self.entry_held && entry_wave_tick(state, ShellSlideKind::Skirmish) == Some(target)
@@ -1501,7 +1905,8 @@ impl SkirmishCapture {
                             && entry_wave_tick(state, ShellSlideKind::ChooseMap) == Some(tick)
                     }
                     RandomMapTarget::UseMap => {
-                        self.pointer_rested
+                        self.selected_scene.is_some()
+                            && self.pointer_rested
                             && state.frontend.random_map_generation.is_none()
                             && state
                                 .frontend
@@ -1564,8 +1969,14 @@ impl SkirmishCapture {
             }
             None => {}
         }
+        if self.loading == Some(LoadingTarget::DefeatReplay) {
+            return Ok(self.phase == Phase::Replaying
+                && self.replay_completed
+                && state.frontend.screen == GameScreen::InGame);
+        }
         if self.loading == Some(LoadingTarget::DefeatScore) {
-            return Ok(self.phase == Phase::Scoring
+            return Ok(self.battlefield_inspected
+                && self.phase == Phase::Scoring
                 && self.last_presented == Some(PresentedShell::Score)
                 && App::score_shell_active(state)
                 && Self::score_settled(state));
@@ -1596,6 +2007,7 @@ impl SkirmishCapture {
                 | LoadingTarget::AfterQuit
                 | LoadingTarget::DefeatScore
                 | LoadingTarget::DefeatContinue
+                | LoadingTarget::DefeatReplay
                 | LoadingTarget::Diplomacy => crate::app::loading::pump::NextLoadingFrame::First,
             };
             return Ok(self.phase == Phase::Starting

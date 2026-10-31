@@ -82,7 +82,7 @@ pub(crate) struct MatchState {
     pub(crate) scenario_elapsed_clock: crate::app::match_runtime::frame_pacer::ScenarioElapsedClock,
     /// Config-sourced input delay — copied to each new Simulation instance at game start.
     pub(crate) configured_input_delay_ticks: u64,
-    /// Seeded empty-map sandbox keeps full map visibility while still locking control.
+    /// Presentation-only full-map override for sandbox/debug views and the finished battlefield.
     pub(crate) sandbox_full_visibility: bool,
     /// The debug pause (`J` hotkey): the simulation is frozen
     /// without an in-scenario modal. Every modal transition ends it.

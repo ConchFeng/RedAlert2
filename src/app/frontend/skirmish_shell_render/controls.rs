@@ -856,7 +856,7 @@ pub(super) fn push_combo_instances(
                     .then_some(shell.player_color_index),
             ),
             open: open == Some(SkirmishComboId::Color(0)),
-            disabled: false,
+            disabled: !combo_enabled(shell, maps, SkirmishComboId::Color(0)),
         },
         layout.scale,
     );
@@ -867,7 +867,7 @@ pub(super) fn push_combo_instances(
             rect: layout.rows.start_combos[0],
             swatch: None,
             open: open == Some(SkirmishComboId::Start(0)),
-            disabled: false,
+            disabled: !combo_enabled(shell, maps, SkirmishComboId::Start(0)),
         },
         layout.scale,
     );
@@ -878,10 +878,6 @@ pub(super) fn push_combo_instances(
             rect: layout.rows.team_combos[0],
             swatch: None,
             open: open == Some(SkirmishComboId::Team(0)),
-            // Unlike its three siblings the local Team combo is not always
-            // live: the mode-wide AlliesAllowed gate greys it too, so the face
-            // has to derive its disabled paint from the same predicate the
-            // input path uses.
             disabled: !combo_enabled(shell, maps, SkirmishComboId::Team(0)),
         },
         layout.scale,

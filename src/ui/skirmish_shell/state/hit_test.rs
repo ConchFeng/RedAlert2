@@ -147,6 +147,10 @@ pub(crate) fn status_help_key_for_hover_with_catalog<'a>(
 
 pub fn status_help_key_for_hover(target: SkirmishHoverTarget) -> Option<&'static str> {
     match target {
+        SkirmishHoverTarget::ComboItem {
+            item: SkirmishComboItem::Observer,
+            ..
+        } => Some("STT:PlayerColorObserver"),
         SkirmishHoverTarget::StatusHelp0x695 => None,
         SkirmishHoverTarget::PlayerName0x6a0 => Some("STT:SkirmishEditPlayer"),
         SkirmishHoverTarget::MapPreview0x468 => Some("STT:SkirmishMapThumbnail"),

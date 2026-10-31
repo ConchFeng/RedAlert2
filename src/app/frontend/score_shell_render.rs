@@ -250,6 +250,26 @@ pub(crate) fn render_score_page(
                 hovered: false,
                 enabled: true,
             }];
+            if crate::app::match_runtime::post_match::available(state) {
+                for id in [
+                    crate::ui::score_shell::VIEW_BATTLEFIELD,
+                    crate::ui::score_shell::PLAY_AGAIN,
+                ] {
+                    if id == crate::ui::score_shell::PLAY_AGAIN
+                        && !crate::app::match_runtime::post_match::replay_available(state)
+                    {
+                        continue;
+                    }
+                    buttons.push(PaintButton {
+                        rect: layout
+                            .result_action_button(id)
+                            .expect("result action button"),
+                        pressed: pressed == Some(id),
+                        hovered: false,
+                        enabled: true,
+                    });
+                }
+            }
             if page.page_count() > 1 {
                 for id in [
                     crate::ui::score_shell::PREVIOUS_PAGE,
@@ -275,9 +295,13 @@ pub(crate) fn render_score_page(
     );
     if wave.is_none() {
         labels.push(PaintLabel {
-            text: resolve_csf(state, SCORE_PAGE.back.csf_key)
-                .into_owned()
-                .into(),
+            text: if crate::app::match_runtime::post_match::available(state) {
+                "Return to Menu".into()
+            } else {
+                resolve_csf(state, SCORE_PAGE.back.csf_key)
+                    .into_owned()
+                    .into()
+            },
             rect: owner_draw_button_label_rect(
                 layout.continue_button(),
                 pressed == Some(CONTINUE_BUTTON),
@@ -286,6 +310,30 @@ pub(crate) fn render_score_page(
             rgb: SHELL_TEXT_RGB_ENABLED,
             path_a_reveal: None,
         });
+    }
+    if wave.is_none() && crate::app::match_runtime::post_match::available(state) {
+        for (id, caption) in [
+            (crate::ui::score_shell::VIEW_BATTLEFIELD, "View Battlefield"),
+            (crate::ui::score_shell::PLAY_AGAIN, "Play Again"),
+        ] {
+            if id == crate::ui::score_shell::PLAY_AGAIN
+                && !crate::app::match_runtime::post_match::replay_available(state)
+            {
+                continue;
+            }
+            labels.push(PaintLabel {
+                text: caption.to_owned().into(),
+                rect: owner_draw_button_label_rect(
+                    layout
+                        .result_action_button(id)
+                        .expect("result action button"),
+                    pressed == Some(id),
+                ),
+                align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+                rgb: SHELL_TEXT_RGB_ENABLED,
+                path_a_reveal: None,
+            });
+        }
     }
     if wave.is_none() && page.page_count() > 1 {
         for (id, caption) in [

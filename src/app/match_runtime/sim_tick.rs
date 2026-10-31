@@ -97,6 +97,7 @@ fn replay_flush_facts(state: &AppState) -> (u64, u64) {
 pub(crate) fn drive_local_player_outcome_exit(state: &mut AppState, wall_ms: u64) {
     if !matches!(state.frontend.screen, GameScreen::InGame)
         || state.match_state.scenario_exit.is_some()
+        || super::post_match::viewing_battlefield(state)
     {
         return;
     }
@@ -146,8 +147,7 @@ pub(crate) fn drive_local_player_outcome_exit(state: &mut AppState, wall_ms: u64
     if cooperative {
         crate::app::cooperative_round::mission_ended(state, elapsed_score_ticks);
     }
-    let title = crate::app::match_runtime::scenario_exit::outcome_title(outcome).to_string();
-    let detail = crate::app::match_runtime::scenario_exit::outcome_detail(outcome).to_string();
+    let (title, detail) = super::post_match::result_text(state, outcome);
     let destination = crate::app::match_runtime::scenario_exit::scenario_exit_destination(
         state.match_state.session_mode(),
         outcome,
@@ -816,6 +816,10 @@ fn advance_in_game_runtime_mode(
     startup_admitted: bool,
     main_tick_pumps_audio: bool,
 ) -> bool {
+    if super::post_match::viewing_battlefield(state) {
+        super::post_match::service_battlefield(state);
+        return false;
+    }
     let replaying = state.match_state.match_diagnostics.is_replay_playback();
     state
         .match_state

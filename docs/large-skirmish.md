@@ -5,9 +5,9 @@ title: Large skirmish and random maps
 
 # Large skirmish and random maps
 
-VERA extends the retail eight-player Skirmish to 30 players (the local player and
-up to 29 computers), and the Create Random Map dialog to 30 players with two
-larger sizes. Retail-sized setups keep the native behavior; each extension
+VERA extends the retail eight-player Skirmish to 30 participants (one local player
+or observer and up to 29 computers), and the Create Random Map dialog to 30
+players with two larger sizes. Retail-sized setups keep the native behavior; each extension
 activates only past the retail limits. This page records the owners, the design
 decisions and the pitfalls found while building the extension, so later work
 starts from them.
@@ -26,6 +26,31 @@ starts from them.
 
 Examples, with 8 players → 30 players: Very Large is 120 → 232 cells a side,
 Huge 240 → 464, Giant 480 → 492 (capped).
+
+## Default AI spectator match
+
+A fresh offline Skirmish defaults to one **Observer** and 29 **Normal** computers
+in **Free For All**. This mode keeps the computers hostile to each other; ordinary
+Battle may ally its computers through the retail paranoid-AI rules. If the current
+map lacks enough starts, the first setup visit opens Create Random Map with
+30 players and Giant selected. Choose **Generate Map**, then **Use Map**.
+Generation remains explicit so opening Skirmish does not block on a large map.
+
+The local Side menu offers **Observer** first. Choose Random or a country to play.
+The observer has permanent full-map terrain visibility from loading, receives no
+starting army, and does not consume an AI starting position. Its reveal does not
+change the computers' visibility. `[SkirmishVERA] ObserverMode` remembers the role;
+AI difficulty and other existing setup preferences retain their current owners.
+A saved 29-AI observer preset requests a suitable random map once per process if
+its generated map is no longer selected. Explicit smaller matches remain available.
+
+Offline observers and eliminated players stay in the battlefield while hostile
+AI sides remain. Escape opens Options, allowing them to leave. When the battle
+ends, the existing paged score screen waits for an explicit action. **View
+Battlefield** retains the frozen world with camera movement and zoom; Escape
+returns to the same results. **Play Again** reuses the normal Skirmish setup and
+launch transaction, while **Return to Menu** returns through the existing shell.
+These result actions do not apply to campaign or network matches.
 
 ## Design decisions
 
@@ -63,8 +88,11 @@ after each land blob.
 
 ## Residuals
 
-- No live match of the captured Giant/30-player random map has been captured
-  since the zone-fill fix above; long-match stability is unverified. See the
+- A generated Giant/30-participant observer match has reached 9,000 committed
+  ticks through the production GPU client, with full-map reveal and all 29 Normal
+  AIs still active and hostile. Extended headless runs cover AI development and
+  combat; these bounded checks do not establish maximum-unit GPU performance or
+  unlimited client stability. See the
   [screenshot walkthrough](30-player-showcase.md).
 - The browser build has no threads, so a Huge or Giant random map generates on
   the caller's stack and may overflow.
@@ -91,7 +119,10 @@ after each land blob.
   like retail tiles; judge start placement on retail tiles.
 - To check a 30-house AI-only match headlessly:
   `python -m tools.scale_map target/scale/match30.map --starts 30`, then run
-  `sim-bench --scenario skirmish --map <absolute path> --ticks 900`.
+  `sim-bench --scenario skirmish --observer --computers 29 --map <absolute path>
+  --ticks 9000 --client-timing`. This uses the retail Free For All mode and an
+  actual observer; `--frame-profile` requires a `telemetry` build. Add
+  `--slow-frame-ms 50` with profiling to report slow ticks and their phase costs.
 - `tools.cargo_run` stages the files it validates and skips the tests when the
   tree changes during a build ("Source changed during Cargo"); rerun the same
   command, which reuses the build. Check staged content before a commit.

@@ -178,6 +178,8 @@ const CHECKPOINT_SKIRMISH_0X6B_EJECT_BOX: &str = "skirmish-0x6b-eject-box";
 const CHECKPOINT_SKIRMISH_AFTER_QUIT: &str = "skirmish-after-quit";
 const CHECKPOINT_SKIRMISH_DEFEAT_SCORE: &str = "skirmish-defeat-score";
 const CHECKPOINT_SKIRMISH_DEFEAT_CONTINUE: &str = "skirmish-defeat-continue";
+const CHECKPOINT_SKIRMISH_DEFEAT_REPLAY: &str = "skirmish-defeat-replay";
+const CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD: &str = "skirmish-observer-generated-battlefield";
 const CHECKPOINT_SKIRMISH_DIPLOMACY: &str = "skirmish-diplomacy";
 const CHECKPOINT_SCORE_0X108_STEADY: &str = "score-0x108-steady";
 const CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY: &str = "campaign-score-0x103-steady";
@@ -355,6 +357,8 @@ pub enum ShellCaptureCheckpoint {
     SkirmishDefeatScore,
     /// The same, then Continue: the new `0x102`, settled.
     SkirmishDefeatContinue,
+    SkirmishDefeatReplay,
+    SkirmishObserverBattlefield,
     SkirmishDiplomacy,
     /// The score dialog `0x108` with the retail comparison game's values,
     /// settled.
@@ -574,6 +578,8 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_SKIRMISH_AFTER_QUIT => Ok(Self::SkirmishAfterQuit),
             CHECKPOINT_SKIRMISH_DEFEAT_SCORE => Ok(Self::SkirmishDefeatScore),
             CHECKPOINT_SKIRMISH_DEFEAT_CONTINUE => Ok(Self::SkirmishDefeatContinue),
+            CHECKPOINT_SKIRMISH_DEFEAT_REPLAY => Ok(Self::SkirmishDefeatReplay),
+            CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD => Ok(Self::SkirmishObserverBattlefield),
             CHECKPOINT_SKIRMISH_DIPLOMACY => Ok(Self::SkirmishDiplomacy),
             CHECKPOINT_SCORE_0X108_STEADY => Ok(Self::Score0x108Steady),
             CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY => Ok(Self::CampaignScore0x103Steady),
@@ -973,6 +979,8 @@ impl ShellCaptureCheckpoint {
             Self::SkirmishAfterQuit => CHECKPOINT_SKIRMISH_AFTER_QUIT,
             Self::SkirmishDefeatScore => CHECKPOINT_SKIRMISH_DEFEAT_SCORE,
             Self::SkirmishDefeatContinue => CHECKPOINT_SKIRMISH_DEFEAT_CONTINUE,
+            Self::SkirmishDefeatReplay => CHECKPOINT_SKIRMISH_DEFEAT_REPLAY,
+            Self::SkirmishObserverBattlefield => CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD,
             Self::SkirmishDiplomacy => CHECKPOINT_SKIRMISH_DIPLOMACY,
             Self::Score0x108Steady => CHECKPOINT_SCORE_0X108_STEADY,
             Self::CampaignScore0x103Steady => CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY,
@@ -2341,6 +2349,12 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::SkirmishDefeatContinue => Some(
                 skirmish::SkirmishCapture::loading(skirmish::LoadingTarget::DefeatContinue),
             ),
+            ShellCaptureCheckpoint::SkirmishDefeatReplay => Some(
+                skirmish::SkirmishCapture::loading(skirmish::LoadingTarget::DefeatReplay),
+            ),
+            ShellCaptureCheckpoint::SkirmishObserverBattlefield => {
+                Some(skirmish::SkirmishCapture::observer_generated_battlefield())
+            }
             ShellCaptureCheckpoint::SkirmishDiplomacy => Some(skirmish::SkirmishCapture::loading(
                 skirmish::LoadingTarget::Diplomacy,
             )),
@@ -2486,6 +2500,9 @@ impl ShellCaptureSession {
     }
 
     fn max_capture_frames(&self) -> u32 {
+        if self.request.checkpoint == ShellCaptureCheckpoint::SkirmishObserverBattlefield {
+            return 40_000;
+        }
         if self.request.live_lan.is_none() && self.request.live_online.is_none() {
             // Campaign movies/menu frames precede the requested simulation tick.
             // Keep that presentation overhead separate from the bounded play run.

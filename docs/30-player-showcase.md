@@ -9,6 +9,8 @@ These screenshots were captured from the current macOS app on October 31, 2026,
 at a 1920 × 1080 client resolution. The game uses the supplied Chinese
 localization. The demonstration selects **Giant**, the largest random-map option,
 and **30 players**, then enables **one human and 29 computer opponents**.
+Fresh offline setup now defaults to an Observer and 29 Normal AIs in Free For
+All; this earlier walkthrough retains its original human/Hard-AI settings.
 
 The [README](../README.md#download-and-play) links to the macOS downloads.
 [Large skirmish and random maps](large-skirmish.md) describes the code owners
@@ -64,15 +66,17 @@ color list to reach the later choices; these extend the original eight colors.
 
 ![Extended color choices on the final page of the 30-player setup](images/30-player-extended-colors.jpg)
 
-## Current gameplay limitation
+## Runtime validation
 
 This specific Giant/30-player map generated successfully and reached the
 completed opponent setup. Starting it on macOS first overflowed the stack in
 `sim::pathfinding::zone_build::flood_fill_node_index` while constructing pathfinding
-zones; the fill now uses an explicit stack. No live match of this setup has been
-captured since, so no live-match screenshot is presented as a result.
+zones; the fill now uses an explicit stack. A later production-client check
+generated a Giant/30-player map, launched 29 Normal AIs and one Observer, and
+rendered 9,000 committed ticks with full-map reveal and developed AI bases. The screenshots above retain the
+original setup demonstration; runtime validation captures stay outside Git.
 
 The captures demonstrate the actual settings, generation, preview, colors,
-and opponent paging. They do not establish long-game stability, maximum-scale
-performance, or 30-human online play. Network random-map setup retains its
-eight-player limit.
+and opponent paging. Bounded client and headless checks do not establish
+unlimited stability, maximum-scale GPU performance, or 30-human online play.
+Network random-map setup retains its eight-player limit.

@@ -25,6 +25,7 @@ fn label(state: &AppState, key: &str) -> String {
 }
 pub(crate) fn choice(state: &AppState, item: SkirmishComboItem) -> SetupChoice {
     let value = match item {
+        SkirmishComboItem::Observer => -1,
         SkirmishComboItem::Country(SkirmishCountryChoice::Random) => -2,
         SkirmishComboItem::Country(SkirmishCountryChoice::Country(country)) => {
             side_item_data_for_country(country)

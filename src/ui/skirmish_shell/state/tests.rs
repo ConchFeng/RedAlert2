@@ -101,7 +101,88 @@ fn country_catalog_uses_registered_identity_and_shared_native_eligibility() {
     assert_eq!(country_choices(&rules), expected);
     let mut shell = SkirmishShellState::default();
     shell.refresh_country_catalog(&rules);
-    assert_eq!(combo_items(&shell, &[], SkirmishComboId::Side(0)), expected);
+    let local_choices: Vec<_> = std::iter::once(SkirmishComboItem::Observer)
+        .chain(expected)
+        .collect();
+    assert_eq!(
+        combo_items(&shell, &[], SkirmishComboId::Side(0)),
+        local_choices
+    );
+}
+
+#[test]
+fn observer_preset_launches_twenty_nine_independent_computers_and_can_switch_to_playing() {
+    let maps = [test_map_entry_with_starts("battle29.yrm", 29)];
+    let modes = stock_skirmish_modes();
+    let mut shell = controlled_country_shell();
+    shell.selected_mode_id = modes
+        .iter()
+        .find(|mode| mode.class == crate::skirmish_modes::MpModeClass::FreeForAll)
+        .unwrap()
+        .id;
+    shell.extended_colors = (17..=59).step_by(2).collect();
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Side(0),
+        SkirmishComboItem::Observer,
+    );
+    shell.fill_random_map_opponents(30);
+    repair_teams_for_selected_mode(&mut shell, &modes);
+    initialize_rows_for_selected_map(&mut shell, &maps);
+    assert_eq!(selected_player_capacity(&shell, &maps), 30);
+    let observer = launch_session(&shell, &maps, &modes, false).unwrap();
+    assert!(observer.local_player().is_observer());
+    assert_eq!(observer.opponents.len(), 29);
+    assert!(observer.opponents.iter().all(|ai| ai.difficulty
+        == crate::skirmish_launch::AiDifficulty::Normal
+        && ai.team == LaunchTeam::None));
+    assert!(!combo_enabled(&shell, &maps, SkirmishComboId::Start(0)));
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Side(0),
+        SkirmishComboItem::Country(SkirmishCountryChoice::Random),
+    );
+    assert_eq!(
+        launch_session(&shell, &maps, &modes, false),
+        Err(LaunchValidationError::MapCapacityExceeded {
+            capacity: 29,
+            requested_players: 30
+        })
+    );
+    initialize_rows_for_selected_map(&mut shell, &maps);
+    assert!(
+        !launch_session(&shell, &maps, &modes, false)
+            .unwrap()
+            .local_player()
+            .is_observer()
+    );
+    assert!(combo_enabled(&shell, &maps, SkirmishComboId::Start(0)));
+}
+
+#[test]
+fn an_observer_needs_two_opposing_computers() {
+    let maps = [test_map_entry("battle.mmx")];
+    let modes = stock_skirmish_modes();
+    let mut shell = controlled_country_shell();
+    apply_combo_selection_for_test(
+        &mut shell,
+        SkirmishComboId::Side(0),
+        SkirmishComboItem::Observer,
+    );
+    assert_eq!(
+        launch_session(&shell, &maps, &modes, false),
+        Err(LaunchValidationError::NoEnabledOpponent)
+    );
+    shell.fill_random_map_opponents(3);
+    for opponent in shell.opponents.iter_mut().take(2) {
+        opponent.team = 1;
+    }
+    assert_eq!(
+        launch_session(&shell, &maps, &modes, false),
+        Err(LaunchValidationError::SameExplicitTeam { team: 1 })
+    );
+    shell.opponents[1].team = -2;
+    assert!(launch_session(&shell, &maps, &modes, false).is_ok());
 }
 
 #[test]
@@ -1507,11 +1588,12 @@ fn side_combo_exposes_random_country_and_verified_dropdown_cap() {
     let maps = [test_map_entry("map.mmx")];
     let items = combo_items(&shell, &maps, SkirmishComboId::Side(0));
 
+    assert_eq!(items.first().copied(), Some(SkirmishComboItem::Observer));
     assert_eq!(
-        items.first().copied(),
-        Some(SkirmishComboItem::Country(SkirmishCountryChoice::Random))
+        items.get(1),
+        Some(&SkirmishComboItem::Country(SkirmishCountryChoice::Random))
     );
-    assert_eq!(items.len(), LaunchCountry::ALL.len() + 1);
+    assert_eq!(items.len(), LaunchCountry::ALL.len() + 2);
 
     let dropdown = combo_dropdown_rect(&shell, &layout, &maps, SkirmishComboId::Side(0)).unwrap();
     assert_eq!(dropdown.y, layout.rows.side_combos[0].y + COMBO_FACE_H + 1);

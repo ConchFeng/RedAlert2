@@ -36,6 +36,9 @@
 //! its MCV, builds and harvests, produces, forms teams and attacks. The
 //! launch's local house sits the match out, as in the match scenario, and no
 //! command is issued. `--ticks` defaults to 9000, ten minutes of game time.
+//! `--observer` instead launches a real Observer against Normal-difficulty
+//! computers in the retail Free For All mode. It owns no starting force and
+//! watches until the opposing sides finish; the benchmark stops at that result.
 //!
 //! The run is deterministic for a given map, seed and arguments: the final
 //! `Simulation::state_hash` (and the optional periodic hashes, taken outside
@@ -72,7 +75,8 @@
 //! vision slice's share of the mean frame, and every phase's mean. The vision
 //! slice is the frame's own refresh; objects move their sight at their own
 //! cell arrivals, inside the objects bucket. It needs a build with
-//! `--features telemetry`.
+//! `--features telemetry`. `--slow-frame-ms <positive ms>` prints phase costs
+//! for individual frames crossing that threshold, outside the timed interval.
 //!
 //! `--lan` plays the frames as a LAN game: they take the multiplayer route,
 //! which stores a multiplayer sync checksum every frame. `--frame-hashes
@@ -134,9 +138,11 @@ struct Args {
     csv: Option<PathBuf>,
     serial_paths: bool,
     frame_profile: bool,
+    slow_frame_ms: Option<f64>,
     lan: bool,
     frame_hashes: Option<PathBuf>,
     client_timing: bool,
+    observer: bool,
 }
 
 impl Args {
@@ -173,9 +179,11 @@ fn parse_args_from(mut argv: impl Iterator<Item = String>) -> Result<Args, Strin
         csv: None,
         serial_paths: false,
         frame_profile: false,
+        slow_frame_ms: None,
         lan: false,
         frame_hashes: None,
         client_timing: false,
+        observer: false,
     };
     let mut march_flag = None;
     while let Some(flag) = argv.next() {
@@ -226,12 +234,25 @@ fn parse_args_from(mut argv: impl Iterator<Item = String>) -> Result<Args, Strin
             "--csv" => args.csv = Some(PathBuf::from(value()?)),
             "--serial-paths" => args.serial_paths = true,
             "--frame-profile" => args.frame_profile = true,
+            "--slow-frame-ms" => {
+                args.slow_frame_ms = Some(
+                    value()?
+                        .parse::<f64>()
+                        .ok()
+                        .filter(|ms| ms.is_finite() && *ms > 0.0)
+                        .ok_or("--slow-frame-ms needs a finite positive number")?,
+                );
+            }
             "--lan" => args.lan = true,
             "--frame-hashes" => args.frame_hashes = Some(PathBuf::from(value()?)),
             "--client-timing" => args.client_timing = true,
+            "--observer" => args.observer = true,
             "--serial-scans" => {} // All target scans already run at their object turn.
             other => return Err(format!("unrecognised argument {other}")),
         }
+    }
+    if args.slow_frame_ms.is_some() && !args.frame_profile {
+        return Err("--slow-frame-ms requires --frame-profile".to_string());
     }
     if args.frame_profile && !cfg!(feature = "telemetry") {
         return Err("--frame-profile needs a build with --features telemetry".to_string());
@@ -241,6 +262,9 @@ fn parse_args_from(mut argv: impl Iterator<Item = String>) -> Result<Args, Strin
     }
     if args.houses.is_some_and(|houses| houses < 2) || args.types.is_empty() {
         return Err("need at least two houses and one unit type".to_string());
+    }
+    if args.observer && (args.scenario != ScenarioKind::Skirmish || args.lan) {
+        return Err("--observer requires an offline --scenario skirmish".to_string());
     }
     let marched = args.scenario == ScenarioKind::March;
     if marched && args.computers.is_some() {
@@ -266,16 +290,45 @@ fn seated_computers(args: &Args) -> Result<usize, String> {
         })?;
     let map = load_map_ini_by_name_or_path_with_assets(&args.ra2_dir, &args.map, &assets)
         .map_err(|error| format!("read map {}: {error}", args.map))?;
-    let most = usize::try_from(skirmish_player_capacity(&map.ini) - 1)
+    let reserved_start = i32::from(!args.observer);
+    let most = usize::try_from(skirmish_player_capacity(&map.ini) - reserved_start)
         .unwrap_or(0)
         .min(sim_bench_match::COMPUTERS);
     match args.computers {
         Some(computers) if computers > most => Err(format!(
-            "{} admits at most {most} computer houses beside the local one",
+            "{} admits at most {most} computer houses for this launch",
             args.map
         )),
         computers => Ok(computers.unwrap_or(most)),
     }
+}
+
+fn skirmish_session(
+    args: &Args,
+    computers: usize,
+) -> Result<vera20k_core::skirmish_launch::SkirmishLaunchSession, String> {
+    let mut roster = sim_bench_match::computer_roster(computers);
+    if args.observer {
+        for (_, difficulty) in &mut roster {
+            *difficulty = vera20k_core::skirmish_launch::AiDifficulty::Normal;
+        }
+    }
+    let mut session = battle_session(&args.map, &roster);
+    if args.observer {
+        let assets = AssetManager::new(&args.ra2_dir, MediaArchiveMode::STOCK_DIGITAL)
+            .map_err(|error| format!("open retail MIX archives: {error}"))?;
+        let modes = vera20k_core::skirmish_modes::skirmish_modes_from_assets(&assets)
+            .map_err(|error| error.to_string())?;
+        let mode = modes
+            .iter()
+            .find(|mode| mode.class == vera20k_core::skirmish_modes::MpModeClass::FreeForAll)
+            .ok_or("retail mode registry has no Free For All mode")?;
+        session.mode = vera20k_core::skirmish_launch::SkirmishLaunchMode::from_game_mode(mode);
+        session.local_player_mut().set_observer(true);
+        session.options.fog_of_war = false;
+        session.rebuild_house_roster();
+    }
+    Ok(session)
 }
 
 /// Every map cell of the live terrain, in (rx, ry) order.
@@ -471,12 +524,19 @@ trait Frames {
     fn state_hash(&self) -> u64;
     /// After each completed frame, with every completed frame's time.
     fn completed(&mut self, tick: u64, times: &[Duration]);
+    fn finished(&self) -> bool {
+        false
+    }
 }
 
 struct Bench<'a> {
     runtime: &'a mut SimRuntime,
     plan: &'a mut Plan,
     tick_ms: u32,
+    #[cfg(feature = "telemetry")]
+    slow_frame_ms: Option<f64>,
+    #[cfg(feature = "telemetry")]
+    previous_profile: vera20k_core::sim::frame_profile::FrameProfile,
 }
 
 impl Frames for Bench<'_> {
@@ -498,7 +558,42 @@ impl Frames for Bench<'_> {
         self.runtime.simulation.state_hash()
     }
 
+    fn finished(&self) -> bool {
+        let sim = &self.runtime.simulation;
+        sim.session()
+            .current_house()
+            .is_some_and(|owner| sim.ready_outcome_for_owner(owner).is_some())
+    }
+
     fn completed(&mut self, tick: u64, times: &[Duration]) {
+        #[cfg(feature = "telemetry")]
+        if let Some(threshold) = self.slow_frame_ms {
+            let sim = &self.runtime.simulation;
+            let current = *sim.frame_profile();
+            let elapsed_ms = times.last().unwrap().as_secs_f64() * 1000.0;
+            if elapsed_ms >= threshold {
+                use vera20k_core::sim::frame_profile::PHASE_KEYS;
+                let before = self.previous_profile.report().unwrap_or_default();
+                let after = current.report().unwrap_or_default();
+                let phases: Vec<_> = PHASE_KEYS
+                    .iter()
+                    .enumerate()
+                    .map(|(index, key)| {
+                        let ms = after.phases_ms[index] * after.frames as f64
+                            - before.phases_ms[index] * before.frames as f64;
+                        format!("{key}={ms:.3}")
+                    })
+                    .collect();
+                println!(
+                    "slow_frame tick={} simulation_tick={} binary_frame={} ms={elapsed_ms:.3} phases_ms {}",
+                    tick + 1,
+                    sim.session().tick(),
+                    sim.session().binary_frame(),
+                    phases.join(" "),
+                );
+            }
+            self.previous_profile = current;
+        }
         if matches!(self.plan, Plan::March(_)) || (tick + 1) % PROGRESS_EVERY != 0 {
             return;
         }
@@ -506,7 +601,7 @@ impl Frames for Bench<'_> {
         let mean: Duration = recent.iter().sum::<Duration>() / recent.len() as u32;
         let progress = match &*self.plan {
             Plan::Match(script) => script.progress(self.runtime),
-            _ => format!("live_objects={}", self.runtime.simulation.entities().len()),
+            _ => skirmish_progress(self.runtime),
         };
         println!(
             "progress tick={} mean_ms={:.1} {progress}",
@@ -514,6 +609,30 @@ impl Frames for Bench<'_> {
             mean.as_secs_f64() * 1000.0,
         );
     }
+}
+
+fn skirmish_progress(runtime: &SimRuntime) -> String {
+    let sim = &runtime.simulation;
+    let surviving_computers = sim
+        .houses()
+        .values()
+        .filter(|house| !house.is_human() && !house.multiplay_passive() && !house.is_defeated())
+        .count();
+    let kills: u64 = sim
+        .houses()
+        .values()
+        .map(|house| u64::from(house.stats().kills()))
+        .sum();
+    let built: u64 = sim
+        .houses()
+        .values()
+        .map(|house| u64::from(house.stats().built()))
+        .sum();
+    format!(
+        "simulation_tick={} live_objects={} surviving_computers={surviving_computers} kills={kills} built={built}",
+        sim.session().tick(),
+        sim.entities().len()
+    )
 }
 
 /// Run `ticks` frames, stopping at the first that fails. The frames before it
@@ -555,6 +674,9 @@ fn run_frames(
             measured.frame_records.push((tick + 1, hash, checksum));
         }
         frames.completed(tick, &measured.times);
+        if frames.finished() {
+            break;
+        }
     }
     (measured, Ok(()))
 }
@@ -656,7 +778,8 @@ fn main() -> Result<(), String> {
                  [--ticks 300 (match: 1800, skirmish: 9000)] \
                  [--types E1,E2,MTNK,HTNK] [--order-spread 30] [--return-at T] (march) \
                  [--hash-every N] [--frame-hash-every 15] [--csv <path>] [--serial-paths] [--serial-scans] \
-                 [--frame-profile] [--lan] [--frame-hashes <path>] [--client-timing]"
+                 [--frame-profile] [--slow-frame-ms <positive ms>] [--lan] [--frame-hashes <path>] [--client-timing] \
+                 [--observer (offline skirmish; Normal AI, Free For All)]"
             );
             std::process::exit(2);
         }
@@ -681,7 +804,7 @@ fn main() -> Result<(), String> {
             &args.ra2_dir,
             &args.map,
             args.seed,
-            battle_session(&args.map, &sim_bench_match::computer_roster(computers)),
+            skirmish_session(&args, computers)?,
         )?,
     };
     if !args.serial_paths {
@@ -706,7 +829,9 @@ fn main() -> Result<(), String> {
         }
         ScenarioKind::Skirmish => {
             let simulation = &mut scenario.runtime.simulation;
-            if let Some(local) = simulation.session().current_house() {
+            if !args.observer
+                && let Some(local) = simulation.session().current_house()
+            {
                 simulation.make_house_multiplay_passive(local);
             }
             let ticks = args.ticks.map_or(SKIRMISH_TICKS, NonZeroU64::get);
@@ -745,19 +870,25 @@ fn main() -> Result<(), String> {
         spawned,
         live_at_start
     );
-    println!("simulation_tick_ms={tick_ms}");
+    println!("simulation_tick_ms={tick_ms} observer={}", args.observer);
     if let Plan::Match(script) = &plan {
         println!("progress tick=0 {}", script.progress(runtime));
     }
 
     #[cfg(feature = "telemetry")]
     runtime.simulation.set_frame_profiling(args.frame_profile);
+    #[cfg(feature = "telemetry")]
+    let previous_profile = *runtime.simulation.frame_profile();
     // A failed frame still reports the frames before it, then fails the run.
     let (measured, frames) = run_frames(
         &mut Bench {
             runtime: &mut *runtime,
             plan: &mut plan,
             tick_ms,
+            #[cfg(feature = "telemetry")]
+            slow_frame_ms: args.slow_frame_ms,
+            #[cfg(feature = "telemetry")]
+            previous_profile,
         },
         ticks,
         args.hash_every,
@@ -777,6 +908,9 @@ fn main() -> Result<(), String> {
         print_frame_profile(runtime);
     }
     println!("live_objects start={live_at_start} end={live_at_end}");
+    if matches!(plan, Plan::Skirmish) {
+        println!("skirmish_final {}", skirmish_progress(runtime));
+    }
     frames?;
     csv_written?;
     frame_hashes_written?;

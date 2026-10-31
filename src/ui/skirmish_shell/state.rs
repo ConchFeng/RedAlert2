@@ -126,6 +126,7 @@ pub enum SkirmishCountryChoice {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SkirmishComboItem {
+    Observer,
     AiType(SkirmishAiRowType),
     Country(SkirmishCountryChoice),
     ColorSentinel(i32),

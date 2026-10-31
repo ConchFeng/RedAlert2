@@ -88,6 +88,7 @@ pub(super) fn team_label(state: &AppState, team: i32) -> String {
 
 pub(crate) fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> String {
     match item {
+        SkirmishComboItem::Observer => localized_vera_label(state, "VERA:Observer", "Observer"),
         SkirmishComboItem::AiType(row_type) => {
             let (key, fallback) = row_type_label(row_type);
             localized_label(state, key, fallback)
@@ -715,7 +716,14 @@ pub(super) fn build_shell_text_draws(
     push_combo_face_label_draw(
         &mut shell_draws,
         state,
-        &country_choice_label(state, shell.player_country_random, shell.player_country),
+        &if matches!(
+            shell.player_role,
+            crate::skirmish_launch::LaunchHumanRole::Observer
+        ) {
+            combo_item_label(state, SkirmishComboItem::Observer)
+        } else {
+            country_choice_label(state, shell.player_country_random, shell.player_country)
+        },
         layout.rows.side_combos[0],
         scale,
     );
@@ -741,8 +749,6 @@ pub(super) fn build_shell_text_draws(
         state,
         &team_label(state, shell.player_team),
         layout.rows.team_combos[0],
-        // The local Team combo greys with the mode's AlliesAllowed gate; every
-        // other local-row face is unconditionally live.
         combo_face_text_color(!combo_enabled(shell, maps, SkirmishComboId::Team(0))),
         scale,
     );

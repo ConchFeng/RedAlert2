@@ -2,6 +2,24 @@ use super::*;
 use crate::ui::skirmish_shell::SkirmishShellDialog;
 
 impl App {
+    pub(super) fn open_default_observer_map_setup(state: &mut AppState) {
+        let capacity = crate::ui::skirmish_shell::selected_player_capacity(
+            &state.frontend.skirmish_shell_state,
+            state.frontend.scenario_catalog.shell_maps(),
+        );
+        if !state
+            .frontend
+            .multiplayer_shell_runtime
+            .take_default_observer_map_setup(capacity)
+        {
+            return;
+        }
+        let mode = state.frontend.skirmish_shell_state.selected_mode_id;
+        let record = Self::current_choose_map_record_index(state);
+        Self::open_choose_map_modal(state, mode, record);
+        Self::commit_choose_map_random_map(state);
+    }
+
     pub(super) fn native_skirmish_shell_active(state: &AppState) -> bool {
         state.frontend.screen == GameScreen::MainMenu && state.frontend.shell_route.skirmish()
     }
@@ -956,11 +974,7 @@ impl App {
         let available = Self::saved_seed_dir(state)
             .is_some_and(|dir| crate::map::rmg::saved_seeds::saved_seeds_available(&dir));
         // A network room's 'W' start staging carries eight cells.
-        let network = matches!(
-            state.match_state.session_mode(),
-            crate::app::match_runtime::session::SessionMode::Lan
-                | crate::app::match_runtime::session::SessionMode::Wol
-        );
+        let network = state.frontend.shell_route.network_setup();
         let options = state
             .frontend
             .multiplayer_shell_runtime

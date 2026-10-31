@@ -320,3 +320,29 @@ fn a_boundary_a_restricted_unit_or_an_unknown_speed_takes_the_full_body() {
     assert_eq!(plain, None);
     assert!(full.is_err(), "{full:?}");
 }
+
+#[test]
+fn a_new_path_batch_discards_cached_cell_and_plain_movement_facts() {
+    let (mut sim, rules, registry) = fixture();
+    let cells = sim.resolved_terrain.as_ref().unwrap().cells().len();
+    let slots = sim.substrate.entities.slot_count();
+    let mut facts = EntryFacts::fitted(&sim);
+    let query = |sim: &Simulation, facts: &EntryFacts| {
+        let receiver = sim
+            .foot_entry_receiver(TRUCK, &rules, Some(&registry), Some(facts))
+            .unwrap();
+        plain_entry(
+            &receiver.live,
+            &receiver.mover,
+            cell(sim, TARGET),
+            east(sim, 0),
+        )
+    };
+    assert_eq!(query(&sim, &facts), Some(0));
+    terrain_cell(&mut sim, TARGET).speed_costs.wheel = Some(0);
+    facts.reset(cells, slots);
+    assert_eq!(query(&sim, &facts), Some(7));
+    terrain_cell(&mut sim, TARGET).speed_costs.wheel = Some(100);
+    facts.reset(cells, slots);
+    assert_eq!(query(&sim, &facts), Some(0));
+}
