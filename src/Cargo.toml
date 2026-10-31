@@ -40,7 +40,7 @@ ares = []
 # Compile the supported Phobos behavior; INIs cannot enable an absent capability.
 # Independent of `ares`: Phobos itself does not require Ares.
 phobos = []
-# Placeholder: NPatch-specific readers land with their first chain.
+# Compile the supported NPatch readers and gameplay behavior.
 npatch = []
 # VERA20K's own first-party extension capability.
 verax = []

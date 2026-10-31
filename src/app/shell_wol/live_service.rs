@@ -278,7 +278,7 @@ pub(super) struct LiveService {
 }
 
 /// Where players download a newer build (README "Download and play").
-pub(crate) const RELEASES_URL: &str = "https://github.com/YuriPlanet/vera20k/releases";
+pub(crate) const RELEASES_URL: &str = "https://github.com/ConchFeng/RedAlert2/releases";
 
 /// The lobby's own 426 reason when it gave a plain one, then where to get a
 /// newer build.

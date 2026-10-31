@@ -41,16 +41,16 @@ REQUIREMENTS
     desktops have; without it, start it with --appimage-extract-and-run.
 
 This is early software: expect missing features and differences from the
-original game. Report them at https://github.com/YuriPlanet/vera20k/issues
+original game. Report them at https://github.com/ConchFeng/RedAlert2/issues
 
 Official downloads come only from
-https://github.com/YuriPlanet/vera20k/releases. To check that an installer was
-built there, run: gh attestation verify <installer> --repo YuriPlanet/vera20k
+https://github.com/ConchFeng/RedAlert2/releases. To check that an installer was
+built there, run: gh attestation verify <installer> --repo ConchFeng/RedAlert2
 
 Copyright 2026 Halvor Nikolai Rusten and VERA20k contributors.
 VERA20k is licensed under the GNU General Public License version 3
 (LICENSE-GPL). The source of this build is at
-https://github.com/YuriPlanet/vera20k/tree/@COMMIT@
+https://github.com/ConchFeng/RedAlert2/tree/@COMMIT@
 Its Bink video decoder is ported from FFmpeg, copyright 2007-2011 Peter Ross,
 2009 Daniel Verkamp and 2009 Konstantin Shishkov, and licensed under the GNU
 Lesser General Public License version 2.1 or later (LGPL-2.1-or-later.txt).

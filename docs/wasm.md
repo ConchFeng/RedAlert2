@@ -1,7 +1,5 @@
 # Browser WebAssembly preview
 
-[English](wasm.md) | [简体中文](wasm.zh-CN.md)
-
 Wasm is an opt-in fourth build target alongside macOS, Windows and Linux. It
 uses the existing client, rules, simulation, menu and loading owners. The default
 browser package is single-player. Optional online transport uses the separate
@@ -10,11 +8,13 @@ browser package is single-player. Optional online transport uses the separate
 ## Build
 
 Requirements: stable Rust, Python 3.11 or newer, and `wasm-bindgen-cli` at the
-version recorded for `wasm-bindgen` in `Cargo.lock` (currently 0.2.114).
+version recorded for `wasm-bindgen` in `Cargo.lock`. Read that version when
+installing the CLI so it stays aligned after dependency updates.
 
 ```sh
 rustup target add wasm32-unknown-unknown
-cargo install wasm-bindgen-cli --version 0.2.114 --locked
+binding_version=$(python3 -c 'import tomllib; lock = tomllib.load(open("Cargo.lock", "rb")); print(next(p["version"] for p in lock["package"] if p["name"] == "wasm-bindgen"))')
+cargo install wasm-bindgen-cli --version "$binding_version" --locked
 python3 tools/wasm/build.py
 ```
 
@@ -47,7 +47,7 @@ The online package requires a separately running
 [WS/UDP gateway](../tools/wasm/gateway/README.md). Its default domain is a build
 setting, not a deployment guarantee. The gateway forwards each binary WS message
 as one unchanged UDP datagram, and proxies existing HTTPS lobby requests. Original
-game protocols and servers stay unchanged. See [network implementation](wasm-net.en.md)
+game protocols and servers stay unchanged. See [network implementation](wasm-net.md)
 for ownership, compile boundaries and runtime acceptance requirements.
 
 The equivalent compilation command (without JS packaging) is:
@@ -116,7 +116,10 @@ Only `wasm-net` together with the browser target enables Fetch, WS sockets and
 deferred network-loading waits. Desktop builds, including those enabling
 `wasm-net`, keep native UDP, blocking HTTPS and thread scheduling. The `wasm`
 single-player package still returns an explicit unsupported error at network
-entry points. Browser LAN discovery and direct UDP connections are not supported.
+entry points. The ordinary online package has no LAN discovery. Build with
+`python3 tools/wasm/build.py --network --lan` for browser-to-browser LAN over
+WebRTC; see [browser LAN](wasm-net.md#lan-wasm-lan). Direct native UDP and LAN
+interoperability with desktop clients are unsupported.
 
 Random map generation and synchronous GPU screenshot/capture are also unavailable
 in this single-threaded preview. Existing installed maps remain the target.
@@ -143,8 +146,9 @@ python3 -m unittest tools.tests.test_wasm_build
 The memory-filesystem tests check nested resources, shared archive bytes, missing
 files, directory creation, exclusive save creation and restored modification
 times. The serial-work test compares ordered results against native execution.
-The separate manual Wasm workflow packages single-player and online builds without
-changing desktop workflows. Network checks cover transport boundaries and platform
+The separate Wasm workflow checks single-player, online and LAN builds on manual
+dispatch and pull requests affecting its configured paths. It uploads packages
+only on manual runs; desktop workflows retain their separate builds. Network checks cover transport boundaries and platform
 isolation; full browser/browser and browser/desktop matches, convergence,
 reconnection and postmatch re-entry require actual play-tests. Browser rendered
 output, audio, persisted reload and save/load also require runtime validation.

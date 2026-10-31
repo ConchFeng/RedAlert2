@@ -779,7 +779,7 @@ jobs:
     permissions:
       contents: write
       # Signed SLSA build provenance: `gh attestation verify <installer>
-      # --repo YuriPlanet/vera20k` proves an installer came from this workflow.
+      # --repo ConchFeng/RedAlert2` proves an installer came from this workflow.
       id-token: write
       attestations: write
     steps:

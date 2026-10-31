@@ -52,7 +52,7 @@ ares = ["vera20k-core/ares"]
 # Optional Phobos extensions, independent of the Ares capability; neither
 # default nor shipping builds enable this either.
 phobos = ["vera20k-core/phobos"]
-# Placeholder for the NPatch capability; no chain reads it yet.
+# Optional NPatch compatibility readers and gameplay behavior.
 npatch = ["vera20k-core/npatch"]
 # VERA20K's own first-party extension capability; VeraX-gated chains read it.
 verax = ["vera20k-core/verax"]

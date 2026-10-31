@@ -1,105 +1,47 @@
 ---
 name: release
-description: "Make a VERA20K dev build or release with the Release workflow, keeping the release page to the three installers, a really small changes list in plain words and the install lines."
+description: Build or publish RedAlert2 installers through its existing GitHub Release workflow when requested.
 ---
 
 # Release
 
-`.github/workflows/release.yml` builds, checks and publishes; its header describes dev
-builds and releases. This skill is the maintainer's order of steps and the page style.
+Use repository `ConchFeng/RedAlert2` explicitly with `gh --repo` or API paths.
+The workflow at [.github/workflows/release.yml](../../../.github/workflows/release.yml)
+owns packaging, platform checks and promotion. A request to compile locally does
+not authorize a release or a remote workflow run.
 
-## Page style
+For a requested development build:
 
-- Downloads: only the Windows setup, the macOS `.dmg` and the Linux AppImage. The workflow
-  uploads nothing else; GitHub adds the source code archives itself.
-- Text: a really small list of what changed, then the install lines and the license line
-  that `.github/release/notes.sh` writes. No commit dumps, tables, checksums or other legal
-  text.
-- For a release, rewrite the list `notes.sh` drafts from pull request titles in plain player
-  words: about 5 to 9 bullets, the most visible first, small fixes grouped, internal work
-  (tests, refactors, version bumps, rules plumbing with no effect yet) left out, then an
-  "All changes" compare link. Check each bullet against its pull request's description.
-- Installed games list these bullets in their update offer: publishing signs the bullets
-  under the first "Changes" heading into the download manifest, so later edits to the page
-  do not reach the game.
-- One line per paragraph or bullet: GitHub shows every line break in release notes.
-- Name contributors by GitHub login without `@`, which would notify them.
+```sh
+gh workflow run release.yml --repo ConchFeng/RedAlert2 --ref main -f publish=none
+```
 
-## Dev build
+Use `publish=draft` for a requested reviewable release draft and
+`publish=prerelease` when publication is authorized. Identify the dispatched run and
+wait once with `gh run watch <run> --repo ConchFeng/RedAlert2 --exit-status`.
 
-`nightly.yml` starts one from main at 18:00 UTC each day that main has changed, unless it is
-disabled (`gh workflow list --all` shows its state). By hand:
+For a stable release, select a tested published development build. Create the
+requested annotated version tag on that exact commit and dispatch the same
+workflow with `-f promote=<dev-build-tag>`. Publishing tags and the draft requires
+the user's release authority; respect any no-commit or no-push restriction.
 
-1. `gh workflow run release.yml --ref main -f publish=prerelease`; `draft` to look before
-   publishing, `none` to only build and test.
-2. Wait with one background `gh run watch <run> --exit-status`.
+Keep the release page to the three platform installers, a short list of visible
+changes, the compare link, and the install/license lines produced by
+[notes.sh](../../../.github/release/notes.sh). Verify claims against the included
+changes. Preserve contributors' credit without adding notification mentions.
 
-## Release
+Check the published version, assets and provenance:
 
-1. Tag the commit of the published dev build that was tested with its version, using the
-   maintainer's login, then promote the build. The workflow checks that the tag names that
-   commit and copies the build's three installers under plain release filenames:
+```sh
+gh attestation verify <installer> --repo ConchFeng/RedAlert2
+```
 
-   ```bash
-   git fetch origin tag <dev build tag>
-   git tag -a vX.Y.Z -m "VERA20K vX.Y.Z" "<dev build tag>^{commit}"
-   git push origin refs/tags/vX.Y.Z
-   gh workflow run release.yml --ref main -f promote=<dev build tag>
-   ```
+Website/R2 publication is a separate configured service, documented in
+[downloads.md](../../../.github/release/downloads.md). Verify that its endpoint,
+signing key, bucket, credentials and environment belong to this fork before using
+it; inherited upstream domains are not evidence of fork ownership. Do not create
+secrets, approve deployments or redirect update traffic without that authority.
 
-2. Replace the draft's change list with the plain-words list, keeping the install and license
-   lines (`gh release edit vX.Y.Z --notes-file <file>`), read the rendered draft, then publish it:
-   `gh release edit vX.Y.Z --draft=false --latest`.
-3. Check that it is Latest, holds the three installers, and that
-   `gh attestation verify <download> --repo YuriPlanet/vera20k` passes for each.
-4. The `downloads.yml` run it started waits for approval in the `downloads` environment.
-   Check that it is this release's run (event `release`, the new tag), then approve it on
-   the run's page (Review deployments) or with:
-
-   ```bash
-   gh api -X POST repos/YuriPlanet/vera20k/actions/runs/<run>/pending_deployments \
-     -F "environment_ids[]=$(gh api repos/YuriPlanet/vera20k/environments/downloads --jq .id)" \
-     -f state=approved -f comment=vX.Y.Z
-   ```
-
-   Check that it passed and that `https://downloads.vera20k.org/latest.json` names the new
-   version: installed games offer their update from that file. The website's download links
-   lead to R2 only when that version's signature verifies, and otherwise send players to
-   GitHub without an error, so check that each line this prints starts with
-   `https://downloads.vera20k.org/releases/vX.Y.Z/`:
-
-   ```bash
-   for p in windows macos linux; do
-     curl -s -o /dev/null -w '%{redirect_url}\n' "https://vera20k.org/download/$p"
-   done
-   ```
-
-5. In a PR, raise the version in `Cargo.toml`, `src/Cargo.toml` and their two `Cargo.lock`
-   entries above the release and check all four versions agree. This allows the development
-   build workflow to start again.
-
-For example, after publishing `v0.2.0`, main can move to `0.2.1` for future development
-builds while `v0.2.0` remains Latest.
-
-A release that main's version cannot carry, such as a patch while main is ahead, comes from
-a branch: main plus one commit setting the version, dispatched with `--ref <branch>`. Its
-`.github/workflows` must equal main's (`git diff origin/main <branch> -- .github/workflows`
-is empty) when the dev build runs: the workflow's token cannot create a tag on a commit whose
-`.github/workflows` differ from main's (HTTP 403).
-
-The repository ruleset `Release tags` lets only repository admins create, move or delete a tag
-other than a dev build's (`v*-*`), so nobody else can publish a release under a version
-number. The workflow's token is not an admin and makes only dev build tags.
-`gh api repos/YuriPlanet/vera20k/rulesets` lists it.
-
-A published release cannot change: GitHub keeps its tag and installers, and a deleted
-release's version number cannot be used again. To stop a bad one reaching more players, make
-the release before it Latest and roll `latest.json` back to it (`.github/release/downloads.md`,
-Stop a bad release), then fix forward with a new version.
-
-## Only with the maintainer's yes
-
-- Deleting a release or a tag.
-- Changing the `Release tags` ruleset.
-- Stopping a release by rolling `latest.json` back.
-- Deleting dev builds; the workflow prunes them past the newest ten.
+Raise the development version afterward only when requested, keeping both package
+manifests and their lockfile entries aligned. Never delete releases/tags, change
+repository rules or roll back an update feed without explicit authorization.

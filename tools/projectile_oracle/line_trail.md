@@ -76,7 +76,7 @@ not executed. The separate joined impact witness
 [`ifv_trail_impact`](ifv_trail_impact.md) reaches556B30 during admitted Bullet
 UnInit/Conceal through DetachAll5F528E. The later destructor sees the cleared
 owner slot. VERA's later deletion-time detach remains tracked in
-[#1257](https://github.com/YuriPlanet/vera20k/issues/1257).
+upstream issue #1257.
 
 ## Coverage and implementation boundaries
 

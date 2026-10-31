@@ -5,20 +5,29 @@ RA2/YR assets — so Claude Code and Codex can call it as tools.
 
 The implementation is Rust, in `src/asset_tools/` behind `src/bin/asset.rs`.
 The server has nothing importable to reach for: every tool `subprocess.run`s the
-compiled binary and returns its stdout, which is JSON by contract. The CLI prints
-JSON on stdout even when it fails, so a caller parsing stdout always gets JSON.
+compiled binary and returns its stdout. The CLI emits JSON for ordinary success
+and command errors; MCP wrapper failures such as a missing executable, timeout or
+spawn error return explanatory plain text.
 
-Read-only against the retail install. The only files it writes are PNGs, WAVs and
-extracted bytes under `target/asset`, which is gitignored.
+Read-only against retail inputs. Render/extract/audio tools write PNGs, TSV
+indexes, WAVs and extracted bytes under the gitignored `target/asset` by default.
+Callers can select another output root explicitly.
 
-## Prerequisite: build the binary
+## Prerequisites
+
+Use Python 3.12 or newer with the MCP Python SDK installed (`python -m pip install
+mcp`) in the environment used to start the server. The project
+`tools/requirements-test.txt` provides test dependencies, not the MCP SDK.
+
+Build the binary:
 
 ```powershell
 python -m tools.cargo_run -- build --release -p vera20k --bin asset
 ```
 
 The server asks the [build owner](../README.md) for this checkout's most recent
-successful host release binary, falling back to debug with a note. The owner
+successful host binary in `release`, `fast`, then `debug` profile order. A debug
+fallback adds a performance note. The owner
 records the actual Cargo output and verifies its hash on discovery, even if the
 server and build shell have different `CARGO_TARGET_DIR` settings. Conventional
 `target/release` files are no longer guessed or used as a stale fallback.
@@ -101,16 +110,17 @@ Two things worth knowing before trusting output:
 Every subprocess failure is wrapped, because a crashed child must not look like
 an empty result:
 
-- **Binary not built** → a hint naming the exact build command and both paths
-  searched. Never an exception.
-- **Timeout** → the call is killed and a hint comes back naming the arguments
+- **Binary not built** → a plain-text hint naming the build command and the
+  profiles checked. No child is started.
+- **Timeout** → the child is killed and a plain-text hint comes back naming the arguments
   that shrink the job (`limit`, `format`, `archive`). Budgets are 120s for
   single-asset verbs, 300s for the sweeping ones (`ls`, `find`, `render`), and
   900s for `scan` / `parse-check`.
 - **Non-zero exit** → the CLI's own `{"error": ..., "hint": ...}` JSON is
   returned as-is. Exit 1 is a failed verb, exit 2 a bad command line.
-- **Exit 0 with no stdout, or a spawn failure** → a synthesised JSON error saying
-  so, with a tail of the child's stderr. This is a tool bug, not a miss.
+- **No stdout after a child exits** → a synthesized JSON error with the exit
+  status or missing-output explanation and the child's stderr tail.
+- **Spawn failure** → a plain-text error with the executable and rebuild command.
 
 stdout and stderr are captured separately. The CLI logs at warn level to stderr,
 so anything it prints there on a successful run is surfaced as a note under

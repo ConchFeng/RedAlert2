@@ -1,36 +1,30 @@
 ---
 name: run-game
-description: "Build and launch the current branch's normal release game when asked to run, start, or play VERA20k."
+description: Build and launch RedAlert2's ordinary VERA20k game when the user asks to run, start or play it.
 ---
 
 # Run the game
 
-Open the ordinary menu and leave a visible player session running.
+Resolve the current checkout and check whether its game is already running before
+starting another instance. Use its normal menu and configuration.
 
-Outside contributors: run `cargo run --profile fast --bin vera20k` from the checkout, as in the
-README. The steps below are the maintainer's workflow.
+Build through the shared runner:
 
-1. Resolve the checkout with `git rev-parse --show-toplevel`.
-2. Check for an existing `vera20k` process (PowerShell `Get-Process vera20k` or
-   Unix `pgrep -x vera20k`). Report an existing game instead of duplicating it.
-3. Build this checkout:
+```sh
+python -m tools.cargo_run -- build --locked --profile fast -p vera20k --bin vera20k
+python -m tools.cargo_run --resolve vera20k --profile fast
+```
 
-   ```powershell
-   python -m tools.cargo_run --label <unique-label> -- build --profile fast -p vera20k --bin vera20k
-   ```
+Use `--release` and resolve the `release` profile when the user requests performance
+measurement. Default to an unlabelled build; preserve a labelled binary only when
+the task needs a saved build or an A/B comparison. Follow the existing
+[build owner](../../../tools/README.md#cargo-ownership-and-labeled-builds).
 
-   `fast` is the incremental release profile: the same game, rebuilt faster after an edit.
-   Build `--release` instead when the user wants to judge performance. The runner waits for
-   active builds. Read its preserved `manifest.json` for the executable path; do not guess
-   `target/fast` or copy a prior build.
+Launch the resolved executable from the configured checkout so `config.toml` is
+found. Use the primary checkout only when it owns the required retail configuration.
+Preserve `RA2_DIR` if it supplies the data path and remove other inherited `RA2_*`
+overrides from the child environment. Do not alter the caller's environment.
 
-4. Launch that preserved executable with the primary worktree as working directory, so its
-   ignored `config.toml` supplies retail-data configuration. Preserve `RA2_DIR`
-   when it supplies the configured data path.
-5. Remove every other inherited `RA2_*` variable from the child environment;
-   restore any temporarily changed caller environment immediately after launch.
-6. Confirm a responsive visible window, leave it running, and report build/branch.
-
-Do not substitute debug, quickplay, capture, developer mode, a test harness, or
-automated input. Gameplay inspection, screenshots, and parity claims require their
-own requested scope.
+Confirm a responsive visible game window and leave the requested session running.
+Report an existing session or missing retail configuration accurately. Automated
+captures, quickplay and developer modes require their own task scope.

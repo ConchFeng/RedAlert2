@@ -77,11 +77,11 @@ The NPSE 2.0 manual credits its testers **我爱二次元**, **蓝天白云fd**,
 **好人先昇**, **行少** and **凌敏SHOS**. That manual and its release are the
 source for the `0xC3xxxx` addresses cited above.
 
-简体中文：[扩展支持与原作者](zh-CN/credits.md)。
 
 ## Cross-extension compatibility
 
-The three capabilities — `ares`, `phobos`, `npatch` — are orthogonal and mixable:
+The five gameplay capabilities — `ares`, `phobos`, `npatch`, `verax` and `npbug` —
+are orthogonal and mixable. For example:
 
 ```sh
 cargo run --release --bin vera20k --features ares,phobos,npatch

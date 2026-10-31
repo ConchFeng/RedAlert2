@@ -60,11 +60,11 @@ Move, object/forced Attack (including weapon-based special actions), attack-move
 and AreaGuard continue through their existing codecs. It does not establish
 full-window rendering parity, all map/mode combinations or the general Planning
 Mode visual/cluster work in issue #1273. The pre-existing hospital/grinder input
-producer ([#2022](https://github.com/YuriPlanet/vera20k/issues/2022)) and tank-bunker
+producer (upstream issue #2022) and tank-bunker
 self-eject input/native mapping need separate work;
 they are not silently executed as immediate orders while planning.
 
-The earlier no-refinery probe in [#2024](https://github.com/YuriPlanet/vera20k/issues/2024)
+The earlier no-refinery probe in upstream issue #2024
 was not a harvesting defect: original `73E67F..73E6C2` queues Guard when the
 house owns no instance of any `Dock=` type. The retail frame regression now
 covers actual ore extraction with an owned refinery, plus no-refinery and

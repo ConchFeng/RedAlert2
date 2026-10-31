@@ -1,5 +1,11 @@
 # VERA20k lobby protocol v4
 
+This document specifies the service contract consumed by the client. The HTTPS
+lobby server is not included in this repository; `services/` contains the gameplay
+relay and its protocol crate. Server quotas, session expiry and deployment policy
+below require validation against the matching server implementation. Client
+request/response handling lives in `src/app/shell_wol/live_service/`.
+
 HTTPS JSON only. Authentication is `Authorization: Bearer <token>`; tokens,
 relay tickets and packet keys must never be logged. Names are ASCII letters,
 digits, `_` or `-`, 1–24 bytes, unique without case among active sessions.

@@ -34,7 +34,7 @@ import tempfile
 from tools.cargo_run import invoke
 
 ROOT = Path(__file__).resolve().parents[1]
-REPO = "YuriPlanet/vera20k"
+REPO = "ConchFeng/RedAlert2"
 EXAMPLE = Path("services/relay-protocol/examples/relay_compat.rs")
 DEV_TAG = re.compile(r"^v\d+\.\d+\.\d+-\d{8}-\d{6}$")
 FIXTURE_KEY = "49" * 32  # Public loopback key; the client signs with the same bytes.

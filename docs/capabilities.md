@@ -1,10 +1,11 @@
 # Optional capabilities
 
-The engine ships optional feature flags that no default or release build
-compiles: `ares`, `phobos`, `npatch`, `npbug` and the diagnostic builds
-(`debug-tools`, `telemetry-dashboard`). They are orthogonal and mixable
-(`--features ares,phobos,npatch,npbug`); an implemented capability must keep working
-with the others present without assuming they are absent. A flag that nothing
+Optional capabilities cover gameplay extensions, diagnostics and browser builds.
+The authoritative feature list and supported combinations live in
+`tools/capability_tests.py`; use `python -m tools.capability_tests list` to inspect
+them. Mixable gameplay extensions can be enabled together, for example
+`--features ares,phobos,npatch,npbug`; each registered combination must compile
+without assuming the other extensions are absent. A flag that nothing
 compiles is a break waiting to be found by whoever tries it first — that gap
 is tracked as #2798, and #2789 (`telemetry-dashboard` unbuildable from `main`
 for a day) is what it costs. `npbug` is VERA20K's own opt-in bug-fix

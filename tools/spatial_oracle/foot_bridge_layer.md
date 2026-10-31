@@ -261,7 +261,7 @@ inactive-record traversal and map/topology producers need their own traced
 chains; this query refactor does not establish their parity. Campaign ore
 shroud admission remains an explicit existing residual in ore_scan.
 The response scoring/dispatch mechanism also remains required under issue
-[759](https://github.com/YuriPlanet/vera20k/issues/759): production budget,
+upstream issue #759: production budget,
 score and assigned sum still consume Cost instead of native vt+2C0/708B40
 ThreatPosed. Original 7080BA, 4D97BE/4D9825/4D984C and 708734 establish the
 reads. This affects ordinary AI defender rankings, budget and potentially

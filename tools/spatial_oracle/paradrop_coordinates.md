@@ -71,7 +71,7 @@ The adjacent shared-helper audit also found a separate Rocket distance concern:
 `int_distance_to_sim` could stop on the upper member of an integer Newton
 two-cycle. The native Rocket locomotor port (`sim::movement::rocket_movement`)
 replaced its only consumer and the helper is deleted
-([issue #1027](https://github.com/YuriPlanet/vera20k/issues/1027)).
+(upstream issue #1027).
 No ordinary-map overflow was demonstrated in the other inspected shared helpers;
 the documentation now states their result/intermediate bounds explicitly.
 

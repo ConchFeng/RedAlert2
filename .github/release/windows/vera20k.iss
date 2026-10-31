@@ -36,9 +36,9 @@ AppVersion={#AppVersion}
 ; installer under a plain name.
 AppVerName=VERA {#AppVersion} (build {#Build})
 AppPublisher=VERA
-AppPublisherURL=https://github.com/YuriPlanet/vera20k
-AppSupportURL=https://github.com/YuriPlanet/vera20k/issues
-AppUpdatesURL=https://github.com/YuriPlanet/vera20k/releases
+AppPublisherURL=https://github.com/ConchFeng/RedAlert2
+AppSupportURL=https://github.com/ConchFeng/RedAlert2/issues
+AppUpdatesURL=https://github.com/ConchFeng/RedAlert2/releases
 VersionInfoVersion={#AppVersion}
 ; Per user: {autopf} is %LOCALAPPDATA%\Programs, which the program can write to.
 PrivilegesRequired=lowest

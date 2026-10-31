@@ -24,7 +24,7 @@ concurrency:
 
 jobs:
   publish:
-    if: github.repository == 'YuriPlanet/vera20k' && (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease))
+    if: github.repository == 'ConchFeng/RedAlert2' && (github.event_name == 'workflow_dispatch' || (!github.event.release.draft && !github.event.release.prerelease))
     # The publisher's secrets live only in this environment: v* tags and main
     # may use it, each run once the maintainer approves it
     # (.github/release/downloads.md).

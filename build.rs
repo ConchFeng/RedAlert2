@@ -91,8 +91,8 @@ fn multiplayer_build_identity() {
 fn source_location() {
     println!("cargo::rerun-if-env-changed=VERA20K_COMMIT");
     let source = match std::env::var("VERA20K_COMMIT") {
-        Ok(commit) if !commit.is_empty() => format!("github.com/YuriPlanet/vera20k/tree/{commit}"),
-        _ => "github.com/YuriPlanet/vera20k".to_owned(),
+        Ok(commit) if !commit.is_empty() => format!("github.com/ConchFeng/RedAlert2/tree/{commit}"),
+        _ => "github.com/ConchFeng/RedAlert2".to_owned(),
     };
     println!("cargo::rustc-env=VERA20K_SOURCE={source}");
 }

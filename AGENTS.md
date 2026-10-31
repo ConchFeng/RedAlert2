@@ -1,5 +1,9 @@
 # VERA20k — Project contract
 
+Project repository: `ConchFeng/RedAlert2`. Use American English for code and docs.
+Coding and submission conventions live in the `code-style` and `code-submission`
+skills. Build the entire project only when explicitly requested.
+
 **Outside contributors and their agents:** follow the README's
 [Contributing](README.md#contributing) section and your issue, and skip the rest of this file.
 In short: one small fix per PR, one to three regression tests that fail without it, the
@@ -143,7 +147,7 @@ fork an owner: when an existing one is wrong for your chain, correct it for ever
 caller (a change toward native is in scope, with evidence for each affected path) or
 use it as it is and record the residual. A change that adds a copy, a re-inlined body,
 a caller-specific wrapper or a competing owner is a defect to remove before merge; the
-critic checks for them.
+review checks for them.
 
 Derived caches and indexes are allowed when their source of truth, update or
 invalidation rules, and consistency validation are explicit.
@@ -185,10 +189,10 @@ when they are not ported. Behavior invented where a native body exists is a reco
 residual with a reason, never a silent default. Deferring required loop or
 determinism/authority/lifecycle work cannot close that loop.
 
-Delegate independent work with clear ownership. Changes to gameplay behavior get one
-read-only critic before their PR; [review.md](.agents/skills/_shared/review.md) holds
-the critic rules. Keep a concise [checkpoint](.agents/skills/_shared/handoff.md) for
-sustained work.
+Delegate independent work with clear ownership when it benefits the task. Use a
+read-only critic when requested or justified by a risky gameplay change;
+[review.md](.agents/skills/_shared/review.md) describes the focused review. Keep a
+concise [checkpoint](.agents/skills/_shared/handoff.md) for sustained work.
 
 ## Git and validation
 
@@ -196,8 +200,9 @@ Check actual Git/worktree/process state before mutating. Never alter another tas
 files, refs or processes; untouched-file failures require causal investigation.
 
 Start `feature/<topic>` from fetched `origin/main`; isolate owned/dirty checkouts.
-Continue task-owned branches and commit validated increments. Never commit/push
-directly to `main`. Publication requires user/goal authority; PRs target `main`.
+Continue task-owned branches. Create commits only when the user authorizes them;
+a request to edit or review does not grant commit or publication authority. Never
+commit/push directly to `main`. Authorized PRs target `ConchFeng/RedAlert2` and `main`.
 Integrate promptly when authorized. Owners resolve conflicts and revalidate.
 Preserve unique/local data: remove a worktree or branch only once its work is merged or
 saved, with `git worktree remove` and `git branch -d`, never forced.
@@ -205,7 +210,7 @@ saved, with `git worktree remove` and `git branch -d`, never forced.
 Preserve contributor credit. Use verified GitHub usernames unless the contributor
 explicitly prefers another public name; raw Git names and email addresses do not
 establish that preference. Before merging, check the final author identity, message
-and trailers using the [attribution rule](.agents/skills/review-pr/SKILL.md#contributor-attribution),
+and trailers using the [submission standards](.agents/skills/code-submission/SKILL.md),
 then verify the resulting commit.
 
 After each fetch, fast-forward `<main-checkout>` (`merge --ff-only origin/main`) when it is on
@@ -224,7 +229,7 @@ Skip `cargo check` when a planned test answers the same question.
 - Working Rust: start with focused
   `cargo test -p <crate> --lib <module_path>::`, where `<crate>` is the module's crate
   from the split above (`vera20k-core` or `vera20k`).
-- Rust PR readiness: after any critic fixes, focused tests for the modules the change
+- Rust PR readiness: after any review fixes, focused tests for the modules the change
   touches and their direct consumers, with retail `ini/` and
   `VERA20K_REQUIRE_RETAIL_INI=1`; no baseline runs. The full
   `cargo test --workspace --lib` is not required; run it only when asked. Tests
@@ -274,7 +279,7 @@ consequential findings near the implementation or review. Validate affected prod
 output and performance with appropriate captures, GPU readbacks or profiling;
 documentation and CPU-only tests alone do not establish rendered gamemd parity.
 For Rust style beyond this contract, consult the
-[condensed Rust guidelines](.agents/skills/_shared/rust-guidelines.md) when shaping
+[project coding conventions](.agents/skills/code-style/SKILL.md) when shaping
 APIs, hot loops, error handling or tests; this contract wins on conflict.
 
 Resolve `<main-checkout>` with `git worktree list`; its `ini/`, config and `LOCAL.md`

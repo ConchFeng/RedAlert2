@@ -135,7 +135,7 @@ uses remembered source settings at final activation. Accordingly:
 
 The stock zero-cost pair keeps its original readiness, selection, command shape
 and hash stream. The added nondefault state is hashed only for a paid workflow.
-This closes the mechanism described in [#2107](https://github.com/YuriPlanet/vera20k/issues/2107),
+This closes the mechanism described in upstream issue #2107,
 subject to the evidence boundary below.
 
 Also excluded: Money.DrainAmount/Delay, charge-drain activation, the reported

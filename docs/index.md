@@ -5,20 +5,21 @@ title: VERA20k Engine
 
 # VERA20k
 
-[Svenska](sv/) · [简体中文](zh-CN/) · [Deutsch](de/) · [العربية](ar/) · [Русский](ru/) · [ไทย](th/) · [Türkçe](tr/) · **English**
-
 Red Alert 2: Yuri's Revenge — rebuilt from scratch in Rust.
 
 A short map of the code. If it disagrees with the code, the code is right. Each module's `//!` header says what it does and what it may depend on.
 
 ## The code
 
-Source paths below are under `src/`. The workspace has two crates:
+Most game source paths below are under `src/`. The main engine and client crates are:
 
 - `vera20k-core` (`src/Cargo.toml`) contains assets, rules, maps, simulation,
   networking, shared utilities and the headless/skirmish entry points.
 - `vera20k` (`Cargo.toml`) contains the app, renderer, UI, audio, asset tools and
   game executable. It re-exports core's modules.
+
+The workspace also contains `vera20k-relay-protocol` and `vera20k-relay` under
+`services/`, for four crates in total. The modules below belong to the game crates.
 
 - `sim/` — all game state and deterministic gameplay.
 - `render/` — the wgpu renderer.

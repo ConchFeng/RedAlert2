@@ -343,7 +343,7 @@ before/after measurements above for selection plus rally preparation.
 
 The small A-blitter wall difference is not a claimed speedup. That broader run passed21 tests
 and failed an unrelated existing tree benchmark's unavailable-timestamp assertion,
-tracked in [issue1037](https://github.com/YuriPlanet/vera20k/issues/1037).
+tracked in upstream issue #1037.
 
 Immutable SHROUD row spans remove repeated transparent-pixel scanning. For a
 256x256 map, CPU rebuild means fell from1.061 to0.146ms at1280x720 unrevealed and

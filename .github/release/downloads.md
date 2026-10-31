@@ -1,5 +1,11 @@
 # Website downloads
 
+This is the inherited publication design. The checked-in workflow targets
+`ConchFeng/RedAlert2`, but the domains, bucket, signing key and external protection
+settings below have not been established for this fork by the repository code.
+Verify fork ownership and configure those prerequisites before publication. A
+repository URL change does not provision a website or migrate its update service.
+
 The release workflow builds and verifies three installers. After a stable release
 is published, `downloads.yml` runs `publish-r2.sh` to mirror those exact files to
 Cloudflare R2. It never rebuilds or uploads game data.
@@ -42,8 +48,8 @@ release before it Latest again, then dispatch `downloads.yml` for that release
 with `roll_back` and approve its run:
 
 ```sh
-gh release edit v0.2.3 --latest --repo YuriPlanet/vera20k
-gh workflow run downloads.yml --ref main --repo YuriPlanet/vera20k -f tag=v0.2.3 -f roll_back=true
+gh release edit v0.2.3 --latest --repo ConchFeng/RedAlert2
+gh workflow run downloads.yml --ref main --repo ConchFeng/RedAlert2 -f tag=v0.2.3 -f roll_back=true
 ```
 
 The publisher checks `v0.2.3` as on publication and refuses unless GitHub marks
@@ -56,26 +62,28 @@ approval, reject it and skip the dispatch: `latest.json` never named `v0.2.4`.
 Fix forward with a new version, whose publication makes it Latest, and say on
 `v0.2.4`'s release page that it was withdrawn.
 
-Releases are immutable (a repository setting): once published, a release's tag
-and installers cannot change, and a deleted release's version number cannot be
-used again. A bad release is replaced by a new version, never by new files.
+Enable and verify GitHub release immutability for this repository before relying
+on immutable tags and installers; this is an external repository setting. Replace
+a bad release with a new version instead of overwriting its published files.
 
 ## Setup and retry
 
-The publish job's secrets live only in the `downloads` environment:
-`R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
-`UPDATE_SIGNING_KEY`. Only `v*` tags and `main` may use it, and each run waits
-until the maintainer approves it, so a run nobody approved never sees them.
+The workflow reads `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`
+and `UPDATE_SIGNING_KEY` in the `downloads` environment. Configure these secrets
+there, restrict the environment to `v*` tags and `main`, and require a maintainer's
+approval before a job can access them. The YAML names the environment but does
+not create or verify its protection settings.
 Approve only a run you started, by publishing a release or dispatching a retry.
 Use an R2 S3 token with object read/write permission restricted to the
 `vera20k-downloads` bucket; bucket administration is unnecessary.
-The public custom domain is `downloads.vera20k.org`; r2.dev stays disabled.
+The inherited custom domain is `downloads.vera20k.org`. Use a fork-owned endpoint
+and disable public r2.dev access when configuring this publication service.
 Credentials must not appear in code, command arguments or logs.
 
-The bucket lock rule `releases-permanent` keeps every object under `releases/`
-indefinitely: R2 refuses to overwrite or delete them, so the website's direct
-links serve exactly the files their signed manifest names. `latest.json` stays
-outside it. `wrangler r2 bucket lock list vera20k-downloads` shows the rule.
+Configure and verify a bucket lock such as `releases-permanent` to retain objects
+under `releases/` indefinitely. That external R2 setting prevents overwrites and
+deletions; the publisher does not create it. Keep `latest.json` outside the lock.
+`wrangler r2 bucket lock list vera20k-downloads` lists the configured rules.
 
 The secret `UPDATE_SIGNING_KEY` holds the PEM Ed25519 private key whose public
 half is `update-key.pub` (base64 of the raw 32 bytes). The publisher refuses to
@@ -89,7 +97,7 @@ print its public half and set the secret:
 ```sh
 (umask 077; openssl genpkey -algorithm ed25519 -out "$KEY")
 openssl pkey -in "$KEY" -pubout -outform DER | tail -c 32 | openssl base64 -A
-gh secret set UPDATE_SIGNING_KEY --env downloads --repo YuriPlanet/vera20k < "$KEY"
+gh secret set UPDATE_SIGNING_KEY --env downloads --repo ConchFeng/RedAlert2 < "$KEY"
 ```
 
 The Ubuntu 24.04 runner supplies `gh`, AWS CLI, `jq` and OpenSSL 3. To retry,

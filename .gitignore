@@ -39,6 +39,7 @@ Thumbs.db
 /docs/*
 !/docs/capabilities.md
 !/docs/wasm.md
+!/docs/wasm-net.md
 !/docs/ares.md
 !/docs/ares-side-defaults.md
 !/docs/ares-country-presentation.md
@@ -92,13 +93,6 @@ Thumbs.db
 !/docs/ini-directives.md
 !/docs/ini-commander-personalities.md
 !/docs/script-action-56.md
-!/docs/ar/
-!/docs/de/
-!/docs/ru/
-!/docs/sv/
-!/docs/th/
-!/docs/tr/
-!/docs/zh-CN/
 !/docs/images/
 !/docs/images/**
 
@@ -122,15 +116,6 @@ tools/vendor-eval/
 
 /*.md
 !/README.md
-!/README.sv.md
-!/README.de.md
-!/README.zh-CN.md
-!/README.ar.md
-!/README.es.md
-!/README.ja.md
-!/README.ru.md
-!/README.th.md
-!/README.tr.md
 # Kept visible: a root CLAUDE.md would stop Claude Code reading AGENTS.md.
 !/CLAUDE.md
 !/AGENTS.md

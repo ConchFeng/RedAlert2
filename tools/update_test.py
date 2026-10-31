@@ -83,11 +83,11 @@ BODY = """### Changes since v0.0.1
 - This test release checks that VERA20K updates itself from the downloads site.
 - Its offer lists each change from the release page, below the question.
 - Long changes wrap onto further rows, indented under their first word.
-- **Emphasis** and [links](https://github.com/YuriPlanet/vera20k) lose their `Markdown`.
+- **Emphasis** and [links](https://github.com/ConchFeng/RedAlert2) lose their `Markdown`.
 - The list scrolls with its arrows, its thumb or the mouse wheel.
 - Update downloads the release with progress, installs it and restarts VERA20K.
 
-[All changes](https://github.com/YuriPlanet/vera20k)
+[All changes](https://github.com/ConchFeng/RedAlert2)
 
 You need your own copy of Yuri's Revenge.
 """

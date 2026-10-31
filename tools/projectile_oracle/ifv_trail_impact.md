@@ -29,7 +29,7 @@ suppressed Conceal and incorrectly attributed detach to the destructor.
 After drain, `row.trail_after` records owner zero, Bullet slot zero and registry
 count one. The detached trail remains for its later fade. VERA's deletion-time
 notification remains a separate mismatch tracked in
-[#1257](https://github.com/YuriPlanet/vera20k/issues/1257). The baseline's single
+upstream issue #1257. The baseline's single
 impact animation still runs its complete original lifetime afterward.
 
 The companion metadata records the payload hash.

@@ -14,7 +14,7 @@ The capability is independent of Ares and NPatch: a Phobos build needs neither f
 three combine with `--features ares,phobos,npatch`. Every implemented Phobos chain must keep working
 when the other capabilities are compiled in — the compatibility rule and the pattern for two
 extensions touching one native site are in
-[NPatch placeholder](npatch.md#cross-extension-compatibility).
+[NPatch compatibility](npatch.md#cross-extension-compatibility).
 
 Phobos builds identify themselves in the window title, the startup log, and the build description
 drawn at the tactical view's top right during a match. That description is Phobos's own text: the
@@ -141,5 +141,3 @@ The project's full contributor list is in
 [Phobos CREDITS.md](https://github.com/Phobos-developers/Phobos/blob/develop/CREDITS.md).
 VERA's include and inheritance traversal also adapts ra2-mono's `IniFile`;
 see [INI directives](ini-directives.md#source-mapping).
-
-简体中文：[扩展支持与原作者](zh-CN/credits.md)。

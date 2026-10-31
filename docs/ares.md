@@ -13,10 +13,11 @@ cargo run --release --bin vera20k --features ares
 Ares builds identify themselves in the window title and startup log. Saves retain the build
 capability and cannot load in another capability combination, even with identical retail INIs.
 
-Ares is one of three orthogonal capabilities: it combines with `phobos` and `npatch`
+Ares is one of five orthogonal gameplay capabilities: `ares`, `phobos`, `npatch`,
+`verax` and `npbug`. For example, it combines with Phobos and NPatch
 (`--features ares,phobos,npatch`), and every implemented feature must keep working when the others
 are compiled in. The rule and the pattern for two extensions touching one native site are in
-[NPatch placeholder](npatch.md#cross-extension-compatibility).
+[NPatch compatibility](npatch.md#cross-extension-compatibility).
 
 For ordinary selected-map offline loading, Ares Country loading fields are read
 from the retained Country identity. `File.LoadScreenPAL` and the loading text
@@ -176,5 +177,3 @@ Ares does not publish per-key authorship for the features ported here, so this
 page credits the project and its developers instead of inventing individual
 owners. The official [Ares credits](https://ares-developers.github.io/Ares-docs/credits.html)
 list the remaining testers and community members.
-
-简体中文：[扩展支持与原作者](zh-CN/credits.md)。

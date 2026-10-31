@@ -129,9 +129,11 @@ resolves `fast` host executables as it does `release` and `debug` ones.
 
 `--wait-seconds 60` bounds the wait (default one hour). Ctrl-C interrupts the
 runner. It does not kill other owners. Failed commands retain their exit code,
-produce no label and leave compiler diagnostics visible. Source edits during a
-run fail validation even if Cargo succeeds: labelled builds compare file
-contents, other runs compare sizes and timestamps.
+produce no label and leave compiler diagnostics visible. Source or Git-state changes
+during a run fail validation even if Cargo succeeds. Labelled builds reread file
+contents; unlabelled builds reuse cached hashes when file metadata is unchanged.
+Both compare HEAD, branch, Git status and the source digest. Staging or unstaging
+files during compilation also invalidates the result.
 
 One kernel lock in the shared Git directory serializes cooperating worktrees.
 The runner also waits for any observed `cargo` or `rustc` process on this host.

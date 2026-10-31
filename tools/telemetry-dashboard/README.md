@@ -4,7 +4,7 @@ The dashboard observes a running VERA20k match: populations, production, AI
 teams, map positions, selected paths, frame timing and process logs. The dashboard
 design and initial implementation were contributed by
 [1372704087](https://github.com/1372704087) in
-[PR #2083](https://github.com/YuriPlanet/vera20k/pull/2083).
+upstream PR #2083.
 
 ## Run
 
@@ -167,7 +167,7 @@ are used. The dashboard-only feature includes no trainer, remote pause/step
 controls or gameplay mutations.
 
 The full original contribution from
-[PR #2083](https://github.com/YuriPlanet/vera20k/pull/2083) is preserved unchanged
+upstream PR #2083 is preserved unchanged
 in a local maintainer Git archive for future integration. The optional debug
 build adapts that work to current state owners and the session, replay and
 transport rules above.

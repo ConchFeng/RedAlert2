@@ -99,8 +99,8 @@ CAPABILITIES: tuple[Capability, ...] = (
     Capability(
         "npatch",
         ("npatch",),
-        "NPatch placeholder; no behaviour is compiled in yet, so compile "
-        "coverage is the whole job until the first chain lands.",
+        "NPatch compatibility readers and gameplay; currently registered "
+        "for compile coverage only.",
         test=False,
     ),
     Capability(

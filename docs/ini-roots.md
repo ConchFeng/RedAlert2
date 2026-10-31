@@ -107,8 +107,10 @@ normal game bootstrap. Selecting the MO triplet does not certify that every MO
 definition, asset or gameplay mechanism is supported.
 
 [Include and inheritance](ini-directives.md) expand at the selected source
-boundary only in gameplay builds with `--features ares`. Root selection itself
-needs no extension feature. The read-only `ini-expand --source-only` probe works
+boundary when their extension is enabled: `--features ares` selects `[#include]`,
+and `--features phobos` selects `[$Include]`. See the directive guide for
+inheritance and combined-build precedence. Root selection itself needs no
+extension feature. The read-only `ini-expand --source-only` probe works
 in every build and does not require a configured Rules/Art/AI triplet.
 
 The mono reference is my local working tree: configurable file lists in

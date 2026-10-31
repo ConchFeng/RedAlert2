@@ -7,7 +7,7 @@ deliberate, documented deviation from native behavior, not a parity fix.
 
 The extension exists because the reports are compatibility candidates, not
 VERA-versus-retail defects — the inventory and its policy live in
-[#3024](https://github.com/YuriPlanet/vera20k/issues/3024). Builds without the
+upstream issue #3024. Builds without the
 feature keep every native path and its pinned goldens.
 
 Enable it explicitly:

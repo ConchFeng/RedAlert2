@@ -19,8 +19,8 @@ the independent slot marker at +0x118 and normal completion at +0x179.
 The Unit depot FSM, service timer, 30-tick unfunded grace eject, separate cost
 formula, direct wallet debit and late global service sweep are removed.
 Snapshot version 286 and rules-domain version 13 reject the superseded state.
-This resolves [#675](https://github.com/YuriPlanet/vera20k/issues/675) and the
-depot writer in [#661](https://github.com/YuriPlanet/vera20k/issues/661).
+This resolves upstream issue #675 and the
+depot writer in upstream issue #661.
 
 ## Original executable evidence
 
@@ -130,11 +130,11 @@ detach visits are represented. The production observer does not project direct
 radio packets, locomotor power, pending entry or auxiliary navigation; their
 native comparisons are separate evidence.
 
-[#937](https://github.com/YuriPlanet/vera20k/issues/937) covers occupied-depot
+upstream issue #937 covers occupied-depot
 foundation waiter/parking and its later admission risk. Hospital, airfield and
 bunker service, retained saved-order/tube work and blocked exits are outside this
 selected chain. Guard/miner order paths that can Restore cancelled suspended
 state are recorded separately in
-[#1023](https://github.com/YuriPlanet/vera20k/issues/1023). Their shared
+upstream issue #1023. Their shared
 pre-Queue radio/pending-entry cleanup is covered here; their broader post-Queue
 migration is separate.

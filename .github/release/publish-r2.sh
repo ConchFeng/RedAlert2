@@ -16,7 +16,7 @@ tag=$1 roll_back=${2:-}
 [[ $tag =~ ^v(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})\.(0|[1-9][0-9]{0,8})$ ]] \
   || die 'only canonical stable version tags are accepted'
 version=${tag#v}
-repo=YuriPlanet/vera20k
+repo=ConchFeng/RedAlert2
 bucket=vera20k-downloads
 [[ ${R2_ACCOUNT_ID:-} =~ ^[0-9a-f]{32}$ ]] || die 'R2_ACCOUNT_ID is required'
 [[ -n ${AWS_ACCESS_KEY_ID:-} && -n ${AWS_SECRET_ACCESS_KEY:-} ]] \
