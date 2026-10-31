@@ -62,6 +62,10 @@ after each land blob.
 
 ## Residuals
 
+- Starting the captured Giant/30-player random map on macOS overflows the stack
+  in `sim::pathfinding::zone_build::flood_fill_node_index` while building zones.
+  Generation and setup succeed; that particular live-match demonstration is
+  blocked. See the [screenshot walkthrough](30-player-showcase.md).
 - The browser build has no threads, so a Huge or Giant random map generates on
   the caller's stack and may overflow.
 - Network rooms keep eight retail colors past eight players and eight random-map

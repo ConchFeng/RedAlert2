@@ -17,6 +17,8 @@ behavior; documentation explains its owners and how to work with them.
    production entry points, frame flow and state ownership.
 3. Use the [README](../README.md) for setup and player-facing status, or the
    [developer tools index](../tools/README.md) for a concrete command.
+4. Follow the [30-player screenshot walkthrough](30-player-showcase.md) for the
+   current Giant random-map setup, opponent paging, and runtime limitations.
 
 The project guide links to the production source for each claim. Module-level
 `//!` headers give local responsibilities and dependency boundaries; read the

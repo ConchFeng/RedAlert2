@@ -17,6 +17,28 @@ use crate::sim::bridge_state::{BridgeEndpointRecord, BridgeRecordKind, BridgeRun
 use crate::sim::movement::locomotor::MovementLayer;
 use crate::sim::pathfinding::PathGrid;
 
+#[test]
+fn extended_map_base_zones_build_on_bounded_stack() {
+    std::thread::Builder::new()
+        .stack_size(256 * 1024)
+        .spawn(|| {
+            let side = 1000u16;
+            let mut classes = vec![zone_class::GROUND; usize::from(side).pow(2)];
+            classes[0] = zone_class::IMPASSABLE;
+            let levels = vec![0; classes.len()];
+            let topology = super::zone_build::rebuild_base_zone_topology(
+                classes, levels, &[], side, side, None,
+            );
+            let zones = topology.zone_ids();
+            assert_ne!(zones[0], zones[1]);
+            assert_ne!(zones[1], ZONE_INVALID);
+            assert_eq!(zones[1], *zones.last().unwrap());
+        })
+        .unwrap()
+        .join()
+        .unwrap();
+}
+
 fn tiny_hierarchy() -> ZoneHierarchy {
     let mut level2 = ZoneLevelGraph::new(1);
     level2.set_record(ZoneRecord::new(1, 0, 0));

@@ -1,5 +1,3 @@
-<img src="docs/images/new-conscirpt-hero-image.png" alt="VERA20k Conch Edit hero image" width="100%">
-
 <p align="center" dir="ltr">
   <a href="https://github.com/ConchFeng/RedAlert2/actions/workflows/macos.yml?query=branch%3Amain" title="Latest macOS library test run (run manually)"><img src="https://github.com/ConchFeng/RedAlert2/actions/workflows/macos.yml/badge.svg?branch=main" alt="macOS library tests" height="23" align="middle"></a>
   <a href="https://github.com/ConchFeng/RedAlert2/actions/workflows/linux.yml?query=branch%3Amain" title="Latest Linux library test run (run manually)"><img src="https://github.com/ConchFeng/RedAlert2/actions/workflows/linux.yml/badge.svg?branch=main" alt="Linux library tests" height="23" align="middle"></a>
@@ -10,13 +8,48 @@
 
 # VERA20k Conch Edit
 
-VERA20k Conch Edit is ConchFeng's edition of VERA20K, a community-led rewrite of the original
-engine, `gamemd.exe`. It uses the original game files, so you'll need your own copy of
-Red Alert 2: Yuri's Revenge.
+**Red Alert 2: Yuri's Revenge rebuilt in Rust, with local skirmishes for up to 30 players.**
 
-VERA20k Conch Edit is made by gamers, for gamers, and gamers have the final say in where it goes.
+ConchFeng's edition of [VERA20K](https://github.com/YuriPlanet/vera20k) expands the
+original eight-player setup to **one human and 29 computer opponents**, adds
+**Huge and Giant random maps**, and keeps the original game's assets and atmosphere.
+The current downloadable packages target **macOS on Apple Silicon**.
 
-<img src="docs/images/vera20k-screenshots.png" alt="VERA20k Conch Edit skirmish setup screen and in-game view" width="100%">
+[Download 1.0.0](#download-and-play) · [30-player walkthrough](docs/30-player-showcase.md) ·
+[Architecture](#architecture) · [Developer documentation](docs/index.md)
+
+<img src="docs/images/30-player-random-map-settings.jpg" alt="Current macOS random-map screen with Giant selected and Players set to 30" width="100%">
+
+*Giant is the largest random-map option. These are actual application captures
+using the supplied Chinese game localization.*
+
+## What's new in Conch Edit
+
+- **30-player local skirmish setup:** enable up to 29 computer opponents and
+  page through their settings with **Previous** and **Next**.
+- **Larger random maps:** **Huge** and **Giant** expand beyond the retail sizes;
+  dimensions also grow with the selected player count, within the generator's cap.
+- **More player colors:** 22 additional colors become available on maps with
+  more than eight player slots.
+- **Saved extended setups:** opponent settings past the original seven are
+  retained in `VERA.INI`.
+- **Startup settings and recovery:** configure window dimensions, including
+  1920 × 1080 physical pixels, and use **Choose Folder** when game resources
+  cannot load.
+
+## 30-player showcase
+
+The captured flow uses **Giant**, **30 players**, and all **29 computer opponents**
+enabled. Selecting 30 in the generator creates the map capacity; enable the
+opponents separately before starting the match.
+
+| Generate the largest map | Configure the opponents |
+| --- | --- |
+| ![Giant random-map generation in progress with 30 players](docs/images/30-player-random-map-generating.jpg) | ![The generated random map selected with the first seven computer opponents enabled](docs/images/30-player-skirmish-setup.jpg) |
+| ![Finished Giant random-map preview with the player count still set to 30](docs/images/30-player-random-map-preview.jpg) | ![The final opponent page reaches player 30 of 30](docs/images/30-player-opponents-final.jpg) |
+
+See the [full screenshot walkthrough](docs/30-player-showcase.md) for the generated
+preview, additional opponent pages, extended colors, and the current runtime limit.
 
 ## Project goals
 
@@ -36,15 +69,42 @@ VERA20k Conch Edit is made by gamers, for gamers, and gamers have the final say 
 - **Ongoing work:** Gameplay accuracy, visuals and performance.
 - **Multiplayer:** LAN and online play are available in current source builds on
   macOS and Linux.
-- **Scale:** Two consecutive online matches passed functional validation with
-  30 independent client processes and more than 20,000 active mobile units per match.
-  Linux clients shared VMs; this does not establish smooth, real-time performance.
+- **Large-map limit:** The captured Giant/30-player map generates and reaches
+  Skirmish setup, but starting that map currently overflows the pathfinding
+  zone builder's stack on macOS. The walkthrough records this limitation;
+  generation screenshots do not establish a completed match.
+- **Scale:** 20,000 units remains a project target. Long-game stability and
+  smooth performance at maximum map size and player count require further validation.
 
 ## Download and play
 
-Download the installer for Windows, macOS or Linux from the
-[releases page](https://github.com/ConchFeng/RedAlert2/releases). It finds your copy of
-Yuri's Revenge and sets up VERA20K in a new folder.
+The [1.0.0 release](https://github.com/ConchFeng/RedAlert2/releases/tag/v1.0.0)
+provides two ZIP downloads for **Apple Silicon Macs (M1 or newer), macOS 11.0 or later**:
+
+| Package | Size | Contents |
+| --- | --- | --- |
+| [macOS Full ZIP](https://github.com/ConchFeng/RedAlert2/releases/download/v1.0.0/VERA20k-Conch-Edit-1.0.0-macos-arm64-Full.zip) | 418.55 MB | App, supplied Yuri resource files, maps, audio, and bilingual instructions. |
+| [macOS app ZIP](https://github.com/ConchFeng/RedAlert2/releases/download/v1.0.0/VERA20k-Conch-Edit-1.0.0-macos-arm64.zip) | 18.98 MB | App and instructions; provide your own Yuri's Revenge resources. |
+
+1. Extract the entire ZIP and open `VERA20K.app` from your preferred folder.
+2. Choose the game-resource folder when prompted. For the Full package, select
+   its `assets/` folder or the parent folder containing it.
+3. Open **Single Player → Skirmish → Choose Map → Create Random Map**, select
+   **Giant** and **30 players**, generate the map, and choose **Use Map**.
+4. Enable the computer opponents on every page. See the
+   [walkthrough and current limitations](docs/30-player-showcase.md) before
+   attempting the largest setup.
+
+The ZIPs contain native ARM64 macOS executables; Intel Mac, Windows, and Linux
+binaries are not included. The source remains cross-platform. The release/app
+bundle version is `1.0.0`; the internal engine version is `0.2.4`.
+
+The app is signed ad hoc and is not Apple-notarized. If macOS blocks its first
+launch, review the source and use **System Settings → Privacy & Security →
+Open Anyway**. Allow access to your selected game-resource folder when prompted.
+Configuration, saves, logs, and replays normally live in
+`~/Library/Application Support/VERA20k/`; existing custom paths remain in effect.
+Checksums and bilingual instructions are included on the release page.
 
 Use **Options** for sound and controls, and **Vera Options** for VERA-specific features.
 
@@ -66,18 +126,49 @@ Discussion is on [Discord](https://discord.gg/kmjRUn5m5F) and in the QQ group (1
 
 ## Architecture
 
-The engine has three main parts:
+The workspace has four crates. The windowed client uses a GPU-free core;
+the standalone relay and its shared protocol remain separate crates.
 
-- **Simulation:** Owns gameplay state and logic.
-- **Rendering:** An absolutely new GPU rendering pipeline using the original game assets, built
-  to preserve the original look.
-- **Application:** Handles input, menus, audio, and platform integration, connecting the systems.
+```mermaid
+flowchart TB
+    files["Game resources: MIX archives, INIs, maps"]
 
-This separation supports deterministic gameplay.
+    subgraph client["vera20k — windowed client"]
+        ui["Menus, input, window lifecycle"]
+        app["App / MatchSession: loading and frame orchestration"]
+        presentation["Presentation: scene and UI projection"]
+        render["wgpu renderer"]
+        audio["Audio playback"]
+        ui --> app
+        app --> presentation
+        presentation --> render
+        app --> audio
+    end
 
-Arrows show data flow:
+    subgraph core["vera20k-core — GPU-free engine"]
+        resources["Assets, native INI readers, rules, maps"]
+        simulation["SimRuntime / SimWorld: authoritative gameplay state"]
+        net["net: transport and command exchange"]
+        resources --> simulation
+    end
 
-![Application sends commands to simulation, which returns world state; application sends draw data to rendering.](docs/images/architecture.png)
+    relay["vera20k-relay: standalone UDP service"]
+    protocol["vera20k-relay-protocol: authenticated datagrams"]
+    files --> resources
+    resources --> app
+    app -->|"commands / advance_frame"| simulation
+    simulation -->|"frame outputs"| app
+    app <-->|"session commands"| net
+    net <-->|"UDP"| relay
+    net -.->|"uses"| protocol
+    relay -.->|"uses"| protocol
+```
+
+Solid arrows show runtime data flow; dashed arrows show use of the shared
+protocol crate. Simulation owns gameplay, RNG, and frame updates. It does not
+depend on rendering, UI, audio, or networking. Presentation derives its output
+from simulation state. See the [project guide](docs/project-guide.md) for source
+owners and entry points.
 
 ## Build and run
 
@@ -166,6 +257,8 @@ affiliated with or endorsed by Electronic Arts.
 ## Documentation
 
 - [Build and run](#build-and-run): requirements and building from source.
+- [30-player screenshot walkthrough](docs/30-player-showcase.md): Giant map generation, opponent pages, and runtime status.
+- [Large skirmish and random maps](docs/large-skirmish.md): implementation owners, sizing rules, and limitations.
 - [INI profiles](docs/ini-roots.md): choosing rules, art and AI files.
 - [Ares](docs/ares.md), [Phobos](docs/phobos.md), [NPatch](docs/npatch.md) and [VeraX](docs/verax.md): extension support and limitations.
 - [Documentation and agent index](docs/index.md): starting points, owner guides and collaboration links.
