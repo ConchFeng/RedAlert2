@@ -1,16 +1,16 @@
 //! Initial main-menu shell render glue for dialog 0xE2.
 
-use std::sync::Arc;
 use crate::util::time::Instant;
+use std::sync::Arc;
 
 use anyhow::Result;
 
-use crate::app::AppState;
 use crate::app::frontend::shell_layout;
 use crate::app::frontend::shell_pass::{owner_draw_button_label_rect, resolve_csf};
 use crate::app::frontend::shell_transition::{
     ColumnDraw, MainMenuEntryPaintFrame, MainMenuEntryPresentToken, ShellFrameWave,
 };
+use crate::app::{AppState, BUILD_STAMP};
 use crate::render::batch::SpriteInstance;
 use crate::render::main_menu_shell_chrome::{MainMenuShellChromeAtlas, MainMenuShellChromeEntry};
 use crate::render::shell_paint::{
@@ -603,11 +603,6 @@ fn render_main_menu_shell_to_target_inner(
         Instant::now(),
         None,
     );
-    let version_text = format!(
-        "{} {}",
-        resolve_csf(state, "GUI:Version"),
-        state.frontend.version_txt
-    );
     let pressed = crate::ui::main_menu_shell::pressed_control(&state.frontend.shell_controller);
     let mut labels = if backdrop {
         Vec::new()
@@ -616,7 +611,10 @@ fn render_main_menu_shell_to_target_inner(
             state,
             &layout,
             pressed,
-            (!leaving).then_some(version_text.as_str()),
+            // VERA difference: gamemd prints "<GUI:Version> <VERSION.TXT>" here,
+            // a fixed "1.001TUC" in every build; this line names the VERA20K
+            // release instead, the version players report and updates compare.
+            (!leaving).then_some(BUILD_STAMP),
             title_window,
             !sliding,
         )
