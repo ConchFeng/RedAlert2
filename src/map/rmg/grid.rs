@@ -102,6 +102,15 @@ impl RmgGrid {
         self.width
     }
 
+    /// The cell array these coordinates live in: gamemd's 512 wide, which
+    /// every retail-sized map fits, or VERA's extended 1024 once a larger
+    /// generated map outgrows it ([`crate::map::cell_index::CellGrid`]). The
+    /// phases use it as the "whole map" clamp extent and the patch-id row
+    /// pitch, which the original spells `0x200`.
+    pub fn cell_array_width(&self) -> i32 {
+        if self.width <= 0x200 { 0x200 } else { 0x400 }
+    }
+
     #[cfg(any(test, feature = "test-support"))]
     pub fn diamond_bounds(&self) -> (i32, i32) {
         (self.diamond_min, self.diamond_max)
@@ -409,5 +418,11 @@ mod tests {
             .filter(|&(x, y)| grid.is_valid(x, y))
             .count();
         assert_eq!(cells.len(), expected, "full coverage of the band");
+    }
+
+    #[test]
+    fn a_grid_past_the_retail_cell_array_uses_the_extended_one() {
+        assert_eq!(RmgGrid::new(0x200, 0, 0).cell_array_width(), 0x200);
+        assert_eq!(RmgGrid::new(0x201, 0, 0).cell_array_width(), 0x400);
     }
 }

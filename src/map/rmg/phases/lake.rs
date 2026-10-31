@@ -177,7 +177,8 @@ fn retag_border_band(
 /// re-collected the region's whole border every ring; the original chains, and
 /// the difference shows from the second ring on.
 pub(crate) fn dilate_region_rings(ctx: &mut BlobCtx<'_>, region: i32, rings: i32) -> bool {
-    super::meander::dilate_chained(ctx, region, rings, None, [0, 0, 0x200, 0x200])
+    let whole_map = ctx.grid.cell_array_width();
+    super::meander::dilate_chained(ctx, region, rings, None, [0, 0, whole_map, whole_map])
 }
 
 /// The growth key, as a single-precision value.

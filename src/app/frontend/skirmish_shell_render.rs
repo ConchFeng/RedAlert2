@@ -407,6 +407,31 @@ fn build_skirmish_shell_instances(
                     RIGHT_PANEL_BUTTON_DEPTH,
                 );
             }
+            // VERA's opponent pages, drawn with the network room's
+            // navigation art.
+            if crate::ui::skirmish_shell::opponents_paged(shell, maps) {
+                for (rect, button, forward) in [
+                    (
+                        layout.roster_navigation[0],
+                        OwnerDrawButton::PreviousPlayers,
+                        false,
+                    ),
+                    (
+                        layout.roster_navigation[1],
+                        OwnerDrawButton::NextPlayers,
+                        true,
+                    ),
+                ] {
+                    push_right_panel_button_shp(
+                        &mut instances,
+                        atlas,
+                        rect,
+                        shell.pressed_owner_draw_button == Some(button),
+                        !crate::ui::skirmish_shell::opponent_page_available(shell, maps, forward),
+                        RIGHT_PANEL_BUTTON_DEPTH,
+                    );
+                }
+            }
         }
     }
     // The teardown slide repaints the dialog over every child and runs to its
@@ -439,12 +464,13 @@ fn build_skirmish_shell_instances(
         );
     }
     for idx in 1..layout.flags.len() {
-        if !player_row_visible(shell, maps, idx) {
+        let row = crate::ui::skirmish_shell::slot_row(shell, idx);
+        if !player_row_visible(shell, maps, row) {
             continue;
         }
         let entry = shell
             .opponents
-            .get(idx - 1)
+            .get(row - 1)
             .filter(|opponent| opponent.is_active())
             .and_then(|opponent| {
                 flag_name_for_country_choice(

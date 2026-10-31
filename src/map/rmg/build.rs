@@ -143,7 +143,7 @@ pub fn generate_map(
     options: &RmgOptions,
     settings: &RmgSettings,
     resolved: &ResolvedTheaterInputs,
-    blocks: &dyn TileBlocks,
+    blocks: &(dyn TileBlocks + Sync),
     tech_types: &[TechType],
 ) -> GeneratedMap {
     generate_map_observed(options, settings, resolved, blocks, tech_types, &mut |_| {})
@@ -175,9 +175,48 @@ pub fn generate_map_observed(
     options: &RmgOptions,
     settings: &RmgSettings,
     resolved: &ResolvedTheaterInputs,
-    blocks: &dyn TileBlocks,
+    blocks: &(dyn TileBlocks + Sync),
     tech_types: &[TechType],
-    observe: &mut dyn FnMut(GenerationPointView<'_>),
+    observe: &mut (dyn FnMut(GenerationPointView<'_>) + Send),
+) -> GeneratedMap {
+    on_generation_stack(|| {
+        generate_on_this_stack(options, settings, resolved, blocks, tech_types, observe)
+    })
+}
+
+/// Stack the generation thread reserves. The original's shore, island and
+/// hill passes recurse cell by cell, so a VERA Huge or Giant map recurses far
+/// deeper than a retail-sized one; running them on a thread with room for that
+/// keeps their native visit order. The reservation is address space, committed
+/// only as deep as a run goes.
+const GENERATION_STACK_BYTES: usize = 1 << 30;
+
+fn on_generation_stack<T: Send>(run: impl FnOnce() -> T + Send) -> T {
+    // RESIDUAL: the browser build has no threads, so it generates on the
+    // caller's stack, which a Huge or Giant map may overflow.
+    #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+    {
+        run()
+    }
+    #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+    std::thread::scope(|scope| {
+        std::thread::Builder::new()
+            .name("random-map-generation".to_string())
+            .stack_size(GENERATION_STACK_BYTES)
+            .spawn_scoped(scope, run)
+            .expect("spawn the random-map generation thread")
+            .join()
+            .unwrap_or_else(|panic| std::panic::resume_unwind(panic))
+    })
+}
+
+fn generate_on_this_stack(
+    options: &RmgOptions,
+    settings: &RmgSettings,
+    resolved: &ResolvedTheaterInputs,
+    blocks: &(dyn TileBlocks + Sync),
+    tech_types: &[TechType],
+    observe: &mut (dyn FnMut(GenerationPointView<'_>) + Send),
 ) -> GeneratedMap {
     let mut options = options.clone();
     options.normalize();
@@ -691,6 +730,89 @@ mod tests {
                     "map type {map_type} seed {seed}: accessibility must not leak outside island maps"
                 );
             }
+        }
+    }
+
+    /// VERA's thirty-player Huge and Giant maps generate on every dialog map
+    /// type and place all thirty starts.
+    #[test]
+    #[ignore = "slow; run when changing what it covers"]
+    fn thirty_player_huge_and_giant_maps_seat_every_start() {
+        for size in [4, 5] {
+            for map_type in DIALOG_MAP_TYPES {
+                let options = RmgOptions {
+                    num_players: 30,
+                    width: size,
+                    height: size,
+                    ..matrix_options(map_type, 0, 4242)
+                };
+                let started = std::time::Instant::now();
+                let generated = run_cell(&options);
+                let cell = format!("size={size} map_type={map_type}");
+                eprintln!("TIMING {cell}: {:?}", started.elapsed());
+                assert_eq!(generated.unfilled_start_slots, 0, "{cell}");
+                assert_eq!(generated.start_waypoints.len(), 30, "{cell}");
+            }
+        }
+    }
+
+    #[test]
+    #[ignore = "scratch"]
+    fn scratch_digest() {
+        use std::hash::{Hash, Hasher};
+        let mut out = Vec::new();
+        for map_type in [0, 1, 2, 3, 4] {
+            for theater in [0, 1] {
+                for (players, size) in [(2, 0), (4, 2), (8, 3), (6, 1)] {
+                    for seed in [0, 4242, 0xFFFF] {
+                        let options = RmgOptions { num_players: players, width: size, height: size, ..matrix_options(map_type, theater, seed) };
+                        let g = run_cell(&options);
+                        let mut h = std::collections::hash_map::DefaultHasher::new();
+                        for c in &g.map_file.cells { (c.rx, c.ry, c.tile_index, c.sub_tile, c.z).hash(&mut h); }
+                        for o in &g.map_file.overlays { (o.rx, o.ry, o.overlay_id, o.frame).hash(&mut h); }
+                        g.start_waypoints.hash(&mut h);
+                        format!("{:?}", g.map_file.terrain_objects).hash(&mut h);
+                        out.push(format!("{map_type},{theater},{players},{size},{seed}={:x}", h.finish()));
+                    }
+                }
+            }
+        }
+        std::fs::write(std::env::var("DIGEST_OUT").unwrap(), out.join("\n")).unwrap();
+    }
+
+    #[test]
+    #[ignore = "scratch"]
+    fn scratch_stage_timing() {
+        for (players, size) in [(30, 4), (30, 5)] {
+            let options = RmgOptions {
+                num_players: players,
+                width: size,
+                height: size,
+                ..matrix_options(1, 0, 4242)
+            };
+            let mut last = std::time::Instant::now();
+            let started = last;
+            let g = generate_map_observed(
+                &options,
+                &RmgSettings::default(),
+                &resolved(),
+                &one_by_one(),
+                &[],
+                &mut |view| {
+                    eprintln!(
+                        "STAGE p={players} s={size} {:?}: {:?}",
+                        view.point(),
+                        last.elapsed()
+                    );
+                    last = std::time::Instant::now();
+                },
+            );
+            eprintln!(
+                "TOTAL p={players} s={size}: {:?} unfilled={} starts={}",
+                started.elapsed(),
+                g.unfilled_start_slots,
+                g.start_waypoints.len()
+            );
         }
     }
 

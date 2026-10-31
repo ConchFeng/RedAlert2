@@ -3,7 +3,8 @@
 //! The app owns when a profile is loaded and saved. Native Slot01..07 triples
 //! retain their key order, defaults and preservation-safe batched byte update.
 //! Extended network rows remain in this same snapshot for the process lifetime;
-//! they introduce no disk keys. This module has no UI or `AppState` dependency.
+//! only the Skirmish profile writes them, as `Slot08..29` of VERA's
+//! `[SkirmishVERA]`. This module has no UI or `AppState` dependency.
 
 use crate::rules::error::RulesError;
 use crate::rules::ini_parser::{IniFile, IniSection};
@@ -24,9 +25,20 @@ impl SetupProfile {
             Self::Wol => "WonlinePref",
         }
     }
+
+    /// VERA's section for the rows past the native `Slot01..07`. Only the
+    /// offline Skirmish shell pages them, so the network rooms have none. The
+    /// rows stay out of the native section, whose key lookup this leaves as
+    /// gamemd's for its size.
+    const fn extended_section(self) -> Option<&'static str> {
+        match self {
+            Self::Skirmish => Some("SkirmishVERA"),
+            Self::Lan | Self::Wol => None,
+        }
+    }
 }
 
-pub const SKIRMISH_PERSISTED_SLOT_COUNT: usize = 7;
+const NATIVE_SLOT_KEY_COUNT: usize = 7;
 const RETAINED_SETUP_SLOT_COUNT: usize = crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT - 1;
 
 const RANDOM_COMBO_ITEM_DATA: i32 = -2;
@@ -92,7 +104,8 @@ pub struct MultiplayerSetupSnapshot {
     pub crates_appear: bool,
     /// FUN_005ED400/005ED5A0 snapshot/restore rows1..7 (loop bounds at
     /// 005ED542/005EDC99; source: original gamemd.exe). VERA extends that
-    /// same process profile through row29; only the native prefix reaches INI.
+    /// same process profile through row29; the network profiles write only the
+    /// native prefix to INI.
     pub slots: [SkirmishPersistedSlot; RETAINED_SETUP_SLOT_COUNT],
 }
 
@@ -123,7 +136,7 @@ impl MultiplayerSetupSnapshot {
 
     /// Return all persisted key/value pairs in native writer order.
     pub fn ini_updates(&self) -> Vec<(String, String)> {
-        let mut updates = Vec::with_capacity(10 + SKIRMISH_PERSISTED_SLOT_COUNT);
+        let mut updates = Vec::with_capacity(10 + NATIVE_SLOT_KEY_COUNT);
         updates.push(("GameMode".to_string(), self.game_mode.to_string()));
         updates.push(("ScenIndex".to_string(), self.scenario_index.to_string()));
         updates.push(("GameSpeed".to_string(), self.game_speed.to_string()));
@@ -146,30 +159,47 @@ impl MultiplayerSetupSnapshot {
             "CratesAppear".to_string(),
             yes_no(self.crates_appear).to_string(),
         ));
-        for (index, slot) in self
-            .slots
-            .iter()
-            .take(SKIRMISH_PERSISTED_SLOT_COUNT)
-            .enumerate()
-        {
-            updates.push((
-                format!("Slot{:02}", index + 1),
-                format!("{},{},{}", slot.row_type, slot.country, slot.colour),
-            ));
+        for (index, slot) in self.slots.iter().take(NATIVE_SLOT_KEY_COUNT).enumerate() {
+            updates.push(slot_update(index, slot));
         }
         updates
     }
 
-    /// Apply this snapshot to raw `VERA.INI` bytes without rewriting any
-    /// unrelated byte. All seventeen keys are composed into one output buffer.
-    pub fn update_ini_bytes(&self, content: &[u8]) -> Vec<u8> {
-        let updates = self.ini_updates();
-        let borrowed: Vec<(&str, &str)> = updates
+    /// VERA's `Slot08..29` for [`SetupProfile::extended_section`].
+    fn extended_slot_updates(&self) -> Vec<(String, String)> {
+        self.slots
             .iter()
-            .map(|(key, value)| (key.as_str(), value.as_str()))
-            .collect();
-        crate::util::ini_writer::set_ini_values(content, self.profile.section(), &borrowed)
+            .enumerate()
+            .skip(NATIVE_SLOT_KEY_COUNT)
+            .map(|(index, slot)| slot_update(index, slot))
+            .collect()
     }
+
+    /// Apply this snapshot to raw `VERA.INI` bytes without rewriting any
+    /// unrelated byte. The seventeen native keys are composed into one output
+    /// buffer; a Skirmish profile then writes VERA's rows past them.
+    pub fn update_ini_bytes(&self, content: &[u8]) -> Vec<u8> {
+        let native = write_section(content, self.profile.section(), &self.ini_updates());
+        match self.profile.extended_section() {
+            Some(section) => write_section(&native, section, &self.extended_slot_updates()),
+            None => native,
+        }
+    }
+}
+
+fn slot_update(index: usize, slot: &SkirmishPersistedSlot) -> (String, String) {
+    (
+        format!("Slot{:02}", index + 1),
+        format!("{},{},{}", slot.row_type, slot.country, slot.colour),
+    )
+}
+
+fn write_section(content: &[u8], section: &str, updates: &[(String, String)]) -> Vec<u8> {
+    let borrowed: Vec<(&str, &str)> = updates
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect();
+    crate::util::ini_writer::set_ini_values(content, section, &borrowed)
 }
 
 /// Read a raw `VERA.INI` buffer using native Skirmish key order and defaults.
@@ -197,10 +227,21 @@ pub fn read_setup_snapshot(
     for (slot_index, slot) in snapshot
         .slots
         .iter_mut()
-        .take(SKIRMISH_PERSISTED_SLOT_COUNT)
+        .take(NATIVE_SLOT_KEY_COUNT)
         .enumerate()
     {
         read_native_slot_triple(section, &format!("Slot{:02}", slot_index + 1), slot);
+    }
+    if let Some(extended) = profile.extended_section() {
+        let section = ini.section_or_empty(extended);
+        for (slot_index, slot) in snapshot
+            .slots
+            .iter_mut()
+            .enumerate()
+            .skip(NATIVE_SLOT_KEY_COUNT)
+        {
+            read_native_slot_triple(section, &format!("Slot{:02}", slot_index + 1), slot);
+        }
     }
     Ok(snapshot)
 }
@@ -385,7 +426,8 @@ Credits=10000\r\nUnitCount=10\r\nShortGame=no\r\nSuperWeaponsAllowed=yes\r\n\
 BuildOffAlly=yes\r\nMCVRepacks=yes\r\nCratesAppear=yes\r\nSlot01=6,8,1\r\n\
 Slot02=1,-2,-2\r\nSlot03=1,-2,-2\r\nSlot04=1,-2,-2\r\n\
 Slot05=1,-2,-2\r\nSlot06=1,-2,-2\r\nSlot07=1,-2,-2\r\n";
-        assert_eq!(output, expected);
+        let (native, _) = output.split_once("[SkirmishVERA]").unwrap();
+        assert_eq!(native, expected);
     }
 
     #[test]
@@ -396,7 +438,12 @@ Slot05=1,-2,-2\r\nSlot06=1,-2,-2\r\nSlot07=1,-2,-2\r\n";
         let input = b"; preface\n[Skirmish]\nGameMode=1\n; keep\n[Other]\n\xff=value\n";
         let output = snapshot.update_ini_bytes(input);
         assert!(output.starts_with(b"; preface\n[Skirmish]\nGameMode=9\n"));
-        assert!(output.ends_with(b"[Other]\n\xff=value\n"));
+        // VERA's extended rows follow as a section of their own.
+        let vera = output
+            .windows(b"[SkirmishVERA]".len())
+            .position(|window| window == b"[SkirmishVERA]")
+            .unwrap();
+        assert!(output[..vera].ends_with(b"[Other]\n\xff=value\n"));
         assert_eq!(output.iter().filter(|byte| **byte == 0xff).count(), 1);
     }
 
@@ -428,5 +475,26 @@ Slot01=4,8,1\r\n";
         assert_eq!(snapshot.slots[0].row_type, 4);
         assert_eq!(snapshot.slots[0].country, 8);
         assert_eq!(snapshot.slots[0].colour, 1);
+    }
+
+    #[test]
+    fn only_the_skirmish_profile_writes_slots_past_the_native_seven() {
+        let written = |profile| {
+            let mut snapshot = MultiplayerSetupSnapshot::from_global_defaults(defaults(), profile);
+            snapshot.slots[28].row_type = 4;
+            String::from_utf8(snapshot.update_ini_bytes(b"")).unwrap()
+        };
+        let skirmish = written(SetupProfile::Skirmish);
+        assert!(skirmish.contains("[SkirmishVERA]\r\nSlot08=1,-2,-2\r\n"));
+        assert!(skirmish.ends_with("Slot29=4,-2,-2\r\n"));
+        assert!(!written(SetupProfile::Lan).contains("Slot08"));
+
+        let read =
+            read_setup_snapshot(skirmish.as_bytes(), defaults(), SetupProfile::Skirmish).unwrap();
+        assert_eq!(read.slots[28].row_type, 4);
+        // A [Skirmish] Slot08 is no VERA key.
+        let native = b"[Skirmish]\nSlot08=4,-2,-2\n";
+        let read = read_setup_snapshot(native, defaults(), SetupProfile::Skirmish).unwrap();
+        assert_eq!(read.slots[7], SkirmishPersistedSlot::native_default(7));
     }
 }

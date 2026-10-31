@@ -152,15 +152,53 @@ impl MapGeometry {
 /// narrowed scale — `min*(1-s) + max*s`, truncated to int at the end. The cap
 /// asymmetry (width re-narrowed, height kept wide) is preserved even though
 /// clamped options never reach it.
+///
+/// VERA extends both inputs past the retail dialog. More than eight players
+/// grow the eight-player side by `sqrt(players / 8)`, keeping the land per
+/// player; the Huge and Giant size options double and quadruple the Very Large
+/// side. The result is capped so the padded map stays inside the extended
+/// cell array. Retail player counts and sizes take the native path unchanged.
 pub fn generated_dimensions(options: &RmgOptions) -> (i32, i32) {
+    let (mut w, mut h) = native_generated_dimensions(options);
+    let players = options.num_players.clamp(2, RMG_MAX_PLAYERS);
+    if players > 8 {
+        let grow =
+            |side: i32| (u64::from(side.unsigned_abs()).pow(2) * players as u64 / 8).isqrt() as i32;
+        (w, h) = (grow(w), grow(h));
+    }
+    let size_factor = |option: i32| match option {
+        5 => 4,
+        4 => 2,
+        _ => 1,
+    };
+    w *= size_factor(options.width);
+    h *= size_factor(options.height);
+    // map_w + map_h pads the interior by 16 and must leave the extended cell
+    // array's y*1000+x waypoint keys unique.
+    let budget = MAX_PADDED_SPAN - 16;
+    if w + h > budget {
+        (w, h) = (w * budget / (w + h), h * budget / (w + h));
+    }
+    (w, h)
+}
+
+/// VERA's largest Create Random Map player count: every skirmish row.
+pub const RMG_MAX_PLAYERS: i32 = crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT as i32;
+/// VERA's Huge and Giant size options, past the retail Very Large (3).
+pub const RMG_MAX_SIZE_OPTION: i32 = 5;
+/// Largest padded `map_w + map_h` a generated map may span.
+const MAX_PADDED_SPAN: i32 = 1000;
+
+/// The native lerp, for retail player counts and size options.
+fn native_generated_dimensions(options: &RmgOptions) -> (i32, i32) {
     let players = options.num_players.clamp(2, 8);
     let index = (players - 2) as usize;
 
     let third = x87::TruncF64::from_f64(f64::from(f32::from_bits(THIRD_F32_BITS)));
     let scale =
         |option: i32| x87::narrow_to_f32(x87::TruncF64::from_f64(f64::from(option)).mul(third));
-    let mut scale_w = scale(options.width);
-    let mut scale_h = scale(options.height);
+    let mut scale_w = scale(options.width.min(3));
+    let mut scale_h = scale(options.height.min(3));
 
     if !matches!(options.map_type, 3 | 4) {
         let cap = x87::TruncF64::from_f64(DIMENSION_SCALE_CAP);
@@ -389,5 +427,32 @@ mod tests {
         assert_eq!(geometry.diamond_min, 74);
         assert_eq!(geometry.diamond_max, 74 + 2 * 82);
         assert_eq!(geometry.stride, 74 + 82 + 1);
+    }
+
+    #[test]
+    fn vera_sizes_and_player_counts_extend_the_retail_dimensions() {
+        let dims = |players: i32, size: i32| {
+            generated_dimensions(&RmgOptions {
+                num_players: players,
+                width: size,
+                height: size,
+                ..Default::default()
+            })
+        };
+        // Huge and Giant double and quadruple the Very Large side.
+        assert_eq!(dims(8, 4), (240, 240));
+        assert_eq!(dims(8, 5), (480, 480));
+        // Thirty players keep the eight-player land per player: 120 * sqrt(30 / 8).
+        assert_eq!(dims(30, 3), (232, 232));
+        assert_eq!(dims(30, 4), (464, 464));
+        // A Giant thirty-player map is capped inside the extended cell array.
+        let geometry = MapGeometry::from_options(&RmgOptions {
+            num_players: 30,
+            width: 5,
+            height: 5,
+            ..Default::default()
+        });
+        assert_eq!((geometry.gen_w, geometry.gen_h), (492, 492));
+        assert_eq!(geometry.map_w + geometry.map_h, MAX_PADDED_SPAN);
     }
 }

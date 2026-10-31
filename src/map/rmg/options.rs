@@ -82,13 +82,13 @@ impl RmgOptions {
         self.time = self.time.clamp(0, 3);
         self.ruggedness = self.ruggedness.clamp(0, 100);
         self.water_amount = self.water_amount.clamp(0, 100);
-        self.num_players = self.num_players.clamp(2, 8);
+        self.num_players = self.num_players.clamp(2, super::RMG_MAX_PLAYERS);
         self.tiberium = self.tiberium.clamp(1, 100);
         self.tiberium_layout = self.tiberium_layout.clamp(0, 100);
         self.vegetation = self.vegetation.clamp(0, 100);
         self.urban_presence = self.urban_presence.clamp(0, 100);
-        self.width = self.width.clamp(0, 3);
-        self.height = self.height.clamp(0, 3);
+        self.width = self.width.clamp(0, super::RMG_MAX_SIZE_OPTION);
+        self.height = self.height.clamp(0, super::RMG_MAX_SIZE_OPTION);
         self.accessibility = self.accessibility.clamp(0, 100);
         self.region_size = self.region_size.clamp(0, 100);
         self.seed = self.seed.clamp(0, 0xFFFF);
@@ -283,7 +283,8 @@ mod tests {
             ),
             (100, 0, 100)
         );
-        assert_eq!((options.width, options.height), (3, 3));
+        // VERA's Huge (4) and Giant (5) extend the retail 0..3.
+        assert_eq!((options.width, options.height), (5, 5));
         assert_eq!((options.accessibility, options.region_size), (100, 0));
         assert_eq!(options.seed, 0xFFFF);
     }

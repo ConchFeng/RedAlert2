@@ -348,7 +348,8 @@ mod tests {
         let expected = RmgOptions {
             seed: 4660,
             water_amount: 73,
-            num_players: 8,
+            // NumPlayers=99 clamps to VERA's 30, past the retail eight.
+            num_players: 30,
             description: "Localized random map".into(),
             ..current.clone()
         };

@@ -302,8 +302,10 @@ impl AcceptedRmgStartStaging {
         }
     }
 
+    /// The generator's own starts: the retail eight cells, or every skirmish
+    /// row for VERA's larger Skirmish random maps.
     fn from_generated(generated: &crate::map::rmg::GeneratedMap) -> Self {
-        let mut slots = [None; crate::skirmish_launch::SKIRMISH_PLAYER_SLOT_COUNT];
+        let mut slots = [None; crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT];
         for &(slot, rx, ry) in &generated.start_waypoints {
             if let Some(entry) = slots.get_mut(usize::from(slot)) {
                 *entry = Some(crate::map::waypoints::Waypoint {
@@ -1362,7 +1364,9 @@ impl App {
                 .skirmish_shell_state
                 .random_map_setup_modal
                 .as_mut()
-                && setup.statics.hover(&help, crate::util::time::Instant::now())
+                && setup
+                    .statics
+                    .hover(&help, crate::util::time::Instant::now())
             {
                 state.platform.window.request_redraw();
             }

@@ -73,16 +73,27 @@ const ORE_REACH: i32 = 40;
 const DEPLOY_PAD: i32 = 3;
 /// Houses a house attacks: its nearest living ones.
 const FRONTS: usize = 3;
-/// Computer houses by default: the seven the skirmish lobby allows.
-pub(crate) const COMPUTERS: usize = 7;
+/// Computer houses at most: the 29 the skirmish lobby allows beside the local
+/// house on a 30-player map.
+pub(crate) const COMPUTERS: usize = vera20k_core::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT - 1;
 /// The default run, two minutes of game time, in which the armies reach the
 /// nearest bases.
 pub(crate) const TICKS: u64 = 1800;
 /// The launch and the first contacts, before the battle settles.
 pub(crate) const WARMUP: u64 = 150;
 
+/// The first `computers` computer houses in launch order: their countries and
+/// difficulties, repeating [`COMPUTER_ROSTER`] past its seven.
+pub(crate) fn computer_roster(computers: usize) -> Vec<(LaunchCountry, AiDifficulty)> {
+    COMPUTER_ROSTER
+        .into_iter()
+        .cycle()
+        .take(computers)
+        .collect()
+}
+
 /// The computer houses in launch order: their countries and difficulties.
-pub(crate) const COMPUTER_ROSTER: [(LaunchCountry, AiDifficulty); COMPUTERS] = [
+const COMPUTER_ROSTER: [(LaunchCountry, AiDifficulty); 7] = [
     (LaunchCountry::Russia, AiDifficulty::Hard),
     (LaunchCountry::France, AiDifficulty::Normal),
     (LaunchCountry::Yuri, AiDifficulty::Easy),
@@ -486,7 +497,7 @@ fn place_mobile(
 /// The launch for a match on `map` against `computers` computer houses: the
 /// match's credits and tech level, and no starting units beside the MCVs.
 pub(crate) fn session(map: &str, computers: usize) -> SkirmishLaunchSession {
-    let mut session = battle_session(map, &COMPUTER_ROSTER[..computers]);
+    let mut session = battle_session(map, &computer_roster(computers));
     session.options.starting_credits = CREDITS;
     session.options.tech_level = TECH_LEVEL;
     session.options.unit_count = 0;

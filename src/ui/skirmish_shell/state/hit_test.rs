@@ -1,19 +1,20 @@
 //! Hit testing, hover targets, status-help keys, and action application for the skirmish shell.
 
 use crate::map::scenario_menu::MapMenuEntry;
-use crate::skirmish_launch::{LaunchCountry, SKIRMISH_PLAYER_SLOT_COUNT};
+use crate::skirmish_launch::LaunchCountry;
 
 use super::super::layout::{
     ChooseMapModalButton, ChooseMapModalLayout, ColorComboId, DropdownMetrics,
-    RandomMapSetupControl, RectPx, SKIRMISH_AI_ROW_COUNT, SkirmishCheckboxId, SkirmishShellLayout,
-    SkirmishTrackbarId, combo_face_rect,
+    RandomMapSetupControl, RectPx, SkirmishCheckboxId, SkirmishShellLayout, SkirmishTrackbarId,
+    combo_face_rect,
 };
 use super::trackbars::{trackbar_ids, trackbar_rect};
 use super::{
     ChooseMapHoverTarget, ChooseMapModalState, OwnerDrawButton, SkirmishAiRowType, SkirmishComboId,
     SkirmishComboItem, SkirmishCountryChoice, SkirmishHoverTarget, SkirmishShellAction,
     SkirmishShellState, accept_selected_map, combo_dropdown_content_rect,
-    combo_dropdown_visible_row_count, combo_items, combo_rect, player_row_visible,
+    combo_dropdown_visible_row_count, combo_items, combo_rect, opponent_page_available,
+    opponents_paged, page_opponents, player_row_visible, slot_row,
 };
 
 fn hover_open_combo_item(
@@ -60,7 +61,7 @@ pub fn hovered_shell_control(
     if layout.player_name.contains(x, y) {
         return Some(SkirmishHoverTarget::PlayerName0x6a0);
     }
-    if let Some(button) = hit_test_owner_draw_button(layout, x, y) {
+    if let Some(button) = hit_test_owner_draw_button(state, maps, layout, x, y) {
         return Some(SkirmishHoverTarget::OwnerDrawButton(button));
     }
     if layout.map_preview.contains(x, y) {
@@ -76,7 +77,7 @@ pub fn hovered_shell_control(
             return Some(SkirmishHoverTarget::Trackbar(id));
         }
     }
-    for row in 0..SKIRMISH_PLAYER_SLOT_COUNT {
+    for row in 0..=state.opponents.len() {
         if !player_row_visible(state, maps, row) {
             continue;
         }
@@ -86,19 +87,19 @@ pub fn hovered_shell_control(
             SkirmishComboId::Start(row),
             SkirmishComboId::Team(row),
         ] {
-            if combo_rect(layout, id)
+            if combo_rect(state, layout, id)
                 .is_some_and(|rect| combo_face_rect(rect, layout.scale).contains(x, y))
             {
                 return Some(SkirmishHoverTarget::ComboFace(id));
             }
         }
     }
-    for row in 0..SKIRMISH_AI_ROW_COUNT {
+    for row in 0..state.opponents.len() {
         if !player_row_visible(state, maps, row + 1) {
             continue;
         }
         let id = SkirmishComboId::AiType(row);
-        if combo_rect(layout, id)
+        if combo_rect(state, layout, id)
             .is_some_and(|rect| combo_face_rect(rect, layout.scale).contains(x, y))
         {
             return Some(SkirmishHoverTarget::ComboFace(id));
@@ -108,8 +109,8 @@ pub fn hovered_shell_control(
     // Static (non-interactive) controls are tested last: they do not overlap
     // the interactive widgets above, so order does not change any result, and
     // gamemd does not restrict 0x102 status help to interactive widgets.
-    for (row, flag) in layout.flags.iter().enumerate() {
-        if !player_row_visible(state, maps, row) {
+    for (slot, flag) in layout.flags.iter().enumerate() {
+        if !player_row_visible(state, maps, slot_row(state, slot)) {
             continue;
         }
         if flag.contains(x, y) {
@@ -158,6 +159,9 @@ pub fn status_help_key_for_hover(target: SkirmishHoverTarget) -> Option<&'static
         SkirmishHoverTarget::OwnerDrawButton(OwnerDrawButton::Back0x5c0) => {
             Some("STT:SkirmishButtonBack")
         }
+        SkirmishHoverTarget::OwnerDrawButton(
+            OwnerDrawButton::PreviousPlayers | OwnerDrawButton::NextPlayers,
+        ) => None,
         SkirmishHoverTarget::Checkbox(SkirmishCheckboxId::ShortGame0x54e) => {
             Some("STT:SkirmishCBoxShortGame")
         }
@@ -342,14 +346,36 @@ pub fn action_for_owner_draw_button(button: OwnerDrawButton) -> SkirmishShellAct
         OwnerDrawButton::StartGame0x617 => SkirmishShellAction::StartGame,
         OwnerDrawButton::ChooseMap0x5aa => SkirmishShellAction::ChooseMap,
         OwnerDrawButton::Back0x5c0 => SkirmishShellAction::BackOrExit,
+        OwnerDrawButton::PreviousPlayers => SkirmishShellAction::PagePlayers { forward: false },
+        OwnerDrawButton::NextPlayers => SkirmishShellAction::PagePlayers { forward: true },
     }
 }
 
 pub fn hit_test_owner_draw_button(
+    state: &SkirmishShellState,
+    maps: &[MapMenuEntry],
     layout: &SkirmishShellLayout,
     x: i32,
     y: i32,
 ) -> Option<OwnerDrawButton> {
+    if opponents_paged(state, maps) {
+        for (rect, forward, button) in [
+            (
+                layout.roster_navigation[0],
+                false,
+                OwnerDrawButton::PreviousPlayers,
+            ),
+            (
+                layout.roster_navigation[1],
+                true,
+                OwnerDrawButton::NextPlayers,
+            ),
+        ] {
+            if rect.contains(x, y) && opponent_page_available(state, maps, forward) {
+                return Some(button);
+            }
+        }
+    }
     if layout.start_button.contains(x, y) {
         return Some(OwnerDrawButton::StartGame0x617);
     }
@@ -398,6 +424,10 @@ pub fn apply_action(
         SkirmishShellAction::ChooseMap => SkirmishShellAction::ChooseMap,
         SkirmishShellAction::SelectMap(idx) => {
             accept_selected_map(state, maps, idx);
+            SkirmishShellAction::None
+        }
+        SkirmishShellAction::PagePlayers { forward } => {
+            page_opponents(state, maps, forward);
             SkirmishShellAction::None
         }
         SkirmishShellAction::SelectColor(target) => {

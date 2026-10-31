@@ -6174,7 +6174,8 @@ impl RuleSet {
                     .unwrap_or_default()
             })
             .collect();
-        let color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
+        let mut color_schemes = crate::rules::color_scheme::parse_color_schemes(ini);
+        crate::rules::color_scheme::append_vera_player_colors(&mut color_schemes);
         let house_color_ramps =
             crate::rules::house_colors::HouseColorRamps::from_schemes(&color_schemes);
         let color_add = processed.color_add_state().0.clone();

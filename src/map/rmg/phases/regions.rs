@@ -83,8 +83,47 @@ fn region_class(ids: &TileIds, tile: i32) -> bool {
     water_ish(ids, tile) || ids.is_green_lat(tile)
 }
 
+/// Each registered region's cells, kept as they are claimed, so the
+/// per-region passes visit only the region instead of every map cell: the
+/// native collectors scan the whole map once per region, which grows with the
+/// square of a VERA Huge or Giant map's area. [`boundary`] sorts the cells
+/// back into native scan order, so every pass sees what the scan would give.
+struct Members {
+    cells: std::collections::HashMap<i32, Vec<(i32, i32)>>,
+    /// Native scan position of each cell, by `y * width + x`.
+    rank: Vec<u32>,
+    width: usize,
+}
+
+impl Members {
+    fn new(grid: &RmgGrid) -> Self {
+        let width = grid.width();
+        let mut rank = vec![u32::MAX; width * width];
+        for (position, (x, y)) in grid.native_cells().enumerate() {
+            rank[y as usize * width + x as usize] = position as u32;
+        }
+        Self {
+            cells: std::collections::HashMap::new(),
+            rank,
+            width,
+        }
+    }
+
+    fn add(&mut self, id: i32, cells: impl IntoIterator<Item = (i32, i32)>) {
+        self.cells.entry(id).or_default().extend(cells);
+    }
+
+    /// `id`'s cells in native scan order.
+    fn in_scan_order(&self, id: i32) -> Vec<(i32, i32)> {
+        let mut cells = self.cells.get(&id).cloned().unwrap_or_default();
+        cells.sort_unstable_by_key(|&(x, y)| self.rank[y as usize * self.width + x as usize]);
+        cells
+    }
+}
+
 pub fn run(ctx: &mut RegionCtx<'_>) -> Regions {
     let mut regions = Regions::default();
+    let mut members = Members::new(ctx.grid);
     ctx.scratch.reset_region_ids();
 
     // Seed scan: linear scratch order, class cells only.
@@ -97,7 +136,7 @@ pub fn run(ctx: &mut RegionCtx<'_>) -> Regions {
         }
         let tile = ctx.grid.cell_native(coord.0, coord.1).tile;
         if region_class(ctx.ids, tile) {
-            flood_fill(ctx, &mut regions, coord);
+            flood_fill(ctx, &mut regions, &mut members, coord);
         }
     }
 
@@ -111,8 +150,8 @@ pub fn run(ctx: &mut RegionCtx<'_>) -> Regions {
         let passes =
             4 + i32::from(regions.list[index].cell_count > LARGE_REGION_CELLS) + i32::from(!mode34);
         let (id, level) = (regions.list[index].id, regions.list[index].level);
-        let _ = expand(ctx, id, level, passes);
-        water_propagate(ctx, id);
+        let _ = expand(ctx, &mut members, id, level, passes);
+        water_propagate(ctx, &mut members, id);
     }
 
     // Fallback: every remaining unassigned cell seeds a region.
@@ -122,7 +161,7 @@ pub fn run(ctx: &mut RegionCtx<'_>) -> Regions {
         if record.region != -1 || coord == (0, 0) {
             continue;
         }
-        flood_fill(ctx, &mut regions, coord);
+        flood_fill(ctx, &mut regions, &mut members, coord);
     }
 
     regions
@@ -130,7 +169,12 @@ pub fn run(ctx: &mut RegionCtx<'_>) -> Regions {
 
 /// The flood-fill constructor: LIFO stack, claim-at-enqueue, level+class
 /// matched growth, small-blob dissolve/merge, and the registry append.
-fn flood_fill(ctx: &mut RegionCtx<'_>, regions: &mut Regions, seed: (i32, i32)) {
+fn flood_fill(
+    ctx: &mut RegionCtx<'_>,
+    regions: &mut Regions,
+    members: &mut Members,
+    seed: (i32, i32),
+) {
     let id = regions.id_counter;
     let seed_tile = ctx.grid.cell_native(seed.0, seed.1).tile;
     let seed_class = region_class(ctx.ids, seed_tile);
@@ -138,8 +182,12 @@ fn flood_fill(ctx: &mut RegionCtx<'_>, regions: &mut Regions, seed: (i32, i32)) 
 
     let mut stack: Vec<(i32, i32)> = vec![seed];
     let mut pops = 0i32;
+    // Each cell is pushed once (its stamp is claimed first), so the popped
+    // cells are exactly the cells this fill gives `id`.
+    let mut filled: Vec<(i32, i32)> = Vec::new();
     while let Some(coord) = stack.pop() {
         pops += 1;
+        filled.push(coord);
         {
             let record = ctx.scratch.get_mut(coord.0, coord.1);
             record.stamp = id;
@@ -180,7 +228,10 @@ fn flood_fill(ctx: &mut RegionCtx<'_>, regions: &mut Regions, seed: (i32, i32)) 
             if ctx.scratch.in_diamond(cand.0, cand.1) {
                 let adopt_id = ctx.scratch.get(cand.0, cand.1).region;
                 let adopt_level = ctx.grid.cell_native(cand.0, cand.1).level;
-                rewrite_blob(ctx, id, adopt_id, adopt_level);
+                rewrite_cells(ctx, &filled, adopt_id, adopt_level);
+                if adopt_id != -1 {
+                    members.add(adopt_id, filled);
+                }
                 return;
             }
         }
@@ -199,13 +250,17 @@ fn flood_fill(ctx: &mut RegionCtx<'_>, regions: &mut Regions, seed: (i32, i32)) 
         start_quota: 0,
         field_slots: None,
     };
-    let width = ctx.scratch.width();
-    for index in 0..width * width {
-        let record = ctx.scratch.cells()[index];
-        if record.region == id && (record.x, record.y) != (0, 0) {
-            region.cell_count += 1;
-        }
-    }
+    // The native count scans for every `id` cell: this fill's, plus a blob an
+    // earlier fill of the same unregistered id merged into itself. Every
+    // in-diamond cell has a nonzero coordinate sum, so none is the (0, 0) the
+    // scan skips.
+    members.add(id, filled);
+    region.cell_count = members.cells.get(&id).map_or(0, |cells| {
+        cells
+            .iter()
+            .filter(|&&(x, y)| ctx.scratch.get(x, y).region == id)
+            .count()
+    }) as i32;
     regions.list.push(region);
 }
 
@@ -252,15 +307,23 @@ fn dissolve_first_region(ctx: &mut RegionCtx<'_>) -> bool {
 /// Rewrite every cell of `blob_id` to `adopt_id` / clear land at the adopted
 /// level (0xFF adopts the default), clearing the water flag.
 fn rewrite_blob(ctx: &mut RegionCtx<'_>, blob_id: i32, adopt_id: i32, adopt_level: u8) {
+    let cells: Vec<_> = ctx
+        .grid
+        .native_cells()
+        .filter(|&(x, y)| ctx.scratch.get(x, y).region == blob_id)
+        .collect();
+    rewrite_cells(ctx, &cells, adopt_id, adopt_level);
+}
+
+/// [`rewrite_blob`] for a blob whose cells are known. Each cell's rewrite
+/// stands alone, so their order does not matter.
+fn rewrite_cells(ctx: &mut RegionCtx<'_>, cells: &[(i32, i32)], adopt_id: i32, adopt_level: u8) {
     let level = if adopt_level != 0xFF {
         adopt_level
     } else {
         ctx.default_level
     };
-    for (x, y) in ctx.grid.native_cells().collect::<Vec<_>>() {
-        if ctx.scratch.get(x, y).region != blob_id {
-            continue;
-        }
+    for &(x, y) in cells {
         {
             let record = ctx.scratch.get_mut(x, y);
             record.region = adopt_id;
@@ -277,8 +340,8 @@ fn rewrite_blob(ctx: &mut RegionCtx<'_>, blob_id: i32, adopt_id: i32, adopt_leve
 /// later passes from the previous pass's claims. Returns false on the abort
 /// conditions (foreign region contact, or an unclaimed level-matching
 /// neighbor failing the clear/green class test).
-fn expand(ctx: &mut RegionCtx<'_>, id: i32, level: u8, passes: i32) -> bool {
-    let mut frontier = boundary(ctx, id);
+fn expand(ctx: &mut RegionCtx<'_>, members: &mut Members, id: i32, level: u8, passes: i32) -> bool {
+    let mut frontier = boundary(ctx, members, id);
     for _ in 0..passes {
         let mut next: Vec<(i32, i32)> = Vec::new();
         for &(x, y) in &frontier {
@@ -303,6 +366,7 @@ fn expand(ctx: &mut RegionCtx<'_>, id: i32, level: u8, passes: i32) -> bool {
                 }
                 ctx.scratch.get_mut(nx, ny).region = id;
                 ctx.grid.get_mut(nx, ny).expect("in-diamond cell").level = level;
+                members.add(id, [(nx, ny)]);
                 next.push((nx, ny));
             }
         }
@@ -313,9 +377,9 @@ fn expand(ctx: &mut RegionCtx<'_>, id: i32, level: u8, passes: i32) -> bool {
 
 /// The boundary collector: region cells with at least one in-diamond
 /// neighbor owned by a different region, in native scan order.
-fn boundary(ctx: &mut RegionCtx<'_>, id: i32) -> Vec<(i32, i32)> {
+fn boundary(ctx: &mut RegionCtx<'_>, members: &Members, id: i32) -> Vec<(i32, i32)> {
     let mut out = Vec::new();
-    for (x, y) in ctx.grid.native_cells().collect::<Vec<_>>() {
+    for (x, y) in members.in_scan_order(id) {
         if ctx.scratch.get(x, y).region != id {
             continue;
         }
@@ -333,8 +397,8 @@ fn boundary(ctx: &mut RegionCtx<'_>, id: i32) -> Vec<(i32, i32)> {
 /// The water-propagation pass: claims unassigned water-flagged cells
 /// reachable from the region's boundary. A no-op on the base path (nothing
 /// sets the flag before the mode-3/4 carvers).
-fn water_propagate(ctx: &mut RegionCtx<'_>, id: i32) {
-    let mut queue = boundary(ctx, id);
+fn water_propagate(ctx: &mut RegionCtx<'_>, members: &mut Members, id: i32) {
+    let mut queue = boundary(ctx, members, id);
     let mut cursor = 0;
     while cursor < queue.len() {
         let (x, y) = queue[cursor];
@@ -347,6 +411,7 @@ fn water_propagate(ctx: &mut RegionCtx<'_>, id: i32) {
             let record = ctx.scratch.get(nx, ny);
             if record.water_region && record.region == -1 {
                 ctx.scratch.get_mut(nx, ny).region = id;
+                members.add(id, [(nx, ny)]);
                 queue.push((nx, ny));
             }
         }

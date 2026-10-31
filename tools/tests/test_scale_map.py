@@ -85,5 +85,11 @@ class ScaleMapTests(unittest.TestCase):
                 build_map(size, starts)
 
 
+class MaxPlayersTests(unittest.TestCase):
+    def test_only_maps_past_eight_starts_declare_max_players(self):
+        self.assertEqual(parse_ini(build_map(250, 30))['Basic']['MaxPlayers'], '30')
+        self.assertNotIn('MaxPlayers', parse_ini(build_map(80, 4))['Basic'])
+
+
 if __name__ == '__main__':
     unittest.main()

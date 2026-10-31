@@ -15,8 +15,9 @@ use crate::skirmish_modes::SkirmishGameMode;
 pub const BATTLE_MODE_ID: i32 = 1;
 pub const SKIRMISH_PLAYER_SLOT_COUNT: usize = 8;
 pub const SKIRMISH_AI_SLOT_COUNT: usize = SKIRMISH_PLAYER_SLOT_COUNT - 1;
-/// VERA network rooms extend the retail eight-row setup without changing the
-/// offline shell's resource rows or the eight-colour retail palette.
+/// VERA network rooms and the offline Skirmish shell extend the retail
+/// eight-row setup without changing its resource rows: the rooms page twelve
+/// rows, the Skirmish shell pages its seven AI rows.
 pub const NETWORK_PLAYER_SLOT_COUNT: usize = 30;
 pub const HOUSE_COLOR_COUNT: usize = 8;
 
@@ -755,6 +756,7 @@ impl TryFrom<SkirmishLaunchSessionInput> for SkirmishLaunchSession {
 pub struct ShellRandomAssignmentState {
     resolved: SkirmishLaunchSession,
     used_colors: Vec<u8>,
+    extended_colors: Vec<u8>,
 }
 
 impl ShellRandomAssignmentState {
@@ -779,7 +781,16 @@ impl ShellRandomAssignmentState {
         Self {
             resolved,
             used_colors,
+            extended_colors: Vec::new(),
         }
+    }
+
+    /// VERA: colour priorities a random draw takes, in order, once the eight
+    /// retail colours are all in use
+    /// ([`crate::rules::skirmish_colors::SkirmishColorMode::extended_player_priorities`]).
+    pub fn with_extended_colors(mut self, extended_colors: Vec<u8>) -> Self {
+        self.extended_colors = extended_colors;
+        self
     }
 
     pub fn resolve_local_country<E>(
@@ -829,7 +840,7 @@ impl ShellRandomAssignmentState {
     fn resolve_human_color(&mut self, index: usize, rng: &mut SimRng) {
         let slot = &mut self.resolved.humans[index].slot;
         if slot.color_random {
-            let color = draw_collision_free_color(rng, &self.used_colors);
+            let color = draw_collision_free_color(rng, &self.used_colors, &self.extended_colors);
             slot.color_index = color;
             slot.color_random = false;
             self.used_colors.push(color);
@@ -870,7 +881,8 @@ impl ShellRandomAssignmentState {
                 opponent.country_random = false;
             }
             if opponent.color_random {
-                let color = draw_collision_free_color(rng, &self.used_colors);
+                let color =
+                    draw_collision_free_color(rng, &self.used_colors, &self.extended_colors);
                 opponent.color_index = color;
                 opponent.color_random = false;
                 self.used_colors.push(color);
@@ -1014,11 +1026,15 @@ pub enum RandomCountryRole {
 
 /// Draw an unused shell colour in `0..=7`.
 ///
-/// Each collision retry advances the supplied Scenario stream once. More
-/// The first eight allocations retain native retries and RNG order. Larger
-/// VERA rooms reuse the least-used palette colours instead of exhausting it.
-fn draw_collision_free_color(rng: &mut SimRng, used: &[u8]) -> u8 {
+/// Each collision retry advances the supplied Scenario stream once. The first
+/// eight allocations retain native retries and RNG order. Past them, VERA
+/// takes the first unused `extended` colour without a draw, and only once
+/// those run out reuses the least-used retail colours.
+fn draw_collision_free_color(rng: &mut SimRng, used: &[u8], extended: &[u8]) -> u8 {
     if (0..HOUSE_COLOR_COUNT as u8).all(|color| used.contains(&color)) {
+        if let Some(&color) = extended.iter().find(|color| !used.contains(color)) {
+            return color;
+        }
         // VERA's >8-player extension: retain the retail palette and select
         // among its least-used colours. One draw is enough; the native retry
         // loop cannot terminate once every colour has been assigned.
@@ -1504,11 +1520,11 @@ mod tests {
         let mut used: Vec<u8> = vec![session.opponents[1].color_index];
         let exp_local_country =
             LaunchCountry::from_country_index(expected_rng.next_range_u32_inclusive(0, 9));
-        let exp_local_color = draw_collision_free_color(&mut expected_rng, &used);
+        let exp_local_color = draw_collision_free_color(&mut expected_rng, &used, &[]);
         used.push(exp_local_color);
         let exp_ai0_country =
             LaunchCountry::from_country_index(expected_rng.next_range_u32_inclusive(0, 9));
-        let exp_ai0_color = draw_collision_free_color(&mut expected_rng, &used);
+        let exp_ai0_color = draw_collision_free_color(&mut expected_rng, &used, &[]);
 
         assert_eq!(resolved.local_slot().country, exp_local_country);
         assert_eq!(resolved.local_slot().color_index, exp_local_color);
@@ -1586,7 +1602,23 @@ mod tests {
             vec![RandomCountryRole::Human, RandomCountryRole::Ai { index: 0 }]
         );
         let mut expected_rng = SimRng::new(seed);
-        let _ = draw_collision_free_color(&mut expected_rng, &[1, 2]);
+        let _ = draw_collision_free_color(&mut expected_rng, &[1, 2], &[]);
         assert_eq!(rng.state(), expected_rng.state());
+    }
+
+    #[test]
+    fn past_the_eight_retail_colours_a_draw_takes_the_first_unused_extended_one() {
+        let mut rng = SimRng::new(1);
+        let mut untouched = rng.clone();
+        let used: Vec<u8> = (0..8).chain([43]).collect();
+        assert_eq!(
+            draw_collision_free_color(&mut rng, &used, &[43, 45, 47]),
+            45
+        );
+        // No Scenario draw is consumed for it.
+        assert_eq!(
+            rng.next_range_u32_inclusive(0, 1000),
+            untouched.next_range_u32_inclusive(0, 1000)
+        );
     }
 }

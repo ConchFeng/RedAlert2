@@ -19,7 +19,8 @@ overlays or terrain objects: sim-bench's march scenario adds its own houses.
 `--starts N` writes the map for sim-bench's match scenario instead: N start
 waypoints on a grid across the diamond, an ore field beside each start, and
 clumps of trees between the starts. A fixed seed places the ore and trees, so
-the same arguments always write the same map.
+the same arguments always write the same map. More than eight starts also
+write VERA's `[Basic] MaxPlayers`, so the Skirmish lobby seats every start.
 """
 
 import argparse
@@ -155,13 +156,15 @@ def build_map(size: int, starts: int | None = None, *, cell_array_width: int | N
     if cell_array_width > 512:
         name = f'Large Size {size}x{size} - {len(start_cells)} Starts'
     waypoints = '\n'.join(f'{index}={ry * 1000 + rx}' for index, (rx, ry) in enumerate(start_cells))
+    # VERA's [Basic] MaxPlayers seats more than the eight retail starts.
+    max_players = f'MaxPlayers={len(start_cells)}\n' if len(start_cells) > 8 else ''
     margin = 4
     return f'''[Basic]
 Name={name}
 NewINIFormat=4
 MultiplayerOnly=1
 Official=no
-
+{max_players}
 [Map]
 Theater=TEMPERATE
 Size=0,0,{size},{size}

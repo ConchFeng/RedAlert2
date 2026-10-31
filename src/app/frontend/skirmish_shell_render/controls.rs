@@ -19,7 +19,7 @@ use crate::ui::skirmish_shell::{
     checkbox_icon_rect, combo_arrow_rect, combo_dropdown_content_rect,
     combo_dropdown_needs_scrollbar, combo_dropdown_rect, combo_dropdown_row_rect,
     combo_dropdown_scroll_thumb_rect, combo_dropdown_scrollbar_rect,
-    combo_dropdown_visible_row_count, combo_enabled, combo_face_rect, combo_items,
+    combo_dropdown_visible_row_count, combo_enabled, combo_face_rect, combo_items, combo_rect,
     combo_swatch_rect, player_name_edit_text_rect, player_row_visible, selected_combo_item_index,
     trackbar_visual_value,
 };
@@ -456,10 +456,20 @@ const SKIRMISH_SWATCH_RGB: [[u8; 3]; 8] = [
     [255, 154, 235],
 ];
 
-pub(super) fn house_color_tint(_color_schemes: &[ColorSchemeEntry], index: usize) -> [f32; 3] {
+///
+/// VERA's extended colour priorities have no native swatch; they show their
+/// `[Colors]` entry's base colour, as gamemd prints a house's text.
+pub(super) fn house_color_tint(color_schemes: &[ColorSchemeEntry], index: usize) -> [f32; 3] {
+    let extended = || {
+        let priority = i32::try_from(index).ok()?;
+        let entry = crate::rules::color_scheme::scheme_entry_for_priority(priority);
+        crate::rules::color_scheme::scheme_hsv_by_entry(color_schemes, entry)
+            .map(crate::rules::color_scheme::hsv_to_rgb)
+    };
     let [r, g, b] = SKIRMISH_SWATCH_RGB
         .get(index)
         .copied()
+        .or_else(extended)
         .unwrap_or([96, 96, 96]);
     [r as f32 / 255.0, g as f32 / 255.0, b as f32 / 255.0]
 }
@@ -878,18 +888,26 @@ pub(super) fn push_combo_instances(
     );
 
     for (idx, opponent) in shell.opponents.iter().enumerate() {
-        if idx >= layout.rows.ai_type_combos.len() {
-            break;
-        }
         let row = idx + 1;
         if !player_row_visible(shell, maps, row) {
             continue;
         }
+        // VERA pages the opponents; a row on another page has no rects.
+        let rect = |id| combo_rect(shell, layout, id);
+        let (Some(ai_type), Some(side), Some(color), Some(start), Some(team)) = (
+            rect(SkirmishComboId::AiType(idx)),
+            rect(SkirmishComboId::Side(row)),
+            rect(SkirmishComboId::Color(row)),
+            rect(SkirmishComboId::Start(row)),
+            rect(SkirmishComboId::Team(row)),
+        ) else {
+            continue;
+        };
         paint_control(
             out,
             &chrome,
             ControlPaint::Combo {
-                rect: layout.rows.ai_type_combos[idx],
+                rect: ai_type,
                 swatch: None,
                 open: open == Some(SkirmishComboId::AiType(idx)),
                 disabled: false,
@@ -901,7 +919,7 @@ pub(super) fn push_combo_instances(
             out,
             &chrome,
             ControlPaint::Combo {
-                rect: layout.rows.side_combos[row],
+                rect: side,
                 swatch: None,
                 open: open == Some(SkirmishComboId::Side(row)),
                 disabled: sibling_disabled,
@@ -912,7 +930,7 @@ pub(super) fn push_combo_instances(
             out,
             &chrome,
             ControlPaint::Combo {
-                rect: layout.color_combos[row],
+                rect: color,
                 swatch: swatch_for(
                     (!sibling_disabled && opponent.color_claimed).then_some(opponent.color_index),
                 ),
@@ -925,7 +943,7 @@ pub(super) fn push_combo_instances(
             out,
             &chrome,
             ControlPaint::Combo {
-                rect: layout.rows.start_combos[row],
+                rect: start,
                 swatch: None,
                 open: open == Some(SkirmishComboId::Start(row)),
                 disabled: sibling_disabled,
@@ -936,7 +954,7 @@ pub(super) fn push_combo_instances(
             out,
             &chrome,
             ControlPaint::Combo {
-                rect: layout.rows.team_combos[row],
+                rect: team,
                 swatch: None,
                 open: open == Some(SkirmishComboId::Team(row)),
                 // Team is the one sibling whose enable state is row-active AND
@@ -1071,7 +1089,8 @@ mod tests {
                 shell.refresh_country_catalog(&rules);
                 let maps = [];
                 let selected = selected_combo_item(&shell, id);
-                let arrow = combo_arrow_hit_rect(combo_rect(&layout, id).unwrap(), layout.scale);
+                let arrow =
+                    combo_arrow_hit_rect(combo_rect(&shell, &layout, id).unwrap(), layout.scale);
                 handle_option_mouse_down(&mut shell, &layout, &maps, arrow.x, arrow.y);
                 assert_eq!(shell.open_combo_dropdown.unwrap().id, id);
                 let content = combo_dropdown_content_rect(&shell, &layout, &maps, id).unwrap();
