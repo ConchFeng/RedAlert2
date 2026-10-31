@@ -403,3 +403,33 @@ fn generated_raised_ridge_materializes_native_cliff_faces() {
         "a materialized cliff face must survive later phases into the emitted map"
     );
 }
+
+/// VERA's thirty-player Huge and Giant maps, generated from the retail
+/// temperate tiles, place every start on each dialog map type.
+#[test]
+#[ignore = "slow; run when changing what it covers"]
+fn thirty_player_huge_and_giant_maps_seat_every_start() {
+    for size in [4, 5] {
+        for map_type in [1, 2, 3, 4] {
+            let options = RmgOptions {
+                num_players: 30,
+                width: size,
+                height: size,
+                ..ordinary_recipe(4242, map_type)
+            };
+            let Some((_assets, prepared, _rules)) = retail_generation_inputs(&options) else {
+                return;
+            };
+            let generated = crate::map::rmg::build::generate_map(
+                &options,
+                &prepared.settings,
+                &prepared.resolved_inputs,
+                &prepared.blocks,
+                &prepared.tech_types,
+            );
+            let cell = format!("size={size} map_type={map_type}");
+            assert_eq!(generated.unfilled_start_slots, 0, "{cell}");
+            assert_eq!(generated.start_waypoints.len(), 30, "{cell}");
+        }
+    }
+}

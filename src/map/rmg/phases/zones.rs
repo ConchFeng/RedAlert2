@@ -228,6 +228,7 @@ pub fn compute(
     let mut sizes: Vec<i32> = vec![0];
     let mut classes: Vec<u8> = vec![CLASS_OUTSIDE];
     let mut largest = (i32::MIN, 0u16);
+    let mut largest_clear = (i32::MIN, 0u16);
     let mut next_zone = 1u16;
     let mut index = 0usize;
     while index < fill.records.len() {
@@ -240,6 +241,9 @@ pub fn compute(
         let (size, advance) = fill.run(index, next_zone);
         if size > largest.0 {
             largest = (size, next_zone);
+        }
+        if record.class == CLASS_CLEAR && size > largest_clear.0 {
+            largest_clear = (size, next_zone);
         }
         sizes.push(size);
         classes.push(record.class);
@@ -282,11 +286,24 @@ pub fn compute(
     }
     derived[0] = 0xFFFF;
 
+    // VERA: the largest component can be the sea, as on a Huge islands map
+    // whose two landmasses each fall short of it. Its group then holds no
+    // clear ground, so the starts phase would find no reference ground at
+    // all, where the original selects from nothing and faults. That case
+    // takes the largest clear component's group instead.
+    let mut reference = derived[usize::from(largest.1)];
+    let holds_clear_ground = fill.records.iter().any(|record| {
+        record.class == CLASS_CLEAR && derived[usize::from(record.zone)] == reference
+    });
+    if !holds_clear_ground && largest_clear.0 > 0 {
+        reference = derived[usize::from(largest_clear.1)];
+    }
+
     ZoneField {
         stride,
         records: fill.records,
         derived: derived.clone(),
-        reference: derived[usize::from(largest.1)],
+        reference,
     }
 }
 
@@ -589,6 +606,23 @@ mod tests {
             field.reference,
             "normal kind never merges water into the land group"
         );
+    }
+
+    #[test]
+    fn a_sea_larger_than_the_land_leaves_the_land_as_reference_ground() {
+        let (mut grid, params) = world();
+        let coords: Vec<(i32, i32)> = grid.native_cells().collect();
+        for &(x, y) in &coords {
+            grid.get_mut(x, y).unwrap().tile = 500;
+        }
+        let cells = playable(&grid, &params);
+        let island = patch(&cells, 2, 1);
+        for &(x, y) in &island {
+            grid.get_mut(x, y).unwrap().tile = 0;
+        }
+        let field = compute(&grid, &TerrainBlocks, &params, ZoneKind::Normal);
+        let center = island[island.len() / 2];
+        assert!(field.is_reference_ground(center.0, center.1));
     }
 
     #[test]
