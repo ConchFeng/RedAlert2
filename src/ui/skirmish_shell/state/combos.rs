@@ -289,6 +289,9 @@ pub fn combo_items(
         .into_iter()
         .map(SkirmishComboItem::AiType)
         .collect(),
+        SkirmishComboId::Side(0) => std::iter::once(SkirmishComboItem::Observer)
+            .chain(state.country_catalog.items().iter().copied())
+            .collect(),
         SkirmishComboId::Side(_) => state.country_catalog.items().to_vec(),
         SkirmishComboId::Color(row) => {
             let palette = color_palette(state, maps);
@@ -415,6 +418,14 @@ pub fn selected_combo_item(
             .opponents
             .get(idx)
             .map(|opponent| SkirmishComboItem::AiType(opponent.row_type)),
+        SkirmishComboId::Side(0)
+            if matches!(
+                state.player_role,
+                crate::skirmish_launch::LaunchHumanRole::Observer
+            ) =>
+        {
+            Some(SkirmishComboItem::Observer)
+        }
         SkirmishComboId::Side(0) => {
             Some(SkirmishComboItem::Country(if state.player_country_random {
                 SkirmishCountryChoice::Random
@@ -483,14 +494,24 @@ pub fn combo_enabled(
     }
     match id {
         SkirmishComboId::AiType(_) => true,
-        SkirmishComboId::Side(0) | SkirmishComboId::Color(0) | SkirmishComboId::Start(0) => true,
+        SkirmishComboId::Side(0) => true,
+        SkirmishComboId::Color(0) | SkirmishComboId::Start(0) => !matches!(
+            state.player_role,
+            crate::skirmish_launch::LaunchHumanRole::Observer
+        ),
         // The whole Team column follows the selected mode's `AlliesAllowed`,
         // the local row included: the native refresh pass reads that byte once
         // and hands it to every one of the eight team controls. With allying
         // forbidden (stock Free For All and Cooperative) the column is dead, so
         // the player cannot put themselves or an AI on a team the mode
         // disallows.
-        SkirmishComboId::Team(0) => state.selected_mode_allies_allowed,
+        SkirmishComboId::Team(0) => {
+            state.selected_mode_allies_allowed
+                && !matches!(
+                    state.player_role,
+                    crate::skirmish_launch::LaunchHumanRole::Observer
+                )
+        }
         SkirmishComboId::Side(row) | SkirmishComboId::Color(row) | SkirmishComboId::Start(row) => {
             state
                 .opponents
@@ -526,7 +547,13 @@ fn start_position_taken_by_other_row(
     row: usize,
     start: LaunchStartPosition,
 ) -> bool {
-    if state.player_start_position == start && row != 0 {
+    if state.player_start_position == start
+        && row != 0
+        && !matches!(
+            state.player_role,
+            crate::skirmish_launch::LaunchHumanRole::Observer
+        )
+    {
         return true;
     }
     state
@@ -643,6 +670,9 @@ pub(super) fn apply_combo_selection(
     item: SkirmishComboItem,
 ) {
     match (id, item) {
+        (SkirmishComboId::Side(0), SkirmishComboItem::Observer) => {
+            state.player_role = crate::skirmish_launch::LaunchHumanRole::Observer;
+        }
         (SkirmishComboId::AiType(idx), SkirmishComboItem::AiType(row_type)) => {
             let team_default = inactive_ai_team_default(state);
             if let Some(opponent) = state.opponents.get_mut(idx) {
@@ -661,15 +691,18 @@ pub(super) fn apply_combo_selection(
                 }
             }
         }
-        (SkirmishComboId::Side(0), SkirmishComboItem::Country(choice)) => match choice {
-            SkirmishCountryChoice::Random => {
-                state.player_country_random = true;
+        (SkirmishComboId::Side(0), SkirmishComboItem::Country(choice)) => {
+            state.player_role = crate::skirmish_launch::LaunchHumanRole::default();
+            match choice {
+                SkirmishCountryChoice::Random => {
+                    state.player_country_random = true;
+                }
+                SkirmishCountryChoice::Country(country) => {
+                    state.player_country_random = false;
+                    state.player_country = country;
+                }
             }
-            SkirmishCountryChoice::Country(country) => {
-                state.player_country_random = false;
-                state.player_country = country;
-            }
-        },
+        }
         (SkirmishComboId::Side(row), SkirmishComboItem::Country(choice)) => {
             if let Some(opponent) = state.opponents.get_mut(row - 1) {
                 match choice {
@@ -795,6 +828,9 @@ pub(super) fn handle_combo_mouse_down(
             && let Some(item) = combo_items(state, maps, open.id).get(row).copied()
         {
             apply_combo_selection(state, open.id, item);
+            if open.id == SkirmishComboId::Side(0) {
+                super::initialize_rows_for_selected_map(state, maps);
+            }
         }
         state.open_combo_dropdown = None;
         state.dropdown_scroll_drag = None;

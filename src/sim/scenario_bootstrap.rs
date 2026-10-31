@@ -1667,10 +1667,18 @@ pub fn apply_launch_shroud_option(
     sim: &mut Simulation,
     context: crate::sim::world::UninitContext<'_>,
 ) {
-    if sim.session.game_options().shroud {
+    // VERA's offline observer starts with the same permanent map reveal as
+    // local defeat, before the first frame. AI visibility remains unchanged.
+    if sim.session.game_mode() == crate::sim::scenario_session::ScenarioGameMode::Skirmish
+        && let Some(observer) = sim.session.current_house()
+        && sim.session.is_observer_house(observer)
+    {
+        sim.reveal_entire_map(Some(observer), context);
         return;
     }
-    sim.reveal_entire_map(None, context);
+    if !sim.session.game_options().shroud {
+        sim.reveal_entire_map(None, context);
+    }
 }
 
 fn assign_launch_base_centers(
@@ -4416,6 +4424,55 @@ mod tests {
             ["Host", "Guest", "Observer", "Spectator"].map(|name| sim.interner.get(name).unwrap());
         assert_eq!(sim.session.observer_houses(), [observer, spectator]);
         assert!(!sim.session.is_observer_house(host) && !sim.session.is_observer_house(guest));
+    }
+
+    #[test]
+    fn offline_observer_reveals_the_map_at_launch_with_twenty_nine_computers() {
+        use crate::skirmish_launch::{AiDifficulty, SkirmishAiSlot};
+        let mut session = one_player_battle_launch("observer.map").session().clone();
+        session.humans[0].set_observer(true);
+        session.ai_player_count = 29;
+        session.options.shroud = true;
+        session.opponents = (1..30)
+            .map(|index| SkirmishAiSlot {
+                raw_slot_index: index,
+                country: LaunchCountry::America,
+                country_random: false,
+                color_index: index % 8,
+                color_random: false,
+                start_position: LaunchStartPosition::Auto,
+                team: LaunchTeam::None,
+                difficulty: AiDifficulty::Normal,
+            })
+            .collect();
+        session.rebuild_house_roster();
+        assert_eq!(session.required_start_count(), 29);
+        let launch = MatchLaunchDescriptor::from_resolved(session).unwrap();
+        let rules = techno_constructor_start_rules();
+        let mut sim = Simulation::new();
+        sim.session
+            .set_game_mode(crate::sim::scenario_session::ScenarioGameMode::Skirmish);
+        initialize_skirmish_launch_houses(&mut sim, &HouseRoster::default(), &rules, &launch);
+        sim.fog = crate::sim::vision::FogState::new(8, 8);
+        let observer = sim.session.current_house().unwrap();
+        assert!(sim.session.is_observer_house(observer));
+        assert_eq!(sim.houses.len(), 32);
+        assert_eq!(
+            sim.houses.values().filter(|house| house.is_human()).count(),
+            1
+        );
+        let rng = sim.scenario_rng.logical_state();
+        apply_launch_shroud_option(
+            &mut sim,
+            crate::sim::world::UninitContext::with_rules(&rules),
+        );
+        assert_eq!(sim.scenario_rng.logical_state(), rng);
+        assert!(sim.houses[&observer].map_is_clear());
+        assert!(sim.fog.whole_map_revealed_for_owner(observer));
+        assert!(sim.fog.is_cell_revealed(observer, 7, 7));
+        for house in sim.houses.values().filter(|house| !house.is_human()) {
+            assert!(!sim.fog.whole_map_revealed_for_owner(house.name()));
+        }
     }
 
     #[test]

@@ -590,6 +590,7 @@ impl RetailBridgeFixture {
                 build_bridge_body_instances_inner(
                     &terrain,
                     Some(&live_grid),
+                    &live_grid.occupied_entries(),
                     atlas,
                     &self.names,
                     &crate::map::lighting::CellLightGrid::new(),

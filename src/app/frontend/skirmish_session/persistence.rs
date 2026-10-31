@@ -92,6 +92,7 @@ impl SkirmishPersistedSlot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MultiplayerSetupSnapshot {
     profile: SetupProfile,
+    pub observer: bool,
     pub game_mode: i32,
     pub scenario_index: i32,
     pub game_speed: i32,
@@ -113,6 +114,7 @@ impl MultiplayerSetupSnapshot {
     pub fn from_global_defaults(defaults: SkirmishGlobalDefaults, profile: SetupProfile) -> Self {
         Self {
             profile,
+            observer: false,
             game_mode: defaults.game_mode,
             scenario_index: defaults.scenario_index,
             game_speed: defaults.game_speed,
@@ -181,7 +183,14 @@ impl MultiplayerSetupSnapshot {
     pub fn update_ini_bytes(&self, content: &[u8]) -> Vec<u8> {
         let native = write_section(content, self.profile.section(), &self.ini_updates());
         match self.profile.extended_section() {
-            Some(section) => write_section(&native, section, &self.extended_slot_updates()),
+            Some(section) => {
+                let mut updates = self.extended_slot_updates();
+                updates.push((
+                    "ObserverMode".to_string(),
+                    yes_no(self.observer).to_string(),
+                ));
+                write_section(&native, section, &updates)
+            }
             None => native,
         }
     }
@@ -234,6 +243,7 @@ pub fn read_setup_snapshot(
     }
     if let Some(extended) = profile.extended_section() {
         let section = ini.section_or_empty(extended);
+        snapshot.observer = section.read_bool("ObserverMode", snapshot.observer);
         for (slot_index, slot) in snapshot
             .slots
             .iter_mut()
@@ -482,16 +492,20 @@ Slot01=4,8,1\r\n";
         let written = |profile| {
             let mut snapshot = MultiplayerSetupSnapshot::from_global_defaults(defaults(), profile);
             snapshot.slots[28].row_type = 4;
+            snapshot.observer = true;
             String::from_utf8(snapshot.update_ini_bytes(b"")).unwrap()
         };
         let skirmish = written(SetupProfile::Skirmish);
         assert!(skirmish.contains("[SkirmishVERA]\r\nSlot08=1,-2,-2\r\n"));
-        assert!(skirmish.ends_with("Slot29=4,-2,-2\r\n"));
-        assert!(!written(SetupProfile::Lan).contains("Slot08"));
+        assert!(skirmish.ends_with("Slot29=4,-2,-2\r\nObserverMode=yes\r\n"));
+        let lan = written(SetupProfile::Lan);
+        assert!(!lan.contains("Slot08"));
+        assert!(!lan.contains("ObserverMode"));
 
         let read =
             read_setup_snapshot(skirmish.as_bytes(), defaults(), SetupProfile::Skirmish).unwrap();
         assert_eq!(read.slots[28].row_type, 4);
+        assert!(read.observer);
         // A [Skirmish] Slot08 is no VERA key.
         let native = b"[Skirmish]\nSlot08=4,-2,-2\n";
         let read = read_setup_snapshot(native, defaults(), SetupProfile::Skirmish).unwrap();

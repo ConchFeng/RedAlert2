@@ -10,7 +10,7 @@
 //! - Part of the app layer — may depend on everything.
 //! - Read-only access to sim state via `AppState`.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 
 use crate::app::AppState;
 use crate::map::lighting::CellLightGrid;
@@ -90,6 +90,7 @@ pub(super) fn cell_overlay_y_offset(overlay: u8, flags: u32, state: u8) -> f32 {
 pub(crate) fn build_bridge_body_instances_inner(
     terrain: &ResolvedTerrainGrid,
     live_grid: Option<&crate::sim::overlay_grid::OverlayGrid>,
+    overlay_entries: &[crate::map::overlay::OverlayEntry],
     atlas: &dyn BridgeAtlasLookup,
     overlay_names: &BTreeMap<u8, String>,
     lighting_grid: &CellLightGrid,
@@ -104,14 +105,14 @@ pub(crate) fn build_bridge_body_instances_inner(
     // 0047F6A0 tests live Cell.flags 0x80, not structural admission or a
     // decoded simulation damage state. Frozen overlays retain these live
     // fields. The sweep orders the bodies (bridge_body_render.json scenes[0]).
-    let cells = terrain.iter().filter(|cell| {
-        cell.bridge_facts.raw_flags & crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF != 0
-    });
-    for cell in cells {
-        let (rx, ry) = (cell.rx, cell.ry);
-        let Some(live) = live_grid.map(|grid| grid.cell(rx, ry)) else {
-            continue;
-        };
+    let Some(live_grid) = live_grid else {
+        return;
+    };
+    // OverlayRenderIndex supplies candidates; live fields still own every draw.
+    let mut seen = HashSet::new();
+    for entry in overlay_entries {
+        let (rx, ry) = (entry.rx, entry.ry);
+        let live = live_grid.cell(rx, ry);
         let Some(overlay) = live.overlay_id else {
             continue;
         };
@@ -121,6 +122,11 @@ pub(crate) fn build_bridge_body_instances_inner(
         if !is_high_bridge_body_identity(overlay, name) {
             continue;
         }
+        let Some(cell) = terrain.cell(rx, ry).filter(|cell| {
+            cell.bridge_facts.raw_flags & crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF != 0
+        }) else {
+            continue;
+        };
 
         let frame = compute_bridge_body_shp_frame(live.overlay_data, rx, ry);
         let y_offset =
@@ -132,6 +138,9 @@ pub(crate) fn build_bridge_body_instances_inner(
             continue;
         }
 
+        if !seen.insert((rx, ry)) {
+            continue;
+        }
         let Some(spr) = atlas.body_entry(name, u16::from(frame)) else {
             log::warn!("bridge body atlas miss: name={name} frame={frame} cell=({rx},{ry})");
             continue;
@@ -209,6 +218,7 @@ pub(crate) fn build_bridge_body_instances(
     build_bridge_body_instances_inner(
         terrain,
         sim.overlay_grid(),
+        state.match_state.match_presentation.overlays.as_slice(),
         atlas,
         &state.match_state.match_presentation.overlay_names,
         state.match_state.match_presentation.lighting.grid(),
@@ -470,6 +480,63 @@ pub(crate) fn build_bridge_shadow_instances(state: &AppState, out: &mut Vec<Spri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[ignore = "manual performance probe; run alone in release with --nocapture"]
+    fn giant_bridge_body_scan_cost() {
+        use crate::render::overlay_atlas::OverlaySpriteEntry;
+        use std::hint::black_box;
+        use std::time::Instant;
+
+        struct EmptyAtlas;
+        impl BridgeAtlasLookup for EmptyAtlas {
+            fn body_entry(&self, _: &str, _: u16) -> Option<&OverlaySpriteEntry> {
+                None
+            }
+            fn shadow_entry(&self, _: &str, _: u16) -> Option<&OverlaySpriteEntry> {
+                None
+            }
+        }
+        let terrain = crate::map::resolved_terrain::test_grid(
+            1024,
+            1024,
+            crate::map::resolved_terrain::test_flat_cell,
+        );
+        let overlays = crate::sim::overlay_grid::OverlayGrid::new(1024, 1024);
+        let names = BTreeMap::new();
+        let lights = CellLightGrid::new();
+        let mut output = Vec::new();
+        let mut draw = || {
+            build_bridge_body_instances_inner(
+                black_box(&terrain),
+                Some(black_box(&overlays)),
+                black_box(&[] as &[crate::map::overlay::OverlayEntry]),
+                black_box(&EmptyAtlas as &dyn BridgeAtlasLookup),
+                black_box(&names),
+                black_box(&lights),
+                0.0,
+                15360.0,
+                0.0,
+                0.0,
+                1920.0,
+                1080.0,
+                &mut output,
+            );
+            black_box(&output);
+        };
+        for _ in 0..16 {
+            draw();
+        }
+        let started = Instant::now();
+        for _ in 0..256 {
+            draw();
+        }
+        println!(
+            "giant_bridge_body_scan_mean_ms={:.6}",
+            started.elapsed().as_secs_f64() * 1000.0 / 256.0
+        );
+        assert!(output.is_empty());
+    }
 
     #[test]
     fn rubble_origin_emits_its_building_shadow_in_the_cell_sweep() {
@@ -752,6 +819,7 @@ mod tests {
             build_bridge_body_instances_inner(
                 &terrain,
                 Some(&overlays),
+                &overlays.occupied_entries(),
                 &atlas,
                 &BTreeMap::from([(0x18, "BRIDGE1".into())]),
                 &CellLightGrid::new(),
@@ -833,7 +901,7 @@ mod tests {
         }
 
         // Healthy NS variant 1 is state byte 1.
-        let (terrain, overlays) = test_bridge_grid(&[((5, 5), 0x18, 1)]);
+        let (mut terrain, mut overlays) = test_bridge_grid(&[((5, 5), 0x18, 1)]);
         let atlas = MockAtlas {
             entry: OverlaySpriteEntry {
                 uv_origin: [0.0, 0.0],
@@ -849,6 +917,16 @@ mod tests {
         };
         let overlay_names = BTreeMap::from([(0x18, "HIGHANCHOR".to_string())]);
         let lighting_grid = CellLightGrid::new();
+        let mut index = crate::app::presentation::overlay_index::OverlayRenderIndex::default();
+        index.replace_from_source(vec![
+            crate::map::overlay::OverlayEntry {
+                rx: 5,
+                ry: 5,
+                overlay_id: 0,
+                frame: 99
+            };
+            2
+        ]);
         let (cell_x, cell_y) = terrain::iso_to_screen(5, 5, 4);
         let (cam_x, cam_y) = (cell_x - 400.0, cell_y - 300.0);
         let mut bodies = Vec::new();
@@ -857,6 +935,7 @@ mod tests {
         build_bridge_body_instances_inner(
             &terrain,
             Some(&overlays),
+            index.as_slice(),
             &atlas,
             &overlay_names,
             &lighting_grid,
@@ -892,12 +971,73 @@ mod tests {
             "numeric high identity must emit one shadow"
         );
         assert_eq!(
-            atlas.body_queries.into_inner(),
+            *atlas.body_queries.borrow(),
             vec![("HIGHANCHOR".to_string(), 1)]
         );
         assert_eq!(
-            atlas.shadow_queries.into_inner(),
+            *atlas.shadow_queries.borrow(),
             vec![("HIGHANCHOR".to_string(), 1)]
+        );
+        for occupied in [false, true] {
+            let cell = overlays.cell_mut_for_test(5, 5);
+            cell.overlay_id = occupied.then_some(0x18);
+            terrain
+                .cell_mut_for_test(5, 5)
+                .unwrap()
+                .bridge_facts
+                .raw_flags = if occupied {
+                0
+            } else {
+                crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF
+            };
+            bodies.clear();
+            build_bridge_body_instances_inner(
+                &terrain,
+                Some(&overlays),
+                index.as_slice(),
+                &atlas,
+                &overlay_names,
+                &lighting_grid,
+                0.0,
+                5000.0,
+                cam_x,
+                cam_y,
+                800.0,
+                600.0,
+                &mut bodies,
+            );
+            assert!(
+                bodies.is_empty(),
+                "both live overlay and high anchor flag are required"
+            );
+        }
+        assert_eq!(index.remove_cells(&[(5, 5)]), 2);
+        overlays.place_overlay(5, 5, 0x18, 1);
+        terrain
+            .cell_mut_for_test(5, 5)
+            .unwrap()
+            .bridge_facts
+            .raw_flags = crate::map::bridge_facts::BRIDGE_FLAG_ANCHOR_SELF;
+        assert_eq!(index.upsert_occupied(overlays.occupied_entries()), 1);
+        build_bridge_body_instances_inner(
+            &terrain,
+            Some(&overlays),
+            index.as_slice(),
+            &atlas,
+            &overlay_names,
+            &lighting_grid,
+            0.0,
+            5000.0,
+            cam_x,
+            cam_y,
+            800.0,
+            600.0,
+            &mut bodies,
+        );
+        assert_eq!(
+            bodies.len(),
+            1,
+            "a reconstructed anchor reenters the render index"
         );
     }
 }

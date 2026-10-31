@@ -548,19 +548,20 @@ impl ZoneGrid {
         width: u16,
         height: u16,
     ) -> BTreeMap<MovementZone, ZoneMap> {
+        let bridge_redirect = zone_build::build_bridge_redirect(
+            path_grid,
+            Some(terrain),
+            bridge_records,
+            width,
+            height,
+        );
         MovementZone::all_ground()
             .iter()
             .map(|&mz| {
                 let mut zone_map =
                     zone_build::build_zone_map_from_base_topology(base, mz, width, height);
                 if mz.can_use_bridges() {
-                    zone_map.set_bridge_redirect(zone_build::build_bridge_redirect(
-                        path_grid,
-                        Some(terrain),
-                        bridge_records,
-                        width,
-                        height,
-                    ));
+                    zone_map.set_bridge_redirect(bridge_redirect.clone());
                 }
                 (mz, zone_map)
             })

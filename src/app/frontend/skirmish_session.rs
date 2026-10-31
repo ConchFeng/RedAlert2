@@ -190,6 +190,8 @@ pub(crate) struct MultiplayerShellRuntime {
     /// Physical process INI8870C0 input. Accepted writers update this buffer
     /// before attempting disk persistence; repeated6980C0 reads never reopen disk.
     settings_ini: Vec<u8>,
+    observer_setup_pending: bool,
+    observer_map_setup_pending: bool,
     /// Observer preference AC10C8, read as an integer by 5EE190.
     lan_observer_mode: i32,
     /// The taunt command's process-static rate clock `[0x00825C88]`.
@@ -899,12 +901,15 @@ impl MultiplayerShellRuntime {
             .unwrap_or_default();
         let ini_path = ra2_dir.map(profile_file::path);
         let (
-            snapshot,
+            mut snapshot,
             [lan_snapshot, wol_snapshot],
             local_preferences,
             lan_observer_mode,
             settings_ini,
         ) = load_persistence(ini_path.as_deref(), defaults);
+
+        let observer_setup_pending = apply_default_observer_preset(&mut snapshot, &settings_ini);
+        let observer_map_setup_pending = snapshot.observer;
 
         let mut runtime = Self {
             snapshot,
@@ -912,6 +917,8 @@ impl MultiplayerShellRuntime {
             wol_snapshot,
             local_preferences,
             settings_ini,
+            observer_setup_pending,
+            observer_map_setup_pending,
             lan_observer_mode,
             taunt_clock: Default::default(),
             scenario_rng,
@@ -950,7 +957,16 @@ impl MultiplayerShellRuntime {
         // SkirmishDialog__OnSetup reads Session+0x18C (`[0xA8B3C4]`,
         // 0x006AEAC5), the `[Skirmish] GameMode` 0x00697F10 stores there
         // (called at 0x00698451), not `[MultiPlayer] GameMode` (Session+4).
-        state.selected_mode_id = mode_by_id(modes, self.snapshot.game_mode)
+        let observer_mode = self
+            .observer_setup_pending
+            .then(|| {
+                modes
+                    .iter()
+                    .find(|mode| mode.class == crate::skirmish_modes::MpModeClass::FreeForAll)
+            })
+            .flatten();
+        state.selected_mode_id = observer_mode
+            .or_else(|| mode_by_id(modes, self.snapshot.game_mode))
             .or_else(|| modes.first())
             .map(|mode| mode.id)
             .unwrap_or(state.selected_mode_id);
@@ -979,6 +995,8 @@ impl MultiplayerShellRuntime {
         state.player_name_edit = PlayerNameEditState::with_name(
             &crate::util::native_string::acp_decode(&self.local_preferences.handle_bytes),
         );
+        state.player_role =
+            crate::skirmish_launch::LaunchHumanRole::from_observer(self.snapshot.observer);
         state.player_country =
             LaunchCountry::from_country_index(self.local_preferences.side.max(0) as u32);
         state.player_country_random = self.local_preferences.side_ex == RANDOM_ITEM_DATA;
@@ -1046,7 +1064,7 @@ impl MultiplayerShellRuntime {
                 raw_slot_index: Some(0),
                 name: session.local_player().name.clone(),
                 slot: session.local_slot().clone(),
-                role: crate::skirmish_launch::LaunchHumanRole::from_observer(false),
+                role: session.local_player().role,
             }],
             local_player_index: 0,
             ai_player_count: 0,
@@ -1497,6 +1515,21 @@ impl MultiplayerShellRuntime {
         self.random_map_options.clone()
     }
 
+    pub(crate) fn take_default_observer_map_setup(&mut self, capacity: usize) -> bool {
+        let pending = std::mem::take(&mut self.observer_map_setup_pending);
+        self.observer_setup_pending = false;
+        pending
+            && self.snapshot.observer
+            && self
+                .snapshot
+                .slots
+                .iter()
+                .filter(|slot| matches!(slot.row_type, 4..=6))
+                .count()
+                == crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT - 1
+            && capacity < crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT
+    }
+
     /// Persist the dialog's working record back into the process MapSeed owner.
     pub(crate) fn remember_random_map_options(&mut self, options: &crate::map::rmg::RmgOptions) {
         self.random_map_options = options.clone();
@@ -1533,12 +1566,34 @@ impl MultiplayerShellRuntime {
     }
 }
 
+fn apply_default_observer_preset(snapshot: &mut MultiplayerSetupSnapshot, settings: &[u8]) -> bool {
+    let pending = IniFile::from_bytes(settings).map_or(true, |ini| {
+        !ini.section_or_empty("SkirmishVERA")
+            .is_present("ObserverMode")
+    });
+    if pending {
+        snapshot.observer = true;
+        for slot in &mut snapshot.slots {
+            *slot = SkirmishPersistedSlot {
+                row_type: 5,
+                country: RANDOM_ITEM_DATA,
+                colour: RANDOM_ITEM_DATA,
+            };
+        }
+    }
+    pending
+}
+
 fn pack_snapshot_selection(
     snapshot: &mut MultiplayerSetupSnapshot,
     state: &SkirmishShellState,
     maps: &[MapMenuEntry],
     modes: &[SkirmishGameMode],
 ) {
+    snapshot.observer = matches!(
+        state.player_role,
+        crate::skirmish_launch::LaunchHumanRole::Observer
+    );
     snapshot.game_mode = mode_by_id(modes, state.selected_mode_id)
         .or_else(|| modes.first())
         .map(|mode| mode.id)
@@ -1849,6 +1904,80 @@ mod tests {
         SkirmishLaunchOptions, SkirmishLocalSlot,
     };
 
+    #[test]
+    fn offline_observer_preference_reaches_launch_and_close_transaction() {
+        let saved = b"[Skirmish]\nGameMode=2\n[SkirmishVERA]\nObserverMode=yes\n";
+        let snapshot = read_setup_snapshot(saved, defaults(), SetupProfile::Skirmish).unwrap();
+        let mut owner = runtime(snapshot, 5);
+        let mut large_map = map();
+        large_map.player_capacity = 30;
+        let maps = [large_map];
+        let modes = crate::skirmish_modes::stock_skirmish_modes();
+        let mut shell = SkirmishShellState::default();
+        shell.extended_colors = (17..=59).step_by(2).collect();
+        owner.hydrate_shell(&mut shell, &maps, &modes);
+        shell.fill_random_map_opponents(30);
+        crate::ui::skirmish_shell::repair_teams_for_selected_mode(&mut shell, &modes);
+        let launch =
+            crate::ui::skirmish_shell::launch_session(&shell, &maps, &modes, false).unwrap();
+        assert!(launch.local_player().is_observer());
+        assert_eq!(launch.opponents.len(), 29);
+        assert!(
+            launch
+                .opponents
+                .iter()
+                .all(|ai| ai.difficulty == AiDifficulty::Normal && ai.team == LaunchTeam::None)
+        );
+        let resolved = owner
+            .close_shell_transaction(&shell, &maps, &modes, &launch)
+            .unwrap();
+        assert!(resolved.local_player().is_observer());
+        owner.pack_durable_state(&shell, &maps, &modes);
+        let saved = owner.update_persistence_bytes(b"[MultiPlayer]\nObserverMode=0\n");
+        let reopened = runtime(
+            read_setup_snapshot(&saved, defaults(), SetupProfile::Skirmish).unwrap(),
+            5,
+        );
+        reopened.hydrate_shell(&mut shell, &maps, &modes);
+        let launch =
+            crate::ui::skirmish_shell::launch_session(&shell, &maps, &modes, false).unwrap();
+        assert!(launch.local_player().is_observer());
+    }
+
+    #[test]
+    fn default_observer_map_setup_is_requested_once_and_preserves_saved_preferences() {
+        let bytes = b"[SkirmishVERA]\nObserverMode=no\n[Skirmish]\nSlot01=4,-2,-2\n";
+        let mut snapshot = read_setup_snapshot(bytes, defaults(), SetupProfile::Skirmish).unwrap();
+        assert!(!apply_default_observer_preset(&mut snapshot, bytes));
+        assert!(!snapshot.observer);
+        assert_eq!(snapshot.slots[0].row_type, 4);
+        let mut runtime = runtime(snapshot, 5);
+        assert!(apply_default_observer_preset(&mut runtime.snapshot, b""));
+        assert!(runtime.snapshot.observer);
+        assert!(runtime.snapshot.slots.iter().all(|slot| slot.row_type == 5));
+        runtime.observer_setup_pending = true;
+        runtime.observer_map_setup_pending = true;
+        let modes = [
+            mode(),
+            SkirmishGameMode {
+                class: crate::skirmish_modes::MpModeClass::FreeForAll,
+                id: 37,
+                allies_allowed: false,
+                ..mode()
+            },
+        ];
+        let mut shell = SkirmishShellState::default();
+        runtime.hydrate_shell(&mut shell, &[map()], &modes);
+        assert_eq!(shell.selected_mode_id, 37);
+        assert!(runtime.take_default_observer_map_setup(8));
+        assert!(!runtime.take_default_observer_map_setup(8));
+        runtime.observer_map_setup_pending = true;
+        assert!(!runtime.take_default_observer_map_setup(30));
+        runtime.observer_map_setup_pending = true;
+        runtime.snapshot.slots[28].row_type = 1;
+        assert!(!runtime.take_default_observer_map_setup(8));
+    }
+
     fn map_named(file_name: &str) -> MapMenuEntry {
         MapMenuEntry {
             file_name: file_name.to_string(),
@@ -1948,6 +2077,8 @@ mod tests {
             ),
             local_preferences: LocalMultiplayerPreferences::default(),
             settings_ini: Vec::new(),
+            observer_setup_pending: false,
+            observer_map_setup_pending: false,
             lan_observer_mode: 0,
             taunt_clock: Default::default(),
             scenario_rng,
@@ -1977,6 +2108,8 @@ mod tests {
             ),
             local_preferences: LocalMultiplayerPreferences::default(),
             settings_ini: Vec::new(),
+            observer_setup_pending: false,
+            observer_map_setup_pending: false,
             lan_observer_mode: 0,
             taunt_clock: Default::default(),
             scenario_rng: SimRng::new(u64::from(seed)),

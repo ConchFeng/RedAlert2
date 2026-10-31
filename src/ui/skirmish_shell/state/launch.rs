@@ -61,7 +61,11 @@ pub fn launch_session(
         .iter()
         .filter(|opponent| opponent.is_active())
         .count();
-    let requested_players = active_count + 1;
+    let observing = matches!(
+        state.player_role,
+        crate::skirmish_launch::LaunchHumanRole::Observer
+    );
+    let requested_players = active_count + usize::from(!observing);
     let capacity = selected_map.player_capacity;
     if capacity < i32::try_from(requested_players).unwrap_or(i32::MAX) {
         return Err(LaunchValidationError::MapCapacityExceeded {
@@ -69,13 +73,24 @@ pub fn launch_session(
             requested_players,
         });
     }
-    // Retail keeps its "at least two players" gate.
-    if active_count == 0 && !allow_single_team {
+    if active_count + usize::from(!observing) < 2 && !allow_single_team {
         return Err(LaunchValidationError::NoEnabledOpponent);
     }
     // With no opponent active there is no team conflict to report.
-    if state.player_team >= 0 && active_count > 0 && !allow_single_team {
-        let local_team = state.player_team as u8;
+    let explicit_team = if observing {
+        state
+            .opponents
+            .iter()
+            .find(|opponent| opponent.is_active())
+            .map(|opponent| opponent.team)
+    } else {
+        Some(state.player_team)
+    };
+    if let Some(team) = explicit_team.filter(|team| *team >= 0)
+        && active_count > 0
+        && !allow_single_team
+    {
+        let local_team = team as u8;
         let all_active_ai_same_team = state
             .opponents
             .iter()
@@ -116,8 +131,22 @@ pub fn pack_launch_session_without_start_validation(
         country_random: state.player_country_random,
         color_index: launch_color_index(state, 0, state.player_color_index)?,
         color_random: !state.player_color_claimed,
-        start_position: launch_start_position(0, state.player_start_position)?,
-        team: LaunchTeam::from_shell_value(state.player_team),
+        start_position: if matches!(
+            state.player_role,
+            crate::skirmish_launch::LaunchHumanRole::Observer
+        ) {
+            LaunchStartPosition::Auto
+        } else {
+            launch_start_position(0, state.player_start_position)?
+        },
+        team: if matches!(
+            state.player_role,
+            crate::skirmish_launch::LaunchHumanRole::Observer
+        ) {
+            LaunchTeam::None
+        } else {
+            LaunchTeam::from_shell_value(state.player_team)
+        },
     };
 
     let mut opponents = Vec::new();
@@ -168,7 +197,7 @@ pub fn pack_launch_session_without_start_validation(
             raw_slot_index: Some(0),
             name: state.player_name_edit.text.clone(),
             slot: local,
-            role: crate::skirmish_launch::LaunchHumanRole::from_observer(false),
+            role: state.player_role,
         }],
         local_player_index: 0,
         ai_player_count: opponents.len() as i32,

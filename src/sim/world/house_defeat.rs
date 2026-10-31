@@ -515,6 +515,8 @@ impl Simulation {
     /// continues watching while hostile survivors and a human remain. Only
     /// this process's PlayerPtr receives native's final Win/Lose flags.
     /// VERA network worlds retain the same per-human result on every client.
+    /// Offline VERA spectators also watch hostile AIs after the last human's
+    /// elimination; final flags and their timers are deferred until combat ends.
     fn complete_multiplayer_after_defeat(&mut self, rules: &RuleSet, effects: FrameEffects<'_>) {
         let alive: Vec<_> = self
             .houses
@@ -533,17 +535,12 @@ impl Simulation {
                 self.houses[owner].is_controlled_by_human(self.session.game_mode_nonzero())
             })
             .count();
-        let all_allied = alive.iter().all(|left| {
-            alive.iter().all(|right| {
-                left == right
-                    || crate::map::houses::are_houses_mutually_allied(
-                        self.house_alliances.as_map(),
-                        self.interner.resolve(*left),
-                        self.interner.resolve(*right),
-                    )
-            })
-        });
-        if !all_allied && alive.len() != 1 && living_humans != 0 {
+        let all_allied = !self.has_hostile_survivors();
+        let watching = self
+            .session
+            .current_house()
+            .is_some_and(|owner| self.is_defeated_skirmish_viewer(owner));
+        if !all_allied && alive.len() != 1 && (living_humans != 0 || watching) {
             return;
         }
         //4FC5DD/5EC: both class virtuals are true only for Cooperative
@@ -564,6 +561,38 @@ impl Simulation {
                 self.flag_house_to_lose(owner, rules, false, effects);
             }
         }
+    }
+
+    fn has_hostile_survivors(&self) -> bool {
+        self.houses.in_order().any(|left| {
+            !left.is_defeated()
+                && !left.multiplay_passive()
+                && self.houses.in_order().any(|right| {
+                    !right.is_defeated()
+                        && !right.multiplay_passive()
+                        && left.name() != right.name()
+                        && !crate::map::houses::are_houses_mutually_allied(
+                            self.house_alliances.as_map(),
+                            self.interner.resolve(left.name()),
+                            self.interner.resolve(right.name()),
+                        )
+                })
+        })
+    }
+
+    fn is_defeated_skirmish_viewer(&self, owner: InternedId) -> bool {
+        self.session.game_mode() == crate::sim::scenario_session::ScenarioGameMode::Skirmish
+            && self.session.current_house() == Some(owner)
+            && self.houses.get(&owner).is_some_and(|house| {
+                house.is_human() && house.is_defeated() && !house.has_won() && !house.has_lost()
+            })
+    }
+
+    /// VERA offline extension: eliminated players and observers keep watching
+    /// hostile AI survivors. Native4FC3DE..6B7's no-human exit remains in LAN/WOL.
+    /// The extension adds no RNG draws, timer writes, or detach calls.
+    pub fn can_continue_watching(&self, owner: InternedId) -> bool {
+        self.is_defeated_skirmish_viewer(owner) && self.has_hostile_survivors()
     }
 
     /// FlagWin4FCA5C..E7 /FlagLose4FCC45..D0 apply MaxAhead and then align

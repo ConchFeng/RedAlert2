@@ -42,6 +42,8 @@ pub(crate) struct AppState {
 /// 87E758 output scalar, not Theme's slots/fading. ThemeLoad721040 must see
 /// that process state unchanged; fresh-start request cancellation stays there.
 pub(crate) fn reset_scenario_exit_runtime(state: &mut AppState) {
+    state.frontend.score_page = None;
+    state.frontend.score_art = None;
     state.match_state.scenario_outcome = None;
     state.match_state.scenario_exit = None;
     state.match_state.network_failure = None;

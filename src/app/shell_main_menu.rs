@@ -560,6 +560,24 @@ impl App {
     ) {
         let layout = Self::score_layout(state);
         let mut feed = Self::menu_page_button_feed(&layout.page);
+        if crate::app::match_runtime::post_match::available(state) {
+            for id in [
+                crate::ui::score_shell::VIEW_BATTLEFIELD,
+                crate::ui::score_shell::PLAY_AGAIN,
+            ] {
+                if id == crate::ui::score_shell::PLAY_AGAIN
+                    && !crate::app::match_runtime::post_match::replay_available(state)
+                {
+                    continue;
+                }
+                feed.push(crate::ui::shell::layout::LaidOutControl {
+                    id,
+                    rect: layout
+                        .result_action_button(id)
+                        .expect("result action button"),
+                });
+            }
+        }
         if state
             .frontend
             .score_page
@@ -609,6 +627,12 @@ impl App {
     pub(super) fn handle_score_shell_mouse_up(state: &mut AppState) {
         let (_, feed, (x, y)) = Self::score_input(state);
         match state.frontend.shell_controller.on_pointer_up(x, y, &feed) {
+            Some(crate::ui::score_shell::VIEW_BATTLEFIELD) => {
+                crate::app::match_runtime::post_match::view_battlefield(state)
+            }
+            Some(crate::ui::score_shell::PLAY_AGAIN) => {
+                crate::app::match_runtime::post_match::play_again(state)
+            }
             Some(crate::ui::score_shell::CONTINUE_BUTTON) => Self::leave_shell_dialog(
                 state,
                 crate::app::frontend::shell_transition::ShellExitThen::ScoreContinue,
@@ -888,6 +912,7 @@ impl App {
         // the skirmish shell becomes the showing screen. Clear any stale wave
         // from the source shell here so the trigger restarts cleanly.
         state.frontend.shell_first_paint_slide = None;
+        Self::open_default_observer_map_setup(state);
     }
 
     pub(super) fn return_from_skirmish_to_single_player_shell(state: &mut AppState) {

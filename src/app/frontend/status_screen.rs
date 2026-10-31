@@ -29,6 +29,7 @@ enum Action {
     ChooseGameFolder,
     Quit,
     BackToMenu,
+    ViewBattlefield,
     Resume,
     Abort,
     Leave,
@@ -40,6 +41,7 @@ impl Action {
             Self::ChooseGameFolder => (None, "Choose Folder"),
             Self::Quit => (None, "Quit"),
             Self::BackToMenu => (None, "Back To Menu"),
+            Self::ViewBattlefield => (None, "View Battlefield"),
             Self::Resume => (Some("GUI:ResumeMission"), "Resume Mission"),
             Self::Abort => (Some("GUI:AbortMission"), "Abort Mission"),
             Self::Leave => (Some("GUI:Leave"), "Quit"),
@@ -69,6 +71,7 @@ impl Action {
             // A startup failure must not write defaults over the retail profile.
             Self::Quit => event_loop.exit(),
             Self::BackToMenu => App::leave_mission_result_screen(state),
+            Self::ViewBattlefield => crate::app::match_runtime::post_match::view_battlefield(state),
             Self::Resume => App::enter_in_game_menu_state(state, InGameMenuState::Closed),
             Self::Abort => App::enter_in_game_menu_state(state, InGameMenuState::AbortConfirm),
             Self::Leave => App::apply_in_game_modal_outcome(
@@ -98,6 +101,13 @@ impl Buttons {
         Self::QUIT
     };
     pub(crate) const BACK_TO_MENU: Self = Self([Some(Action::BackToMenu), None]);
+    pub(crate) fn result(state: &AppState) -> Self {
+        if crate::app::match_runtime::post_match::available(state) {
+            Self([Some(Action::ViewBattlefield), Some(Action::BackToMenu)])
+        } else {
+            Self::BACK_TO_MENU
+        }
+    }
     pub(crate) const MISSING_MENU: Self = Self([Some(Action::Resume), Some(Action::Abort)]);
     pub(crate) const ABORT_CONFIRM: Self = Self([Some(Action::Leave), Some(Action::Resume)]);
 
@@ -106,7 +116,7 @@ impl Buttons {
     fn for_state(state: &AppState) -> Option<Self> {
         match crate::app::input::precedence::input_layer(state) {
             InputLayer::Page(ModalPage::ShellError) => Some(Self::GAME_FILES),
-            InputLayer::Screen(ScreenPage::ResultCard) => Some(Self::BACK_TO_MENU),
+            InputLayer::Screen(ScreenPage::ResultCard) => Some(Self::result(state)),
             InputLayer::Screen(ScreenPage::InGameCard) => Some(
                 if state.match_state.match_presentation.in_game_menu
                     == InGameMenuState::AbortConfirm

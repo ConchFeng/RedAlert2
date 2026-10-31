@@ -173,6 +173,118 @@ fn observer_defeat_waits_for_hostile_players_then_finishes_without_loss_voice() 
 }
 
 #[test]
+fn offline_observer_watches_twenty_nine_computers_until_the_last_survivor() {
+    let (mut sim, owners) = sim_with_houses(&[0; 30]);
+    let observer = owners[0];
+    sim.session.set_current_house_for_test(Some(observer));
+    sim.session.install_multiplayer_house_identity(
+        crate::skirmish_modes::MpModeClass::Battle,
+        vec![observer],
+    );
+    sim.houses
+        .get_mut(&observer)
+        .unwrap()
+        .set_is_human_for_test(true);
+    sim.fog = crate::sim::vision::FogState::new(8, 8);
+    for owner in &owners[1..] {
+        sim.houses
+            .get_mut(owner)
+            .unwrap()
+            .tracking_mut()
+            .set_for_test(1, &[], (0, 0, 0), &[]);
+    }
+    sim.check_defeat(None, None);
+    assert!(sim.houses[&observer].is_defeated());
+    assert!(!sim.houses[&observer].has_lost());
+    assert!(sim.can_continue_watching(observer));
+    assert!(sim.fog.whole_map_revealed_for_owner(observer));
+    assert!(sim.fog.is_cell_revealed(observer, 7, 7));
+    assert!(sim.ready_outcome_for_owner(observer).is_none());
+    for owner in &owners[1..] {
+        assert!(!sim.houses[owner].is_defeated());
+        assert!(!sim.fog.whole_map_revealed_for_owner(*owner));
+    }
+    for owner in &owners[1..29] {
+        sim.houses
+            .get_mut(owner)
+            .unwrap()
+            .tracking_mut()
+            .set_for_test(0, &[], (0, 0, 0), &[]);
+    }
+    sim.check_defeat(None, None);
+    assert!(sim.houses[&observer].has_lost());
+    assert!(!sim.can_continue_watching(observer));
+    assert!(!sim.houses[&owners[29]].is_defeated());
+    sim.session.set_binary_frame_for_test(1_000);
+    sim.check_defeat(None, None);
+    assert_eq!(
+        sim.ready_outcome_for_owner(observer).unwrap().kind,
+        HouseOutcomeKind::Defeat
+    );
+}
+
+#[test]
+fn an_eliminated_offline_player_watches_hostile_computers() {
+    let (mut sim, owners) = sim_with_houses(&[0, 1, 2]);
+    sim.session.set_current_house_for_test(Some(owners[0]));
+    sim.houses
+        .get_mut(&owners[0])
+        .unwrap()
+        .set_is_human_for_test(true);
+    for owner in &owners[1..] {
+        sim.houses
+            .get_mut(owner)
+            .unwrap()
+            .tracking_mut()
+            .set_for_test(1, &[], (0, 0, 0), &[]);
+    }
+    sim.check_defeat(None, None);
+    assert!(sim.houses[&owners[0]].is_defeated());
+    assert!(!sim.houses[&owners[0]].has_lost());
+    assert!(sim.can_continue_watching(owners[0]));
+    assert!(sim.houses[&owners[0]].map_is_clear());
+    assert!(sim.ready_outcome_for_owner(owners[0]).is_none());
+    assert!(sim.sound_events.iter().any(|event| matches!(
+        event,
+        crate::sim::world::SimSoundEvent::PlayerDefeated { house } if *house == owners[0]
+    )));
+    sim.houses
+        .get_mut(&owners[1])
+        .unwrap()
+        .tracking_mut()
+        .set_for_test(0, &[], (0, 0, 0), &[]);
+    sim.check_defeat(None, None);
+    assert!(sim.houses[&owners[0]].has_lost());
+}
+
+#[test]
+fn network_observers_keep_the_native_no_living_human_termination() {
+    let (mut sim, owners) = sim_with_houses(&[0, 1, 2]);
+    sim.session
+        .set_game_mode(crate::sim::scenario_session::ScenarioGameMode::Lan);
+    sim.session.install_network_timing(10);
+    sim.session.set_current_house_for_test(Some(owners[0]));
+    sim.session.install_multiplayer_house_identity(
+        crate::skirmish_modes::MpModeClass::Battle,
+        vec![owners[0]],
+    );
+    sim.houses
+        .get_mut(&owners[0])
+        .unwrap()
+        .set_is_human_for_test(true);
+    for owner in &owners[1..] {
+        sim.houses
+            .get_mut(owner)
+            .unwrap()
+            .tracking_mut()
+            .set_for_test(1, &[], (0, 0, 0), &[]);
+    }
+    sim.check_defeat(None, None);
+    assert!(sim.houses[&owners[0]].has_lost());
+    assert!(!sim.can_continue_watching(owners[0]));
+}
+
+#[test]
 fn cooperative_defeated_local_waits_for_partner_and_shares_completed_victory() {
     use crate::sim::scenario_session::ScenarioGameMode;
     let (mut sim, owners) = sim_with_houses(&[0, 1, 2]);

@@ -30,6 +30,14 @@ pub(crate) fn in_game_key_edge(
     edge: InGameKeyEdge<'_>,
     paused_at_event: bool,
 ) {
+    if crate::app::match_runtime::post_match::viewing_battlefield(state)
+        && matches!(edge.logical, Key::Named(NamedKey::Escape))
+    {
+        if edge.state.is_pressed() && !edge.repeat {
+            crate::app::match_runtime::post_match::show_results(state);
+        }
+        return;
+    }
     // Native chat owns its edit keys before game-local chords or hotkeys.
     if crate::app::input::chat::key_edge(state, &edge) {
         if !edge.state.is_pressed() {

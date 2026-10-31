@@ -32,6 +32,8 @@ pub const CONTINUE_BUTTON: u16 = 0x06D1;
 /// VERA paging controls; omitted for native-sized result tables.
 pub const PREVIOUS_PAGE: u16 = 0xF201;
 pub const NEXT_PAGE: u16 = 0xF202;
+pub const VIEW_BATTLEFIELD: u16 = 0xF203;
+pub const PLAY_AGAIN: u16 = 0xF204;
 
 /// RT_DIALOG `0x108`'s right panel: Continue on the bottom tile.
 pub const SCORE_PAGE: MenuPageSpec = MenuPageSpec {
@@ -328,6 +330,21 @@ pub fn compute_responsive_layout(screen_w: u32, screen_h: u32) -> ScoreLayout {
 }
 
 impl ScoreLayout {
+    pub fn result_action_button(&self, id: u16) -> Option<RectPx> {
+        let anchor = self.continue_button();
+        let row = match id {
+            VIEW_BATTLEFIELD => 5,
+            PLAY_AGAIN => 4,
+            _ => return None,
+        };
+        Some(RectPx::new(
+            anchor.x,
+            anchor.y - row * (anchor.h + 8),
+            anchor.w,
+            anchor.h,
+        ))
+    }
+
     pub fn paging_button(&self, id: u16) -> Option<RectPx> {
         let rows = crate::ui::shell::paging::button_rects(self.continue_button());
         match id {
@@ -584,6 +601,25 @@ pub fn sort_rows(rows: &mut [ScoreRow]) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn offline_result_actions_leave_every_score_page_control_reachable() {
+        let layout = compute_responsive_layout(1920, 1080);
+        let controls = [
+            layout.result_action_button(VIEW_BATTLEFIELD).unwrap(),
+            layout.result_action_button(PLAY_AGAIN).unwrap(),
+            layout.paging_button(PREVIOUS_PAGE).unwrap(),
+            layout.paging_button(NEXT_PAGE).unwrap(),
+            layout.continue_button(),
+        ];
+        for pair in controls.windows(2) {
+            assert_eq!(pair[0].x, pair[1].x);
+            assert_eq!(pair[0].w, pair[1].w);
+            assert!(pair[0].y + pair[0].h < pair[1].y);
+        }
+        assert!(controls[0].y >= 0);
+        assert!(controls[4].y + controls[4].h <= 1080);
+    }
 
     #[test]
     fn thirty_results_are_presented_in_order_through_the_existing_table() {
