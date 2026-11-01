@@ -8,8 +8,8 @@ title: AI battle and spectator feature design
 This specification preserves the eight original ideas in delivery order. The
 current implementation scope is features **1–6**; the maintainer deferred
 features **7 and 8**. The automatic battle camera, live AI standings, and AI
-series are implemented in current source. Commander selection is implemented;
-features 5–6 remain planned. Features
+series are implemented in current source. Commander selection and the second battlefield view are implemented;
+feature 6 remains planned. Features
 7–8 are design references outside the current implementation scope. These
 extensions are not included in the 1.0.1 release.
 Each numbered feature must finish its production path and validation before the
@@ -384,6 +384,37 @@ GPU resources. Profile the added CPU/GPU cost on a 29-AI map before calling the
 feature usable. Accept independent views, swapping, clipping, resize, HUD input
 capture, world replacement, and unchanged simulation hashes. Render/readback
 checks must establish that both cameras show their intended scene regions.
+
+### Current implementation
+
+**More → Second View** opens a draggable, resizable panel below the spectator
+controls. Fixed, Player, and Action modes have their own center and zoom.
+**Swap Views** uses the existing camera clamp and exchanges both centers and
+zooms. Minimize retains the panel without rendering its scene; Close releases
+its input capture. Mouse, wheel, keyboard, and touch gestures remain viewing
+operations. Unsupported small viewports show a larger-window notice.
+
+The secondary projection uses the ordinary world builders and draw dispatcher,
+sharing atlases, parsed voxel models, retained barrel/sinking history, and
+immutable effect inputs. Camera buffers, posed-image pages, fog projection,
+depth attachments, and destination-edit scratch remain view-local. Additional
+beam projections do not advance effect lifetimes or process Main RNG. Bolts
+outside the main view use stable presentation-local noise; one-pixel water/ore
+sparkles remain in the main view. World replacement resets the auxiliary view.
+
+Scene refresh is capped at 15 FPS. The
+`skirmish-observer-second-view` production capture exercises a generated 29-AI
+Observer match, pointer transactions, swapping, independent player focus and
+zoom, drag/resize bounds, close/reopen, and minimize/restore. GPU readback checks
+both distinct scene regions and the panel's exact composition placement;
+capture-only before/after hashes guard actual secondary renders. Two focused
+GPU regressions protect pending camera uniforms and destination-edit isolation.
+
+A local release-profile observation on an Apple M4 Max, at a 356×164 secondary
+scene and 125% zoom, measured roughly 6.2 ms of CPU preparation and 0.48 ms of GPU
+scene work per refresh. This is a 29-AI scenario observation, not a cross-device
+or 20,000-unit performance guarantee. Linux and Windows runtime captures remain
+unmeasured. The feature is present in current source and absent from 1.0.1 ZIPs.
 
 ## 6. Replay bookmarks and unit tracking
 
