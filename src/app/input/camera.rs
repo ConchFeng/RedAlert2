@@ -91,8 +91,7 @@ pub(crate) fn validate_saved_tactical_view(
         .view_center_world_pixels
         .iter()
         .any(|value| !value.is_finite())
-        || !saved.zoom.is_finite()
-        || !(MIN_ZOOM..=MAX_ZOOM).contains(&saved.zoom)
+        || !supported_zoom(saved.zoom)
     {
         return Err("nonfinite view or unsupported zoom".to_owned());
     }
@@ -383,6 +382,10 @@ pub(crate) fn set_camera_position(
 const MIN_ZOOM: f32 = 0.25;
 /// Maximum zoom level — zoomed in close to pixel-level detail.
 const MAX_ZOOM: f32 = 4.0;
+/// Whether the tactical camera can hold `zoom`; saved views outside it are rejected.
+pub(crate) fn supported_zoom(zoom: f32) -> bool {
+    (MIN_ZOOM..=MAX_ZOOM).contains(&zoom)
+}
 /// Multiplicative zoom step per mouse wheel notch (smooth exponential zoom).
 const ZOOM_STEP: f32 = 1.15;
 

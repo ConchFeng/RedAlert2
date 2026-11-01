@@ -81,6 +81,8 @@ pub(crate) fn close_replay_segment_for_new_timeline(state: &mut AppState) {
     }
 }
 
+/// Give the final frame a hash when the play interval skipped it. A frame
+/// with services already holds its pre-service hash, which playback checks.
 fn seal_replay_final_hash(state: &mut AppState) {
     if let (Some(runtime), Some(log)) = (
         state.match_state.sim_runtime.as_ref(),
@@ -88,6 +90,7 @@ fn seal_replay_final_hash(state: &mut AppState) {
     ) && log.startup.is_some()
         && let Some(last) = log.ticks.last_mut()
         && last.tick == runtime.simulation.session().tick()
+        && last.state_hash.is_none()
     {
         last.state_hash = Some(runtime.simulation.state_hash());
     }

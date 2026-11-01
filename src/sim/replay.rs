@@ -1020,16 +1020,27 @@ impl ReplayLog {
     }
 
     /// Apply and record at one boundary so live service cannot omit its input.
+    /// Playback checks a frame's hash before its services, so the first service
+    /// after an unhashed frame records that frame's hash; a later seal of the
+    /// final frame would otherwise hash the serviced state.
     pub fn apply_scenario_service(
         &mut self,
         sim: &mut Simulation,
         input: ScenarioServiceInput,
     ) -> Vec<crate::sim::trigger_runtime::TriggerEffect> {
+        let frame_hash = self
+            .ticks
+            .last()
+            .is_some_and(|frame| frame.state_hash.is_none())
+            .then(|| sim.state_hash());
         let effects = input.apply(sim);
         // A timed pause also polls an inactive Chrono effect. It changes nothing.
         if input != ScenarioServiceInput::StepChronoScreen || !effects.is_empty() {
             match self.ticks.last_mut() {
-                Some(frame) => frame.scenario_services.push(input),
+                Some(frame) => {
+                    frame.state_hash = frame.state_hash.or(frame_hash);
+                    frame.scenario_services.push(input)
+                }
                 None => self.initial_scenario_services.push(input),
             }
         }
@@ -1559,6 +1570,27 @@ impl ReplayRunner {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Playback checks a frame's hash before its services; sealing the final
+    /// frame at flush must not hash the state those services changed.
+    #[test]
+    fn a_service_after_an_unhashed_frame_records_the_frame_hash() {
+        let mut sim = Simulation::with_seed(3);
+        let mut log = ReplayLog::new(ReplayHeader {
+            version: REPLAY_VERSION,
+            tick_hz: 15,
+            seed: 3,
+            map_name: String::new(),
+            rules_hash: 0,
+            pixel_conversion_bounds: sim.session().pixel_conversion_bounds(),
+        });
+        log.record_tick(1, Vec::new(), None);
+        let frame_hash = sim.state_hash();
+        log.apply_scenario_service(&mut sim, ScenarioServiceInput::Pause);
+        log.apply_scenario_service(&mut sim, ScenarioServiceInput::Resume);
+        assert_eq!(log.ticks[0].state_hash, Some(frame_hash));
+        assert_eq!(log.ticks[0].scenario_services.len(), 2);
+    }
 
     #[test]
     #[ignore = "slow; authored retail Battle load and standalone replay reconstruction"]

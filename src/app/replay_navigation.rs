@@ -227,8 +227,7 @@ fn valid_bookmarks(file: &BookmarkFile, identity: &str, end: u64) -> bool {
             bookmark.tick <= end
                 && bookmark.label.chars().count() <= 80
                 && bookmark.view.center.iter().all(|value| value.is_finite())
-                && bookmark.view.zoom.is_finite()
-                && (0.5..=3.0).contains(&bookmark.view.zoom)
+                && crate::app::input::camera::supported_zoom(bookmark.view.zoom)
         })
 }
 fn load_metadata(state: &mut AppState, log: &ReplayLog) {
@@ -371,12 +370,12 @@ fn spawn_job(
                     "Requested tick is not a committed recording boundary"
                 );
                 if validating {
-                    let verification = playback.verification(&loaded.runtime)?;
+                    // Playback checked every recorded hash, the final frame's
+                    // included, before that frame's services.
+                    playback.verification(&loaded.runtime)?;
                     ensure!(
-                        playback.is_finished()
-                            && playback.recorded_final_hash()
-                                == Some(verification.final_state_hash),
-                        "Recording final hash is absent or differs"
+                        playback.recorded_final_hash().is_some(),
+                        "Recording final hash is absent"
                     );
                     Ok(JobOutput::Validated)
                 } else {
@@ -850,4 +849,35 @@ fn rebuild_destination_view(state: &mut AppState) {
     }
     crate::app::match_runtime::sim_tick::refresh_entity_atlases(state);
     crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn file_with_zoom(zoom: f32) -> BookmarkFile {
+        BookmarkFile {
+            version: 1,
+            recording: "r".into(),
+            bookmarks: vec![ReplayBookmark {
+                tick: 0,
+                label: String::new(),
+                view: CameraView {
+                    center: [0.0; 2],
+                    zoom,
+                },
+                tracked_unit: None,
+            }],
+        }
+    }
+
+    /// Bookmarks hold the main camera's view, so its whole wheel range loads;
+    /// rejecting one bookmark drops the file and the next save overwrites it.
+    #[test]
+    fn bookmarks_accept_the_main_camera_zoom_range() {
+        assert!(valid_bookmarks(&file_with_zoom(0.25), "r", 0));
+        assert!(valid_bookmarks(&file_with_zoom(4.0), "r", 0));
+        assert!(!valid_bookmarks(&file_with_zoom(4.5), "r", 0));
+        assert!(!valid_bookmarks(&file_with_zoom(f32::NAN), "r", 0));
+    }
 }
