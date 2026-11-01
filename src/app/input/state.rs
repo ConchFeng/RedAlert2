@@ -189,6 +189,7 @@ pub(crate) struct MatchInputState {
     pub(crate) camera_y: f32,
     /// Camera-owned requests awaiting Tactical__AI's next single commit.
     pub(crate) pending_camera_scroll: crate::app::input::camera::PendingCameraScroll,
+    pub(crate) spectator_camera: crate::app::input::camera::spectator::SpectatorCamera,
     /// Current zoom level for the game viewport. 1.0 = native pixel scale,
     /// above 1.0 = zoomed in (world appears larger), below 1.0 = zoomed out
     /// (see more map). Animated each frame toward `zoom_target`.
@@ -411,6 +412,7 @@ impl MatchInputState {
             camera_x: 0.0,
             camera_y: 0.0,
             pending_camera_scroll: Default::default(),
+            spectator_camera: Default::default(),
             zoom_level: 1.0,
             zoom_target: 1.0,
             zoom_anchor_world: [0.0, 0.0],

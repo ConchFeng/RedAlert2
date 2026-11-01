@@ -147,6 +147,8 @@ pub(crate) fn install_world_presentation(
         .as_ref()
         .map(|runtime| runtime.resources.overlay_registry.clone());
 
+    state.match_state.input.spectator_camera = Default::default();
+    state.match_state.match_presentation.spectator_tools.reset();
     state.match_state.match_presentation.combat_lights.clear();
     state.match_state.match_presentation.interpolation.clear();
     state.match_state.match_presentation.lasers.clear_on_load();

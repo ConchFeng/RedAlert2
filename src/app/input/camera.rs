@@ -21,6 +21,9 @@
 //! ## Dependency rules
 //! - Part of the app layer — may depend on everything.
 
+#[path = "camera/spectator.rs"]
+pub(crate) mod spectator;
+
 use crate::app::AppState;
 use crate::app::types::ScrollDir;
 use crate::map::terrain;
@@ -778,6 +781,7 @@ pub(crate) fn tactical_centre_cell(state: &AppState) -> (u16, u16) {
 
 /// `SetView<slot+1>` — capture the current view into a bookmark.
 pub(crate) fn set_view_bookmark(state: &mut AppState, slot: usize) {
+    spectator::manual_navigation(state);
     let (rx, ry) = tactical_centre_cell(state);
     state.match_state.input.view_bookmarks.set(slot, rx, ry);
     log::info!("SetView{}: bookmark set to cell ({rx}, {ry})", slot + 1);
@@ -785,6 +789,7 @@ pub(crate) fn set_view_bookmark(state: &mut AppState, slot: usize) {
 
 /// `View<slot+1>` — jump the camera to a bookmark.
 pub(crate) fn recall_view_bookmark(state: &mut AppState, slot: usize) {
+    spectator::manual_navigation(state);
     let Some((rx, ry)) = state.match_state.input.view_bookmarks.get(slot) else {
         return;
     };
@@ -1268,6 +1273,9 @@ pub(crate) fn queue_keyboard_scroll(state: &mut AppState) {
         movement.1 += key_distance / state.match_state.input.zoom_level;
     }
 
+    if movement != (0.0, 0.0) {
+        spectator::manual_navigation(state);
+    }
     state
         .match_state
         .input
@@ -1279,6 +1287,9 @@ pub(crate) fn queue_keyboard_scroll(state: &mut AppState) {
 /// committing the view. Main_Tick calls input before logic (0x55D8AB); captured
 /// right drag and uncaptured edge/coast are mutually exclusive in 0x692F30.
 pub(crate) fn poll_mouse_scroll(state: &mut AppState) -> (f32, f32) {
+    if crate::app::presentation::spectator_tools::owns_pointer(state) {
+        return (0.0, 0.0);
+    }
     if !state.match_state.match_diagnostics.is_replay_playback()
         && state
             .match_state
@@ -1338,10 +1349,16 @@ pub(crate) fn poll_mouse_scroll(state: &mut AppState) -> (f32, f32) {
         // The speed table is in window pixels. Stock YR has no world zoom, so
         // the divide is VERA-internal: it keeps the on-screen scroll rate
         // constant across VERA's zoom range and is exact at zoom 1.0.
+        if active_direction.is_some() || dx != 0.0 || dy != 0.0 {
+            spectator::manual_navigation(state);
+        }
         return (
             dx / state.match_state.input.zoom_level,
             dy / state.match_state.input.zoom_level,
         );
+    }
+    if right_drag != (0.0, 0.0) || state.match_state.input.minimap_dragging {
+        spectator::manual_navigation(state);
     }
     right_drag
 }
@@ -1417,6 +1434,7 @@ pub(crate) fn advance_camera_ai(state: &mut AppState, mouse: (f32, f32), frame: 
 /// SetViewToCoordInstant6D6070. Coordinates are resolved by simulation before
 /// its hash, including the canonical CellClass Dummy query effects.
 pub(crate) fn apply_trigger_camera(state: &mut AppState, coord: [i32; 3], velocity: Option<i32>) {
+    spectator::manual_navigation(state);
     let (width, height) = tactical_viewport_size(state);
     let viewport = (width as f32, height as f32);
     let current = (
@@ -1463,6 +1481,7 @@ const ZOOM_SNAP: f32 = 0.002;
 /// match the wheel is the sidebar strip scroll, as in gamemd. `animate_zoom`
 /// runs every frame and every camera path divides by `zoom_level`.
 pub(crate) fn apply_zoom(state: &mut AppState, delta_lines: f32) {
+    spectator::manual_navigation(state);
     let old_target = state.match_state.input.zoom_target;
     let factor = ZOOM_STEP.powf(delta_lines);
     let new_target = (old_target * factor).clamp(MIN_ZOOM, MAX_ZOOM);
@@ -1559,6 +1578,7 @@ impl ViewDistanceTier {
 /// tactical viewport's centre so the battlefield grows or shrinks around it.
 /// A wheel-up notch (`lines > 0`) selects the smaller view distance.
 pub(crate) fn cycle_view_distance(state: &mut AppState, lines: f32) {
+    spectator::manual_navigation(state);
     if !lines.is_finite() || lines == 0.0 {
         return;
     }
@@ -1791,6 +1811,7 @@ pub(crate) fn center_camera_on_lepton_point(
     lepton_y: i32,
     lepton_z: i32,
 ) {
+    spectator::manual_navigation(state);
     let world = crate::util::lepton::absolute_leptons_to_screen(lepton_x, lepton_y, lepton_z);
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
@@ -1858,6 +1879,7 @@ pub(crate) fn center_view_on_selection(state: &mut AppState) {
 /// latches, and it latches the FIRST object in the selection array rather than
 /// anything nearer the cursor.
 pub(crate) fn toggle_follow_target(state: &mut AppState) {
+    spectator::manual_navigation(state);
     let already_following = state.match_state.input.follow_target.is_some();
     let first_selected = crate::app::input::dispatch::selected_stable_ids_in_order(
         state
@@ -1937,6 +1959,7 @@ fn entity_lepton_coord(
 }
 
 pub(crate) fn center_camera_on_cell(state: &mut AppState, rx: u16, ry: u16) {
+    spectator::manual_navigation(state);
     let z = state
         .resolved_terrain()
         .and_then(|terrain| terrain.cell(rx, ry))

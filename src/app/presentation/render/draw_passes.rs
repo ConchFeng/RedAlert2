@@ -1167,6 +1167,26 @@ pub(super) fn dispatch_draw_passes(
         "build_text_text",
     );
 
+    draw_pooled_ui_passthrough(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        state
+            .match_state
+            .match_presentation
+            .selection_overlay
+            .as_ref()
+            .map(|overlay| overlay.white_texture()),
+        "spectator_fill",
+    );
+    draw_pooled_ui_passthrough(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        Some(state.renderer.bit_font.atlas()),
+        "spectator_text",
+    );
+
     // Active YR ScreenCaptureCommandClass::Execute (0x00537BC0) hides
     // WWMouse while copying the already-presented client. Preserve the same
     // composition boundary without changing the displayed frame: retain every

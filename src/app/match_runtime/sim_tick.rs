@@ -1138,6 +1138,7 @@ fn advance_in_game_runtime_mode(
     if decision.tactical_mutation {
         update_building_placement_preview(state);
     }
+    crate::app::input::camera::spectator::update(state);
     decision.run_sim
 }
 
@@ -1558,6 +1559,17 @@ fn advance_one_simulation_frame(
                 }
             }
             let admitted_commands = output.take_admitted_commands();
+            if state.match_state.input.spectator_camera.enabled()
+                && session_mode == super::session::SessionMode::Skirmish
+            {
+                state.match_state.input.spectator_camera.observe_frame(
+                    &rt.simulation,
+                    &rt.resources.rules,
+                    &output.fire_events,
+                    &output.sound_events,
+                    crate::app::match_runtime::frame_pacer::wall_clock_ms(),
+                );
+            }
             let SimFrameOutput {
                 tick: tick_result,
                 trigger_effects: frame_trigger_effects,

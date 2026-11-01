@@ -35,6 +35,7 @@ pub(crate) mod sidebar_render;
 pub(crate) mod sidebar_surface;
 pub(crate) mod sidebar_text;
 pub(crate) mod state;
+pub(crate) mod spectator_tools;
 #[cfg(feature = "phobos")]
 pub(crate) mod sw_sidebar;
 #[cfg(feature = "phobos")]

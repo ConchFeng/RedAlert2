@@ -187,6 +187,9 @@ fn handle_mouse_input_inner(state: &mut AppState, button: MouseButton, btn_state
     if crate::app::input::campaign_input::is_locked(state) {
         return;
     }
+    if crate::app::presentation::spectator_tools::mouse(state, button, pressed) {
+        return;
+    }
     // The stock tactical handler has no middle-button case.
     if button == MouseButton::Middle {
         return;

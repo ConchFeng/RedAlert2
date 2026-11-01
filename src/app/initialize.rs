@@ -880,6 +880,7 @@ impl App {
                 sim_runtime: None,
                 input: crate::app::input::state::MatchInputState::new(hotkey_bindings),
                 match_presentation: crate::app::presentation::state::MatchPresentationState {
+                    spectator_tools: Default::default(),
                     interpolation:
                         crate::app::presentation::interpolation::RenderInterpolation::new(
                             options_profile.render_interpolation,

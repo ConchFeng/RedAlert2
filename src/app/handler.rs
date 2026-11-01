@@ -556,6 +556,7 @@ impl ApplicationHandler for App {
                     // Screen pixels to world pixels; the camera moves against
                     // the fingers so the map follows them. The per-frame camera
                     // clamp keeps an overshoot from leaving the playable area.
+                    crate::app::input::camera::spectator::manual_navigation(state);
                     let zoom = state.match_state.input.zoom_level.max(0.01);
                     let (x, y) = (
                         state.match_state.input.camera_x,

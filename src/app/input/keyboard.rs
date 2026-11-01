@@ -48,6 +48,9 @@ pub(crate) fn in_game_key_edge(
         }
         return;
     }
+    if crate::app::presentation::spectator_tools::key(state, &edge) {
+        return;
+    }
     // Shared pause keeps network chat usable without admitting gameplay keys.
     // Local modal/capture filtering has already happened in the window owner.
     if !hotkeys::input_admitted_while_paused(paused_at_event, edge.logical) {

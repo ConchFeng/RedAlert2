@@ -6,7 +6,8 @@ title: AI battle and spectator feature design
 # AI battle and spectator feature design
 
 This is the functional specification for eight requested extensions, in delivery
-order. It describes intended behavior, not features already shipped in 1.0.1.
+order. The automatic battle camera is implemented in current source; features
+2–8 remain planned. These extensions are not included in the 1.0.1 release.
 Each numbered feature must finish its production path and validation before the
 next implementation starts. Prerequisites discovered below belong to that feature.
 
@@ -74,6 +75,12 @@ A playing human sees none of these enemy standings. The existing retail sidebar
 continues to own build controls and the minimap.
 
 ## 1. Automatic battle camera
+
+**Current source: implemented.** The opt-in toolbar and camera director share the
+existing camera and committed-frame event owners. The explicit
+`skirmish-observer-camera` shell capture exercises startup, real AI combat, manual
+minimap takeover, Resume Now, and a combat focus inside the viewport. Pointer
+transactions check that simulation tick, frame, and hash remain unchanged.
 
 ### Purpose and entry
 

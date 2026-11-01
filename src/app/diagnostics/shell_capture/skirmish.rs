@@ -156,6 +156,22 @@ pub(super) const RANDOM_MAP_GENERATE_POINT: (i32, i32) = (432, 430);
 const RANDOM_MAP_TERRAIN_ARROW_POINT: (i32, i32) = (484, 79);
 const RANDOM_MAP_MAP_SIZE_FACE_POINT: (i32, i32) = (350, 196);
 
+#[derive(Clone, Copy)]
+enum ObserverCameraStep {
+    Enable,
+    WaitingForBattle {
+        initial_camera: (f32, f32),
+    },
+    Manual {
+        camera: (f32, f32),
+    },
+    WaitingForResume {
+        manual_camera: (f32, f32),
+        resumed_ms: u64,
+    },
+    Done,
+}
+
 #[derive(Default)]
 pub(super) struct SkirmishCapture {
     phase: Phase,
@@ -209,6 +225,7 @@ pub(super) struct SkirmishCapture {
     observer_initial_entities: Option<usize>,
     observer_focused: bool,
     observer_battlefield_ready: bool,
+    observer_camera_step: Option<ObserverCameraStep>,
 }
 
 #[derive(Clone, Copy)]
@@ -413,6 +430,225 @@ impl SkirmishCapture {
             chooser: Some(ChooserTarget::RandomMap(RandomMapTarget::UseMap)),
             ..Self::default()
         }
+    }
+
+    pub(super) fn observer_camera() -> Self {
+        Self {
+            observer_camera_step: Some(ObserverCameraStep::Enable),
+            ..Self::observer_generated_battlefield()
+        }
+    }
+
+    fn camera_position(state: &AppState) -> (f32, f32) {
+        (
+            state.match_state.input.camera_x,
+            state.match_state.input.camera_y,
+        )
+    }
+
+    fn spectator_pointer_input(
+        state: &mut AppState,
+        point: (i32, i32),
+        button: winit::event::MouseButton,
+    ) -> Result<()> {
+        let identity = Self::simulation_identity(state)?;
+        Self::set_pointer(state, point);
+        crate::app::input::dispatch::handle_cursor_moved_in_game(state);
+        for edge in [
+            winit::event::ElementState::Pressed,
+            winit::event::ElementState::Released,
+        ] {
+            crate::app::input::dispatch::handle_mouse_input(state, button, edge);
+        }
+        Self::set_pointer(state, (EXPECTED_CURSOR_X as i32, EXPECTED_CURSOR_Y as i32));
+        crate::app::input::dispatch::handle_cursor_moved_in_game(state);
+        ensure!(
+            Self::simulation_identity(state)? == identity,
+            "spectator pointer input changed simulation tick, frame, or state hash"
+        );
+        Ok(())
+    }
+
+    fn spectator_button(
+        state: &mut AppState,
+        action: crate::app::presentation::spectator_tools::SpectatorToolAction,
+    ) -> Result<(i32, i32)> {
+        let point = crate::app::presentation::spectator_tools::action_center(state, action)
+            .with_context(|| {
+                let viewer = state.match_state.sim_runtime.as_ref().map(|runtime| {
+                    let sim = &runtime.simulation;
+                    (sim.session().tick(), sim.session().current_house().map(|owner| {
+                        (sim.session().is_observer_house(owner), sim.can_continue_watching(owner))
+                    }))
+                });
+                format!(
+                    "spectator camera button is not visible: active={}, paused={}, frozen={}, focus_frozen={}, viewport={:?}, viewer={viewer:?}",
+                    state.platform.window_active,
+                    state.match_state.paused(),
+                    state.match_state.main_tick_frozen(),
+                    state.focus_freeze_active(),
+                    crate::app::input::camera::tactical_viewport_size(state),
+                )
+            })?;
+        Self::spectator_pointer_input(state, point, winit::event::MouseButton::Left)?;
+        Ok(point)
+    }
+
+    fn observe_camera_controls(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        use crate::app::match_runtime::frame_pacer::wall_clock_ms;
+        use crate::app::presentation::spectator_tools::SpectatorToolAction;
+
+        ensure!(
+            state.frontend.screen == GameScreen::InGame,
+            "AI camera capture reached results before its controls finished"
+        );
+        if self.observer_initial_entities.is_none() || !self.observer_focused {
+            self.observe_generated_battlefield(state, frame)?;
+        }
+        let tick = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .context("observer camera runtime missing")?
+            .simulation
+            .session()
+            .tick();
+        ensure!(
+            tick < 18_000,
+            "AI camera capture found no qualifying combat or resumed movement before 18,000 ticks"
+        );
+        let now = wall_clock_ms();
+        let status = state.match_state.input.spectator_camera.status(now);
+        match self
+            .observer_camera_step
+            .context("observer camera route is not enabled")?
+        {
+            ObserverCameraStep::Enable => {
+                ensure!(
+                    !state.match_state.input.spectator_camera.enabled(),
+                    "automatic spectator camera did not start disabled"
+                );
+                let before = Self::camera_position(state);
+                let point = Self::spectator_button(state, SpectatorToolAction::ToggleCamera)?;
+                ensure!(
+                    state.match_state.input.spectator_camera.enabled(),
+                    "Watch the Action did not enable automatic camera"
+                );
+                self.route.push(json!({"screen":"in game", "frame":frame, "tick":tick, "action":"WatchTheAction", "point":point, "camera":before, "simulation_unchanged":true}));
+                self.observer_camera_step = Some(ObserverCameraStep::WaitingForBattle {
+                    initial_camera: before,
+                });
+            }
+            ObserverCameraStep::WaitingForBattle { initial_camera } => {
+                if !matches!(
+                    status.as_str(),
+                    "Auto Camera: On - Heavy fighting" | "Auto Camera: On - Base under attack"
+                ) {
+                    return Ok(());
+                }
+                let automatic = Self::camera_position(state);
+                let rect = state.sidebar_frame().rect_to_frame(
+                    crate::app::presentation::sidebar_render::active_minimap_content_screen_rect(
+                        state,
+                    ),
+                );
+                ensure!(
+                    rect.w > 0.0 && rect.h > 0.0,
+                    "observer camera has no live minimap click surface"
+                );
+                let mut manual = automatic;
+                let mut chosen = None;
+                for fraction in [0.25, 0.75] {
+                    let point = (
+                        (rect.x + rect.w * fraction) as i32,
+                        (rect.y + rect.h * fraction) as i32,
+                    );
+                    Self::spectator_pointer_input(state, point, winit::event::MouseButton::Right)?;
+                    manual = Self::camera_position(state);
+                    if (manual.0 - automatic.0).abs() + (manual.1 - automatic.1).abs() > 1.0 {
+                        chosen = Some(point);
+                        break;
+                    }
+                }
+                let point =
+                    chosen.context("real minimap input did not move the spectator camera")?;
+                ensure!(
+                    state
+                        .match_state
+                        .input
+                        .spectator_camera
+                        .manual_remaining(wall_clock_ms())
+                        > 0,
+                    "manual minimap navigation did not suspend automatic camera"
+                );
+                self.route.push(json!({"screen":"in game", "frame":frame, "tick":tick, "action":"ManualCameraOverride", "point":point, "real_combat_status":status, "initial_camera":initial_camera, "automatic_camera":automatic, "manual_camera":manual, "manual_remaining_seconds":state.match_state.input.spectator_camera.manual_remaining(wall_clock_ms()), "simulation_unchanged":true}));
+                self.observer_camera_step = Some(ObserverCameraStep::Manual { camera: manual });
+            }
+            ObserverCameraStep::Manual { camera } => {
+                let held = Self::camera_position(state);
+                ensure!(
+                    state
+                        .match_state
+                        .input
+                        .spectator_camera
+                        .manual_remaining(now)
+                        > 0,
+                    "manual override expired before Resume Now was exercised"
+                );
+                ensure!(
+                    (held.0 - camera.0).abs() + (held.1 - camera.1).abs() < 0.25,
+                    "automatic camera moved during manual override"
+                );
+                let point = Self::spectator_button(state, SpectatorToolAction::ResumeCamera)?;
+                ensure!(
+                    state.match_state.input.spectator_camera.enabled()
+                        && state
+                            .match_state
+                            .input
+                            .spectator_camera
+                            .manual_remaining(wall_clock_ms())
+                            == 0,
+                    "Resume Now did not restore automatic camera control"
+                );
+                self.route.push(json!({"screen":"in game", "frame":frame, "tick":tick, "action":"ResumeAutomaticCamera", "point":point, "manual_camera":camera, "simulation_unchanged":true}));
+                self.observer_camera_step = Some(ObserverCameraStep::WaitingForResume {
+                    manual_camera: camera,
+                    resumed_ms: wall_clock_ms(),
+                });
+            }
+            ObserverCameraStep::WaitingForResume {
+                manual_camera,
+                resumed_ms,
+            } => {
+                if now.saturating_sub(resumed_ms) < 2_500 {
+                    return Ok(());
+                }
+                let Some(focus) = state.match_state.input.spectator_camera.focus_point(now) else {
+                    return Ok(());
+                };
+                let current = Self::camera_position(state);
+                let viewport = crate::app::input::camera::tactical_viewport_size(state);
+                let zoom = state.match_state.input.zoom_level;
+                let focus_screen = ((focus.0 - current.0) * zoom, (focus.1 - current.1) * zoom);
+                if !(0.0..viewport.0 as f32).contains(&focus_screen.0)
+                    || !(0.0..viewport.1 as f32).contains(&focus_screen.1)
+                {
+                    return Ok(());
+                }
+                if matches!(
+                    status.as_str(),
+                    "Auto Camera: On - Heavy fighting" | "Auto Camera: On - Base under attack"
+                ) && (current.0 - manual_camera.0).abs() + (current.1 - manual_camera.1).abs()
+                    > 1.0
+                {
+                    self.route.push(json!({"screen":"in game", "frame":frame, "tick":tick, "action":"AutomaticCameraResumed", "status":status, "manual_camera":manual_camera, "automatic_camera":current, "focus_world":focus, "focus_screen":focus_screen, "viewport":viewport, "whole_map_revealed":true}));
+                    self.observer_camera_step = Some(ObserverCameraStep::Done);
+                    self.observer_battlefield_ready = true;
+                }
+            }
+            ObserverCameraStep::Done => {}
+        }
+        Ok(())
     }
 
     fn observe_generated_battlefield(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
@@ -1702,7 +1938,11 @@ impl SkirmishCapture {
                     && (state.frontend.screen == GameScreen::InGame
                         || App::score_shell_active(state)) =>
             {
-                self.observe_generated_battlefield(state, frame)?;
+                if self.observer_camera_step.is_some() {
+                    self.observe_camera_controls(state, frame)?;
+                } else {
+                    self.observe_generated_battlefield(state, frame)?;
+                }
             }
             (Phase::Starting, _)
                 if self.loading == Some(LoadingTarget::AfterQuit)

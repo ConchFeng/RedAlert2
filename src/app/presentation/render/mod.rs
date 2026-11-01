@@ -828,6 +828,8 @@ fn upload_to_gpu(
     // top-right identity box; empty outside Phobos builds.
     let (build_text_fill, build_text_text) =
         crate::app::presentation::build_text::build_instances(state);
+    let (spectator_fill, spectator_text) =
+        crate::app::presentation::spectator_tools::build_instances(state);
 
     #[cfg(feature = "ares")]
     let bounty_text = {
@@ -898,6 +900,8 @@ fn upload_to_gpu(
     pool.upload(&state.renderer.gpu, "super_timer_text", &super_timer_text);
     pool.upload(&state.renderer.gpu, "build_text_fill", &build_text_fill);
     pool.upload(&state.renderer.gpu, "build_text_text", &build_text_text);
+    pool.upload(&state.renderer.gpu, "spectator_fill", &spectator_fill);
+    pool.upload(&state.renderer.gpu, "spectator_text", &spectator_text);
     #[cfg(feature = "ares")]
     pool.upload(&state.renderer.gpu, "bounty_text", &bounty_text);
 

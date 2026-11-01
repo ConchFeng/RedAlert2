@@ -662,7 +662,9 @@ pub(crate) fn build_tooltip_instances(
     let Some(tip) = state.match_state.match_presentation.tooltips.active() else {
         return (Vec::new(), Vec::new(), Vec::new());
     };
-    if state.frontend.screen != GameScreen::InGame {
+    if state.frontend.screen != GameScreen::InGame
+        || crate::app::presentation::spectator_tools::owns_pointer(state)
+    {
         return (Vec::new(), Vec::new(), Vec::new());
     }
     // gamemd draws the tip in the current sidebar text colour, so the same

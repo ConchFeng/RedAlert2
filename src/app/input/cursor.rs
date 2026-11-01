@@ -86,6 +86,9 @@ pub(crate) fn current_cursor_feedback_kind(state: &AppState) -> Option<CursorFee
     if state.match_state.match_presentation.in_game_menu.is_open() {
         return None;
     }
+    if crate::app::presentation::spectator_tools::owns_pointer(state) {
+        return Some(CursorFeedbackKind::Default);
+    }
     // A right-drag pan owns the cursor for as long as it owns the camera, and it
     // is tested first because native gates the cursor write and the edge-scroll
     // block inside the same `capture == 0` else-arm of

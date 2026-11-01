@@ -52,6 +52,28 @@ returns to the same results. **Play Again** reuses the normal Skirmish setup and
 launch transaction, while **Return to Menu** returns through the existing shell.
 These result actions do not apply to campaign or network matches.
 
+## Automatic battle camera in current source
+
+This feature is available on main after 1.0.1; the 1.0.1 ZIPs do not include it.
+An offline Observer or eliminated local player can choose **Watch the Action**
+in the compact battlefield toolbar. The camera follows actual hostile fighting,
+base attacks, and offensive superweapon launches, keeps the current zoom, and
+holds ordinary encounters for at least six seconds. With no recent action it
+keeps its position and says **Waiting for action**.
+
+Manual scrolling, minimap navigation, view bookmarks, Follow, zoom, and touch
+panning take control immediately. The toolbar shows a ten-second manual-control
+countdown with **Resume Now**; **Turn Off** leaves the camera manual. Escape
+retains Options behavior. Options, focus loss, final results, and a replaced
+world stop or reset automatic movement. Campaign, network play, and an active
+human player's view do not expose these tools.
+
+The camera director lives in
+[input/camera/spectator.rs](../src/app/input/camera/spectator.rs); its controls
+live in [spectator_tools.rs](../src/app/presentation/spectator_tools.rs). It reads
+existing frame facts and never changes the simulation or consumes gameplay RNG.
+See the [feature design](ai-battle-features.md) for the remaining roadmap.
+
 ## Design decisions
 
 - **Color priorities, not indices.** A shell color value is the priority gamemd
