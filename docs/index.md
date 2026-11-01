@@ -15,7 +15,8 @@ behavior; documentation explains its owners and how to work with them.
    requirements. Explicit user instructions take precedence.
 2. Read the [project guide](project-guide.md) for the four workspace crates,
    production entry points, frame flow and state ownership.
-3. Use the [README](../README.md) for setup and player-facing status, or the
+3. Use the [README](../README.md) for versions and the bilingual feature showcase,
+   [contribution guide](../CONTRIBUTING.md) for contributions, or the
    [developer tools index](../tools/README.md) for a concrete command.
 4. Follow the [30-player screenshot walkthrough](30-player-showcase.md) for the
    current Giant random-map setup, opponent paging, and runtime limitations.

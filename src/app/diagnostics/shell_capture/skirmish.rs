@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 
 mod commanders;
 mod replay;
+pub(super) use replay::CaptureGoal as ReplayCaptureGoal;
 mod second_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -482,9 +483,9 @@ impl SkirmishCapture {
         }
     }
 
-    pub(super) fn replay_highlights() -> Self {
+    pub(super) fn replay_highlights(goal: ReplayCaptureGoal) -> Self {
         Self {
-            replay_highlights: Some(Default::default()),
+            replay_highlights: Some(replay::ReplayCapture::with_goal(goal)),
             ..Self::observer_generated_battlefield()
         }
     }

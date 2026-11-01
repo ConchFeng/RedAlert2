@@ -6,13 +6,13 @@ skills. Build the entire project only when explicitly requested.
 Start with the [documentation index](docs/index.md) and
 [project guide](docs/project-guide.md) to locate code owners and entry points.
 
-**Outside contributors and their agents:** follow the README's
-[Contributing](README.md#contributing) section and your issue, and skip the rest of this file.
+**Outside contributors and their agents:** follow
+[CONTRIBUTING.md](CONTRIBUTING.md) and your issue, and skip the rest of this file.
 In short: one small fix per PR, one to three regression tests that fail without it, the
 native function address cited next to the code, no native-execution corpora, and a PR
 description of about 15 lines. The rest is the contract for the maintainer's own agents:
 its build runner, retail-data checks, critic reviews and native comparisons
-don't apply to you. Where the two differ, the README wins.
+don't apply to you. Where the two differ, the contribution guide wins.
 
 VERA20k Conch Edit (VERA20k) is a cross-platform Rust reimplementation of the
 Command & Conquer: Yuri's Revenge engine (`gamemd.exe`), using original retail rules and assets.

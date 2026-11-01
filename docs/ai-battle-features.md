@@ -498,6 +498,16 @@ slots. Runtime capture has been exercised on macOS; Linux and Windows captures
 remain unmeasured. Smooth reverse playback remains outside version one. These
 features are absent from the published 1.0.1 packages.
 
+For documentation screenshots, `skirmish-replay-bookmarks`,
+`skirmish-replay-seeking`, and `skirmish-replay-tracking` stop the same production
+capture route at the populated Highlights panel, active seek progress, or active
+unit following. For example, replace the output with a new absolute directory:
+
+```sh
+vera20k --shell-capture skirmish-replay-bookmarks --width 800 --height 600 \
+  --cursor-x 400 --cursor-y 300 --output /absolute/new-capture
+```
+
 ## 7. Survival battles with an escalating enemy
 
 **Deferred at the maintainer’s request.** Preserve this design for reference;

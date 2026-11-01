@@ -184,6 +184,9 @@ const CHECKPOINT_SKIRMISH_OBSERVER_CAMERA: &str = "skirmish-observer-camera";
 const CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS: &str = "skirmish-observer-standings";
 const CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW: &str = "skirmish-observer-second-view";
 const CHECKPOINT_SKIRMISH_REPLAY_HIGHLIGHTS: &str = "skirmish-replay-highlights";
+const CHECKPOINT_SKIRMISH_REPLAY_BOOKMARKS: &str = "skirmish-replay-bookmarks";
+const CHECKPOINT_SKIRMISH_REPLAY_SEEKING: &str = "skirmish-replay-seeking";
+const CHECKPOINT_SKIRMISH_REPLAY_TRACKING: &str = "skirmish-replay-tracking";
 const CHECKPOINT_SKIRMISH_AI_COMMANDERS: &str = "skirmish-ai-commanders";
 const CHECKPOINT_SKIRMISH_AI_SERIES_SETUP: &str = "skirmish-ai-series-setup";
 const CHECKPOINT_SKIRMISH_AI_SERIES_START: &str = "skirmish-ai-series-start";
@@ -372,6 +375,9 @@ pub enum ShellCaptureCheckpoint {
     SkirmishObserverStandings,
     SkirmishObserverSecondView,
     SkirmishReplayHighlights,
+    SkirmishReplayBookmarks,
+    SkirmishReplaySeeking,
+    SkirmishReplayTracking,
     SkirmishAiCommanders,
     SkirmishAiSeriesSetup,
     SkirmishAiSeriesStart,
@@ -602,6 +608,9 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS => Ok(Self::SkirmishObserverStandings),
             CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW => Ok(Self::SkirmishObserverSecondView),
             CHECKPOINT_SKIRMISH_REPLAY_HIGHLIGHTS => Ok(Self::SkirmishReplayHighlights),
+            CHECKPOINT_SKIRMISH_REPLAY_BOOKMARKS => Ok(Self::SkirmishReplayBookmarks),
+            CHECKPOINT_SKIRMISH_REPLAY_SEEKING => Ok(Self::SkirmishReplaySeeking),
+            CHECKPOINT_SKIRMISH_REPLAY_TRACKING => Ok(Self::SkirmishReplayTracking),
             CHECKPOINT_SKIRMISH_AI_COMMANDERS => Ok(Self::SkirmishAiCommanders),
             CHECKPOINT_SKIRMISH_AI_SERIES_SETUP => Ok(Self::SkirmishAiSeriesSetup),
             CHECKPOINT_SKIRMISH_AI_SERIES_START => Ok(Self::SkirmishAiSeriesStart),
@@ -1012,6 +1021,9 @@ impl ShellCaptureCheckpoint {
             Self::SkirmishObserverStandings => CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
             Self::SkirmishObserverSecondView => CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW,
             Self::SkirmishReplayHighlights => CHECKPOINT_SKIRMISH_REPLAY_HIGHLIGHTS,
+            Self::SkirmishReplayBookmarks => CHECKPOINT_SKIRMISH_REPLAY_BOOKMARKS,
+            Self::SkirmishReplaySeeking => CHECKPOINT_SKIRMISH_REPLAY_SEEKING,
+            Self::SkirmishReplayTracking => CHECKPOINT_SKIRMISH_REPLAY_TRACKING,
             Self::SkirmishAiCommanders => CHECKPOINT_SKIRMISH_AI_COMMANDERS,
             Self::SkirmishAiSeriesSetup => CHECKPOINT_SKIRMISH_AI_SERIES_SETUP,
             Self::SkirmishAiSeriesStart => CHECKPOINT_SKIRMISH_AI_SERIES_START,
@@ -2402,8 +2414,23 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::SkirmishObserverSecondView => {
                 Some(skirmish::SkirmishCapture::observer_second_view())
             }
-            ShellCaptureCheckpoint::SkirmishReplayHighlights => {
-                Some(skirmish::SkirmishCapture::replay_highlights())
+            ShellCaptureCheckpoint::SkirmishReplayHighlights
+            | ShellCaptureCheckpoint::SkirmishReplayBookmarks
+            | ShellCaptureCheckpoint::SkirmishReplaySeeking
+            | ShellCaptureCheckpoint::SkirmishReplayTracking => {
+                let goal = match request.checkpoint {
+                    ShellCaptureCheckpoint::SkirmishReplayBookmarks => {
+                        skirmish::ReplayCaptureGoal::Bookmarks
+                    }
+                    ShellCaptureCheckpoint::SkirmishReplaySeeking => {
+                        skirmish::ReplayCaptureGoal::Seeking
+                    }
+                    ShellCaptureCheckpoint::SkirmishReplayTracking => {
+                        skirmish::ReplayCaptureGoal::Tracking
+                    }
+                    _ => skirmish::ReplayCaptureGoal::FullRoute,
+                };
+                Some(skirmish::SkirmishCapture::replay_highlights(goal))
             }
             ShellCaptureCheckpoint::SkirmishAiCommanders => Some(
                 skirmish::SkirmishCapture::ai_commanders(request.width, request.height),
@@ -2574,6 +2601,9 @@ impl ShellCaptureSession {
                 | ShellCaptureCheckpoint::SkirmishObserverStandings
                 | ShellCaptureCheckpoint::SkirmishObserverSecondView
                 | ShellCaptureCheckpoint::SkirmishReplayHighlights
+                | ShellCaptureCheckpoint::SkirmishReplayBookmarks
+                | ShellCaptureCheckpoint::SkirmishReplaySeeking
+                | ShellCaptureCheckpoint::SkirmishReplayTracking
                 | ShellCaptureCheckpoint::SkirmishAiCommanders
                 | ShellCaptureCheckpoint::SkirmishAiSeriesSetup
                 | ShellCaptureCheckpoint::SkirmishAiSeriesStart
@@ -4692,6 +4722,21 @@ mod tests {
             (
                 CHECKPOINT_SKIRMISH_REPLAY_HIGHLIGHTS,
                 ShellCaptureCheckpoint::SkirmishReplayHighlights,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_REPLAY_BOOKMARKS,
+                ShellCaptureCheckpoint::SkirmishReplayBookmarks,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_REPLAY_SEEKING,
+                ShellCaptureCheckpoint::SkirmishReplaySeeking,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_REPLAY_TRACKING,
+                ShellCaptureCheckpoint::SkirmishReplayTracking,
                 40_000,
             ),
             (

@@ -10,9 +10,20 @@ use crate::sim::replay::ReplayLog;
 use crate::ui::replay_tools::ReplayToolAction;
 use winit::event::MouseButton;
 
+#[derive(Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum CaptureGoal {
+    #[default]
+    FullRoute,
+    Bookmarks,
+    Seeking,
+    Tracking,
+}
+
 #[derive(Default)]
 pub(super) struct ReplayCapture {
     stage: u8,
+    goal: CaptureGoal,
+    screenshot_ready: bool,
     replay: Option<Arc<ReplayLog>>,
     recording_identity: Option<String>,
     hashes: BTreeMap<u64, u64>,
@@ -82,6 +93,13 @@ fn select_bookmark(state: &mut AppState, index: usize) -> Result<()> {
 }
 
 impl ReplayCapture {
+    pub(super) fn with_goal(goal: CaptureGoal) -> Self {
+        Self {
+            goal,
+            ..Self::default()
+        }
+    }
+
     fn record(&mut self, state: &mut AppState, frame: u32, route: &mut Vec<Value>) -> Result<()> {
         let runtime = state
             .match_state
@@ -277,6 +295,9 @@ impl ReplayCapture {
         frame: u32,
         route: &mut Vec<Value>,
     ) -> Result<bool> {
+        if self.screenshot_ready {
+            return Ok(true);
+        }
         if self.stage == 0 {
             self.record(state, frame, route)?;
             return Ok(false);
@@ -284,6 +305,17 @@ impl ReplayCapture {
         let Some(view) = replay_navigation::view(state) else {
             return Ok(false);
         };
+        if self.goal == CaptureGoal::Seeking
+            && self.stage == 4
+            && view
+                .seeking
+                .as_ref()
+                .is_some_and(|progress| !progress.loading)
+        {
+            route.push(json!({"screen":"replay seeking", "frame":frame, "action":"CaptureSeekProgress", "original_tick":view.tick, "target_tick":view.seeking.as_ref().unwrap().target_tick}));
+            self.screenshot_ready = true;
+            return Ok(true);
+        }
         let status = view.status.as_deref().unwrap_or_default();
         if self.stage == 9 {
             if view.browser.is_none() {
@@ -381,6 +413,11 @@ impl ReplayCapture {
                 );
                 self.bookmark_base = view.bookmarks.len();
                 self.select_starting_mcv(state)?;
+                if self.goal == CaptureGoal::Tracking {
+                    route.push(json!({"screen":"replay tracking", "frame":frame, "action":"CaptureReadOnlyUnitTracking", "tracked_unit":self.tracked}));
+                    self.screenshot_ready = true;
+                    return Ok(true);
+                }
                 button(state, ReplayToolAction::CycleSpeed)?;
                 ensure!(
                     replay_navigation::view(state).is_some_and(|view| view.speed > 1),
@@ -440,6 +477,11 @@ impl ReplayCapture {
                     self.stage = 3;
                 } else {
                     select_bookmark(state, self.bookmark_base)?;
+                    if self.goal == CaptureGoal::Bookmarks {
+                        route.push(json!({"screen":"replay highlights", "frame":frame, "action":"CaptureTimestampedHighlights", "bookmarks":self.bookmark_ticks}));
+                        self.screenshot_ready = true;
+                        return Ok(true);
+                    }
                     button(state, ReplayToolAction::SeekSelected)?;
                     self.stage = 4;
                 }
