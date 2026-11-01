@@ -194,6 +194,19 @@ pub(crate) fn build_bridge_body_instances(
     sh: f32,
     out: &mut Vec<CellBody>,
 ) {
+    let mut view = crate::app::presentation::render::TacticalView::main(state);
+    view.size = [
+        (sw * view.zoom).round() as u32,
+        (sh * view.zoom).round() as u32,
+    ];
+    build_bridge_body_instances_for_view(state, view, out);
+}
+
+pub(crate) fn build_bridge_body_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    out: &mut Vec<CellBody>,
+) {
     let Some(sim) = state
         .match_state
         .sim_runtime
@@ -224,10 +237,10 @@ pub(crate) fn build_bridge_body_instances(
         state.match_state.match_presentation.lighting.grid(),
         origin_y,
         world_height,
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-        sw,
-        sh,
+        view.camera[0],
+        view.camera[1],
+        view.size[0] as f32 / view.zoom,
+        view.size[1] as f32 / view.zoom,
         out,
     );
 }
@@ -390,6 +403,18 @@ pub(crate) fn build_bridge_shadow_instances_inner(
 }
 
 pub(crate) fn build_bridge_shadow_instances(state: &AppState, out: &mut Vec<SpriteInstance>) {
+    build_bridge_shadow_instances_for_view(
+        state,
+        crate::app::presentation::render::TacticalView::main(state),
+        out,
+    );
+}
+
+pub(crate) fn build_bridge_shadow_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    out: &mut Vec<SpriteInstance>,
+) {
     let Some(sim) = state
         .match_state
         .sim_runtime
@@ -411,12 +436,9 @@ pub(crate) fn build_bridge_shadow_instances(state: &AppState, out: &mut Vec<Spri
         .as_ref()
         .map(|g| (g.origin_y, g.world_height))
         .unwrap_or((0.0, 1.0));
-    let (cam_x, cam_y) = (
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-    );
-    let (width, height) = crate::app::input::camera::tactical_viewport_size(state);
-    let zoom = state.match_state.input.zoom_level.max(f32::EPSILON);
+    let [cam_x, cam_y] = view.camera;
+    let [_, _, width, height] = view.viewport;
+    let zoom = view.zoom.max(f32::EPSILON);
     // Translucent fog: the shadow sweep is a second overlay pass, so it needs
     // the same wall-cell concealment as the body sweep.
     let concealed_overlay_entries: Vec<_>;

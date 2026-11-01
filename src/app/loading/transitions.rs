@@ -149,6 +149,9 @@ pub(crate) fn install_world_presentation(
 
     state.match_state.input.spectator_camera = Default::default();
     state.match_state.match_presentation.spectator_tools.reset();
+    state.match_state.match_presentation.second_view = Default::default();
+    state.match_state.match_presentation.second_view_runtime = Default::default();
+    state.renderer.second_view = None;
     state.match_state.match_presentation.combat_lights.clear();
     state.match_state.match_presentation.interpolation.clear();
     state.match_state.match_presentation.lasers.clear_on_load();

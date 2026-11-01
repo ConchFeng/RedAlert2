@@ -880,6 +880,8 @@ impl App {
                 sim_runtime: None,
                 input: crate::app::input::state::MatchInputState::new(hotkey_bindings),
                 match_presentation: crate::app::presentation::state::MatchPresentationState {
+                    second_view: Default::default(),
+                    second_view_runtime: Default::default(),
                     spectator_tools: Default::default(),
                     interpolation:
                         crate::app::presentation::interpolation::RenderInterpolation::new(
@@ -1139,6 +1141,7 @@ impl App {
                 shell_surface_presenter,
                 upscale_pass: None,
                 world_zoom_pass: None,
+                second_view: None,
                 sidebar_surface: None,
                 in_game_shell_surface: None,
                 status_screen_fill,

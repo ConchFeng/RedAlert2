@@ -7,6 +7,7 @@
 //! ## Dependency rules
 //! - Internal to `presentation::render` — only called from mod.rs.
 
+use super::{TacticalView, WorldViewResources};
 use crate::app::AppState;
 use crate::app::diagnostics::debug_overlays;
 use crate::app::input::commands::preferred_local_owner;
@@ -148,10 +149,31 @@ fn lookup_exact_terrain_variant<T>(
 /// Ground parents retain Display order; residual effect buckets still sort depth.
 pub(super) fn build_world_instances(
     state: &mut AppState,
-    sw: f32,
-    sh: f32,
+    _sw: f32,
+    _sh: f32,
     bracket_palette: Option<[u16; 2]>,
 ) -> WorldInstances {
+    let cell_bodies = std::mem::take(
+        &mut state
+            .match_state
+            .match_presentation
+            .cached_cell_body_instances,
+    );
+    let view = TacticalView::main(state);
+    let resources = WorldViewResources::main(state);
+    build_world_instances_for_view(state, view, &resources, cell_bodies, bracket_palette, true)
+}
+
+pub(super) fn build_world_instances_for_view(
+    state: &AppState,
+    view: TacticalView,
+    resources: &WorldViewResources<'_>,
+    mut cell_bodies: Vec<SpriteInstance>,
+    bracket_palette: Option<[u16; 2]>,
+    main_view: bool,
+) -> WorldInstances {
+    let sw = view.size[0] as f32 / view.zoom;
+    let sh = view.size[1] as f32 / view.zoom;
     // Terrain tiles use the selected TMP owner exactly. A sparse/null cell in
     // a positive suffix remains absent instead of borrowing pristine UVs.
     let uv_fn_closure;
@@ -179,8 +201,8 @@ pub(super) fn build_world_instances(
         crate::render::terrain_instances::build_visible_instances(
             grid,
             Some(state.match_state.match_presentation.lighting.grid()),
-            state.match_state.input.camera_x,
-            state.match_state.input.camera_y,
+            view.camera[0],
+            view.camera[1],
             sw,
             sh,
             uv_fn,
@@ -207,74 +229,89 @@ pub(super) fn build_world_instances(
         .unwrap_or_default();
     let mut planned_objects = Vec::new();
     let mut bodies = Vec::new();
-    instances::build_overlay_instances(
+    instances::build_overlay_instances_for_view(
         state,
-        sw,
-        sh,
+        view,
         &mut bodies,
         &mut planned_objects,
         &display_order,
     );
     // High-bridge bodies read live CellClass bridge fields post-tick (NOT
     // OverlayGrid), then join the ordinary bodies in one native sweep.
-    instances::bridges::build_bridge_body_instances(state, sw, sh, &mut bodies);
-    let mut cell_bodies: Vec<SpriteInstance> = std::mem::take(
-        &mut state
-            .match_state
-            .match_presentation
-            .cached_cell_body_instances,
-    );
+    instances::bridges::build_bridge_body_instances_for_view(state, view, &mut bodies);
     cell_bodies.clear();
     let mut cell_body_draws = Vec::new();
     instances::submit_cell_body_sweep(bodies, &mut cell_bodies, &mut cell_body_draws);
     // The shadow sweep keeps the same cell order; accepted pixels write Z.
     let mut bridge_body_shadow: Vec<SpriteInstance> = Vec::new();
-    instances::bridges::build_bridge_shadow_instances(state, &mut bridge_body_shadow);
+    instances::bridges::build_bridge_shadow_instances_for_view(
+        state,
+        view,
+        &mut bridge_body_shadow,
+    );
 
     // Smudges: static crater/scorch decals on top of terrain, under entities.
     // Registered SmudgeType SHPs share the live OverlayAtlas and Cell light
     // grid with the ordinary ground drawing consumers.
-    let smudge: Vec<SpriteInstance> = build_smudge_instances(state, sw, sh);
+    let smudge: Vec<SpriteInstance> = build_smudge_instances(state, view, sw, sh);
 
-    state
-        .renderer
-        .vxl_pose_frame_cache
-        .borrow_mut()
-        .begin_frame();
-    instances::build_unit_instances(state, &mut planned_objects, &display_order);
-    instances::build_voxel_anim_instances(state, &mut planned_objects, &display_order);
+    resources.pose_cache.borrow_mut().begin_frame();
+    instances::build_unit_instances_for_view(
+        state,
+        view,
+        resources,
+        main_view,
+        &mut planned_objects,
+        &display_order,
+    );
+    instances::build_voxel_anim_instances_for_view(
+        state,
+        view,
+        resources,
+        &mut planned_objects,
+        &display_order,
+    );
     // A building's voxel turret remains owned by the building display call.
     // The SHP builder therefore adds it to the same contiguous Ground parent
     // instead of leaking it into an atlas-level tie.
-    instances::build_shp_instances(state, &mut planned_objects, &display_order);
+    instances::build_shp_instances_for_view(
+        state,
+        view,
+        resources,
+        main_view,
+        &mut planned_objects,
+        &display_order,
+    );
     // Prepare slot binding/light pieces without querying the shared FPS latch.
     // Each Anim's retained Display encounter admits and appends its pieces.
     let mut building_anim_instances = Vec::new();
-    instances::build_building_anim_instances(state, &mut building_anim_instances, &display_order);
+    instances::build_building_anim_instances_for_view(
+        state,
+        view,
+        &mut building_anim_instances,
+        &display_order,
+    );
     let prepared_building_anims = building_anim_instances
         .into_iter()
         .map(|parent| (parent.parent.id, parent))
         .collect();
-    let mut particle_draws = state.diagnostic_presentation_ms().map(|_| Vec::new());
+    let mut particle_draws =
+        (main_view && state.diagnostic_presentation_ms().is_some()).then(Vec::new);
     let display_inputs = state.match_state.sim_runtime.as_ref().map(|runtime| {
         let presentation = &state.match_state.match_presentation;
-        let (x, y, width, height) = crate::app::input::camera::tactical_viewport_px(state);
         let local_owner = crate::app::input::commands::preferred_local_owner_name(state)
             .and_then(|name| runtime.simulation.interner().get(&name));
         instances::DisplayEffectInputs {
             interpolation: Some(&presentation.interpolation),
             sim: &runtime.simulation,
             rules: &runtime.resources.rules,
-            camera: [
-                state.match_state.input.camera_x,
-                state.match_state.input.camera_y,
-            ],
-            render_size: [state.render_width(), state.render_height()],
-            tactical: [x, y, width, height],
-            zoom: state.match_state.input.zoom_level,
+            camera: [view.camera[0], view.camera[1]],
+            render_size: view.size,
+            tactical: view.viewport,
+            zoom: view.zoom,
             axis: instances::depth_axis(state),
             atlas: presentation.sprite_atlas.as_ref(),
-            detail: &presentation.detail,
+            detail: resources.detail,
             detail_level: presentation.in_game_options.detail_level,
             lighting: presentation.lighting.grid(),
             retained_anim_intensities: Some(presentation.lighting.anim_intensities()),
@@ -282,7 +319,7 @@ pub(super) fn build_world_instances(
             hidden_super_anims: &presentation.hidden_super_anims,
             show_hidden: presentation.in_game_options.show_hidden,
             local_owner,
-            observe_particles: state.diagnostic_presentation_ms().is_some(),
+            observe_particles: main_view && state.diagnostic_presentation_ms().is_some(),
         }
     });
     if let Some(input) = display_inputs.as_ref() {
@@ -293,11 +330,17 @@ pub(super) fn build_world_instances(
             prepared_building_anims,
         );
     }
-    instances::build_projectile_visual_instances(state, &mut planned_objects, &display_order);
+    instances::build_projectile_visual_instances_for_view(
+        state,
+        view,
+        resources,
+        &mut planned_objects,
+        &display_order,
+    );
 
     // Every dynamic pose consumer, including Bullet46B0C0, has now populated
     // the shared page. One upload precedes this frame's draw submission.
-    state.renderer.vxl_pose_frame_cache.borrow_mut().upload(
+    resources.pose_cache.borrow_mut().upload(
         &state.renderer.gpu.device,
         &state.renderer.gpu.queue,
         &state.renderer.batch_renderer,
@@ -306,12 +349,8 @@ pub(super) fn build_world_instances(
     // Selection is read by its existing presentation producer; only parents
     // admitted by the Display/body plan receive commands. Native6D913C and
     //6D9153 run in that parent's slot, before its body at6D916C.
-    if let Some(palette) = bracket_palette {
-        let camera = [
-            state.match_state.input.camera_x,
-            state.match_state.input.camera_y,
-        ]
-        .map(|value| value.floor() as i32);
+    if let Some(palette) = bracket_palette.filter(|_| main_view) {
+        let camera = [view.camera[0], view.camera[1]].map(|value| value.floor() as i32);
         let mut brackets =
             crate::app::presentation::selection_brackets::build_selection_bracket_lines(
                 state,
@@ -326,108 +365,111 @@ pub(super) fn build_world_instances(
     // The same admitted Display parents feed native6D9789's later sweep.
     // Shared health admission/selection/hover owners derive frame-local strips;
     // storage order and atlas identity never determine their submission order.
-    let mut group_labels = build_control_group_status_instances(state, sw, sh);
-    if let (Some(sim), Some(overlay)) = (
-        state
-            .match_state
-            .sim_runtime
-            .as_ref()
-            .map(|rt| &rt.simulation),
-        state
-            .match_state
-            .match_presentation
-            .selection_overlay
-            .as_ref(),
-    ) {
-        let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
-        let hovered = crate::app::presentation::ui_overlays::health_hover_target(
-            state,
-            local_owner.as_deref(),
-        );
-        let speech_wall_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
-        for parent in &mut planned_objects {
-            parent.status = sim.entities().get(parent.parent.id).map(|entity| {
-                let mut status = crate::app::presentation::ui_overlays::techno_extras_for_parent(
-                    sim,
-                    entity,
-                    state.rules(),
-                    overlay,
-                    hovered,
-                    local_owner.as_deref(),
-                    crate::app::presentation::ui_overlays::StatusViewport {
-                        camera: [
-                            state.match_state.input.camera_x,
-                            state.match_state.input.camera_y,
-                        ],
-                        size: [sw, sh],
-                        zoom: state.match_state.input.zoom_level,
-                        ignore_visibility: state.match_state.sandbox_full_visibility,
-                    },
-                );
-                status.group = group_labels.remove(&parent.parent.id).unwrap_or_default();
-                // Phobos DigitalDisplay: built here because the GAME.FNT atlas
-                // lives on the renderer; the value/position owner is
-                // presentation::digital_display.
-                #[cfg(feature = "phobos")]
-                if state.match_state.match_presentation.digital_display_enabled
-                    && let Some(rules) = state.rules()
-                {
-                    let digital =
-                        crate::app::presentation::digital_display::digital_display_instances(
+    if main_view {
+        let mut group_labels = build_control_group_status_instances(state, sw, sh);
+        if let (Some(sim), Some(overlay)) = (
+            state
+                .match_state
+                .sim_runtime
+                .as_ref()
+                .map(|rt| &rt.simulation),
+            state
+                .match_state
+                .match_presentation
+                .selection_overlay
+                .as_ref(),
+        ) {
+            let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
+            let hovered = crate::app::presentation::ui_overlays::health_hover_target(
+                state,
+                local_owner.as_deref(),
+            );
+            let speech_wall_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
+            for parent in &mut planned_objects {
+                parent.status = sim.entities().get(parent.parent.id).map(|entity| {
+                    let mut status =
+                        crate::app::presentation::ui_overlays::techno_extras_for_parent(
                             sim,
                             entity,
-                            rules,
+                            state.rules(),
                             overlay,
-                            &state.renderer.bit_font,
                             hovered,
                             local_owner.as_deref(),
                             crate::app::presentation::ui_overlays::StatusViewport {
-                                camera: [
-                                    state.match_state.input.camera_x,
-                                    state.match_state.input.camera_y,
-                                ],
+                                camera: [view.camera[0], view.camera[1]],
                                 size: [sw, sh],
-                                zoom: state.match_state.input.zoom_level,
+                                zoom: view.zoom,
                                 ignore_visibility: state.match_state.sandbox_full_visibility,
                             },
-                            true,
                         );
-                    status.digital_text = digital.texts;
-                    status.digital_shapes = digital.shapes;
-                }
-                if !entity.sinking.is_active() && !entity.passenger_role.is_inside_transport() {
-                    if let (Some(frame), Some(shape)) = (
-                        state
-                            .match_state
-                            .match_presentation
-                            .talk_bubble
-                            .frame_for(entity.stable_id(), speech_wall_ms),
-                        overlay.talk_bubble(),
-                    ) {
-                        let coord = crate::sim::movement::ground_pose::object_get_coords(
-                            entity,
-                            sim.resolved_terrain(),
-                        );
-                        let point = crate::util::lepton::absolute_leptons_to_screen(
-                            coord.x, coord.y, coord.z,
-                        );
-                        status.talk_bubble =
-                            shape.instance(frame, point, 0.0).map(|mut instance| {
-                                instance.palette_light =
-                                    crate::render::palette_light::PaletteLight::plain(53, 1000);
-                                instance
-                            });
+                    status.group = group_labels.remove(&parent.parent.id).unwrap_or_default();
+                    // Phobos DigitalDisplay: built here because the GAME.FNT atlas
+                    // lives on the renderer; the value/position owner is
+                    // presentation::digital_display.
+                    #[cfg(feature = "phobos")]
+                    if state.match_state.match_presentation.digital_display_enabled
+                        && let Some(rules) = state.rules()
+                    {
+                        let digital =
+                            crate::app::presentation::digital_display::digital_display_instances(
+                                sim,
+                                entity,
+                                rules,
+                                overlay,
+                                &state.renderer.bit_font,
+                                hovered,
+                                local_owner.as_deref(),
+                                crate::app::presentation::ui_overlays::StatusViewport {
+                                    camera: [view.camera[0], view.camera[1]],
+                                    size: [sw, sh],
+                                    zoom: view.zoom,
+                                    ignore_visibility: state.match_state.sandbox_full_visibility,
+                                },
+                                true,
+                            );
+                        status.digital_text = digital.texts;
+                        status.digital_shapes = digital.shapes;
                     }
-                }
-                let painted =
-                    crate::app::presentation::interpolation::screen_position(state, entity);
-                let native = crate::render::locomotor_visual::screen_position(entity);
-                status.translate_for_interpolation([painted.0 - native.0, painted.1 - native.1]);
-                status
-            });
+                    if !entity.sinking.is_active() && !entity.passenger_role.is_inside_transport() {
+                        if let (Some(frame), Some(shape)) = (
+                            state
+                                .match_state
+                                .match_presentation
+                                .talk_bubble
+                                .frame_for(entity.stable_id(), speech_wall_ms),
+                            overlay.talk_bubble(),
+                        ) {
+                            let coord = crate::sim::movement::ground_pose::object_get_coords(
+                                entity,
+                                sim.resolved_terrain(),
+                            );
+                            let point = crate::util::lepton::absolute_leptons_to_screen(
+                                coord.x, coord.y, coord.z,
+                            );
+                            status.talk_bubble =
+                                shape.instance(frame, point, 0.0).map(|mut instance| {
+                                    instance.palette_light =
+                                        crate::render::palette_light::PaletteLight::plain(53, 1000);
+                                    instance
+                                });
+                        }
+                    }
+                    let painted =
+                        crate::app::presentation::interpolation::screen_position(state, entity);
+                    let native = crate::render::locomotor_visual::screen_position(entity);
+                    status
+                        .translate_for_interpolation([painted.0 - native.0, painted.1 - native.1]);
+                    status
+                });
+            }
         }
     }
-    instances::build_weapon_wave_instances(state, &mut planned_objects, &display_order);
+    instances::build_weapon_wave_instances_for_view(
+        state,
+        view,
+        &mut planned_objects,
+        &display_order,
+    );
     // Entity body builders already sampled their anchors. Cancel the same
     // sampled height for depth and per-pixel Z rather than the authority's
     // next height; otherwise climbing units slide through their occluders.
@@ -526,16 +568,24 @@ pub(super) fn build_world_instances(
         .filter(|parent| parent.building_pieces.is_some())
         .map(|parent| parent.parent.id)
         .collect();
-    let building_status_text = build_building_status_instances(state, &building_body_opportunities);
+    let building_status_text = if main_view {
+        build_building_status_instances(state, &building_body_opportunities)
+    } else {
+        Default::default()
+    };
     let object_layers = super::draw_plan_lowering::lower_object_instances(planned_objects);
     let fogged_objects = instances::build_fogged_instances(state);
 
     // PixelFX water/ore sparkles — per-frame 1-pixel cell dots.
-    let cell_sparkles: Vec<SpriteInstance> = build_pixel_fx_sparkle_instances(state, sw, sh);
+    let cell_sparkles: Vec<SpriteInstance> = if main_view {
+        build_pixel_fx_sparkle_instances(state, view, sw, sh)
+    } else {
+        Vec::new()
+    };
 
     // One-time first-frame statistics.
     static LOGGED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
+    if main_view && !LOGGED.swap(true, std::sync::atomic::Ordering::Relaxed) {
         let total_grid: usize = state
             .match_state
             .match_presentation
@@ -581,15 +631,20 @@ fn pixel_fx_enabled_for_detail_level(detail_level: u32) -> bool {
     detail_level != 0
 }
 
-fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
+fn build_pixel_fx_sparkle_instances(
+    state: &AppState,
+    view: TacticalView,
+    sw: f32,
+    sh: f32,
+) -> Vec<SpriteInstance> {
     use crate::render::pixel_fx_sparkles::{SparkleInput, build_sparkle_instances};
 
     // F10 cone entry: read-only assembly consumes the runtime through the
     // view; fields without getters use the escape hatch until their cone.
-    let Some(view) = state.sim_view() else {
+    let Some(sim_view) = state.sim_view() else {
         return Vec::new();
     };
-    let sim = view.simulation();
+    let sim = sim_view.simulation();
     let Some(resolved) = state.terrain_template() else {
         return Vec::new();
     };
@@ -628,8 +683,8 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
         overlay_registry,
         occupancy: sim.occupancy(),
         fog: sim.fog(),
-        camera_x: state.match_state.input.camera_x,
-        camera_y: state.match_state.input.camera_y,
+        camera_x: view.camera[0],
+        camera_y: view.camera[1],
         viewport_w: sw,
         viewport_h: sh,
         map_w: resolved.width(),
@@ -650,7 +705,12 @@ fn build_pixel_fx_sparkle_instances(state: &AppState, sw: f32, sh: f32) -> Vec<S
 /// uses the resolved terrain level at the footprint origin and emits that
 /// frame once on the coherent flat uniform-material route. Native recenters
 /// a separate draw from every occupied cell; unequal material remains open.
-fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInstance> {
+fn build_smudge_instances(
+    state: &AppState,
+    view: TacticalView,
+    sw: f32,
+    sh: f32,
+) -> Vec<SpriteInstance> {
     let (sim, rules) = match (
         state
             .match_state
@@ -695,8 +755,8 @@ fn build_smudge_instances(state: &AppState, sw: f32, sh: f32) -> Vec<SpriteInsta
         resolved_terrain,
         state.match_state.match_presentation.lighting.grid(),
         &lookup,
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
+        view.camera[0],
+        view.camera[1],
         sw,
         sh,
     )
@@ -1009,6 +1069,24 @@ pub(crate) fn tactical_world_viewport(
             .map_or(tactical, |zoom| zoom.world_clip(tactical))
             .map(|v| v as i32),
         zoom: 1.,
+    }
+}
+
+pub(crate) fn tactical_world_viewport_for_view(
+    view: TacticalView,
+) -> crate::app::presentation::target_lines::TacticalViewport {
+    let source_size = view
+        .size
+        .map(|value| (value as f32 / view.zoom).ceil().max(1.0) as u32);
+    crate::app::presentation::target_lines::TacticalViewport {
+        camera: view.camera.map(|value| value.round() as i32),
+        clip: crate::render::upscale_pass::world_clip_for_view(
+            view.viewport,
+            view.zoom,
+            source_size,
+        )
+        .map(|value| value as i32),
+        zoom: 1.0,
     }
 }
 
@@ -1400,6 +1478,19 @@ fn build_radar_anim_instance(state: &AppState) -> Vec<SpriteInstance> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn explicit_view_owns_camera_and_fractional_pixel_clip() {
+        let viewport = super::tactical_world_viewport_for_view(super::TacticalView {
+            camera: [310.4, -12.3],
+            size: [301, 161],
+            zoom: 2.0,
+            viewport: [3, 7, 200, 100],
+        });
+        assert_eq!(viewport.camera, [310, -12]);
+        assert_eq!(viewport.clip, [1, 3, 101, 51]);
+        assert_eq!(viewport.zoom, 1.0);
+    }
+
     use super::*;
 
     #[test]

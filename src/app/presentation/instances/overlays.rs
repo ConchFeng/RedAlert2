@@ -1019,14 +1019,30 @@ pub(crate) fn build_overlay_instances(
     >,
     ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeDisplayOrder,
 ) {
+    let mut view = crate::app::presentation::render::TacticalView::main(state);
+    view.size = [
+        (sw * view.zoom).round() as u32,
+        (sh * view.zoom).round() as u32,
+    ];
+    build_overlay_instances_for_view(state, view, bodies, ground_objects, ground_order);
+}
+
+pub(crate) fn build_overlay_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    bodies: &mut Vec<super::CellBody>,
+    ground_objects: &mut Vec<
+        crate::app::presentation::render::draw_plan_lowering::PlannedObjectInstance,
+    >,
+    ground_order: &crate::app::presentation::render::draw_plan_lowering::NativeDisplayOrder,
+) {
+    let sw = view.size[0] as f32 / view.zoom;
+    let sh = view.size[1] as f32 / view.zoom;
     let atlas = match &state.match_state.match_presentation.overlay_atlas {
         Some(a) => a,
         None => return,
     };
-    let (cam_x, cam_y) = (
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-    );
+    let [cam_x, cam_y] = view.camera;
     let (origin_y, world_height) = state
         .match_state
         .match_presentation
@@ -1299,6 +1315,20 @@ pub(crate) fn build_weapon_wave_instances(
     objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedObjectInstance>,
     order: &crate::app::presentation::render::draw_plan_lowering::NativeDisplayOrder,
 ) {
+    build_weapon_wave_instances_for_view(
+        state,
+        crate::app::presentation::render::TacticalView::main(state),
+        objects,
+        order,
+    );
+}
+
+pub(crate) fn build_weapon_wave_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    objects: &mut Vec<crate::app::presentation::render::draw_plan_lowering::PlannedObjectInstance>,
+    order: &crate::app::presentation::render::draw_plan_lowering::NativeDisplayOrder,
+) {
     let Some(sim) = state
         .match_state
         .sim_runtime
@@ -1310,11 +1340,7 @@ pub(crate) fn build_weapon_wave_instances(
     let observer = crate::app::input::commands::preferred_local_owner(state)
         .as_deref()
         .and_then(|owner| sim.interner().get(owner));
-    let camera = [
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-    ]
-    .map(|value| value.floor() as i32);
+    let camera = view.camera.map(|value| value.floor() as i32);
     let cache = &state.match_state.match_presentation.interpolation;
     for (id, draw) in
         crate::app::presentation::fire_effects::build_weapon_wave_draws(sim, observer, [0, 0])

@@ -91,32 +91,50 @@ pub(crate) fn build_shp_instances(
     ground_objects: &mut Vec<PlannedObjectInstance>,
     ground_order: &NativeDisplayOrder,
 ) {
+    build_shp_instances_for_view(
+        state,
+        crate::app::presentation::render::TacticalView::main(state),
+        &crate::app::presentation::render::WorldViewResources::main(state),
+        true,
+        ground_objects,
+        ground_order,
+    );
+}
+
+pub(crate) fn build_shp_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    resources: &crate::app::presentation::render::WorldViewResources<'_>,
+    main_view: bool,
+    ground_objects: &mut Vec<PlannedObjectInstance>,
+    ground_order: &NativeDisplayOrder,
+) {
     let Some(runtime) = state.match_state.sim_runtime.as_ref() else {
         return;
     };
     let presentation = &state.match_state.match_presentation;
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
-    let camera = [
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-    ];
-    let (x, y, width, height) = crate::app::input::camera::tactical_viewport_px(state);
-    let building_viewport = crate::app::presentation::render::tactical_world_viewport(
-        camera,
-        [x, y, width, height],
-        state.renderer.world_zoom_pass.as_ref(),
-    );
+    let camera = view.camera;
+    let building_viewport = if main_view {
+        crate::app::presentation::render::tactical_world_viewport(
+            camera,
+            view.viewport,
+            state.renderer.world_zoom_pass.as_ref(),
+        )
+    } else {
+        crate::app::presentation::render::tactical_world_viewport_for_view(view)
+    };
     build_shp_instances_from_inputs(
         &ShpInputs {
             runtime,
             atlas: presentation.sprite_atlas.as_ref(),
             overlay_atlas: presentation.overlay_atlas.as_ref(),
             unit_atlas: presentation.unit_atlas.as_ref(),
-            barrel_image_pitches: &presentation.barrel_image_pitches,
+            barrel_image_pitches: resources.barrel_image_pitches,
             interpolation: &presentation.interpolation,
             camera,
-            render_size: [state.render_width(), state.render_height()],
-            zoom: state.match_state.input.zoom_level,
+            render_size: view.size,
+            zoom: view.zoom,
             building_viewport,
             axis: depth_axis(state),
             local_owner: local_owner.as_deref(),
@@ -1457,6 +1475,20 @@ pub(crate) fn build_building_anim_instances(
     objects: &mut Vec<PlannedObjectInstance>,
     order: &NativeDisplayOrder,
 ) {
+    build_building_anim_instances_for_view(
+        state,
+        crate::app::presentation::render::TacticalView::main(state),
+        objects,
+        order,
+    );
+}
+
+pub(crate) fn build_building_anim_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    objects: &mut Vec<PlannedObjectInstance>,
+    order: &NativeDisplayOrder,
+) {
     let (Some(runtime), Some(atlas), Some(rules)) = (
         state.match_state.sim_runtime.as_ref(),
         state.match_state.match_presentation.sprite_atlas.as_ref(),
@@ -1482,12 +1514,11 @@ pub(crate) fn build_building_anim_instances(
                 })
     };
     let axis = depth_axis(state);
-    let zoom = state.match_state.input.zoom_level;
     let viewport = [
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-        state.render_width() as f32 / zoom,
-        state.render_height() as f32 / zoom,
+        view.camera[0],
+        view.camera[1],
+        view.size[0] as f32 / view.zoom,
+        view.size[1] as f32 / view.zoom,
     ];
     for building in sim.entities().values() {
         if building.category() != EntityCategory::Structure

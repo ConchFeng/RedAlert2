@@ -1140,6 +1140,7 @@ fn advance_in_game_runtime_mode(
     }
     crate::app::presentation::spectator_standings_ui::update(state);
     crate::app::input::camera::spectator::update(state);
+    crate::app::presentation::second_view::update(state);
     decision.run_sim
 }
 
@@ -1570,6 +1571,27 @@ fn advance_one_simulation_frame(
                     &output.sound_events,
                     crate::app::match_runtime::frame_pacer::wall_clock_ms(),
                 );
+            }
+            if state
+                .match_state
+                .match_presentation
+                .second_view_runtime
+                .director
+                .enabled()
+                && session_mode == super::session::SessionMode::Skirmish
+            {
+                state
+                    .match_state
+                    .match_presentation
+                    .second_view_runtime
+                    .director
+                    .observe_frame(
+                        &rt.simulation,
+                        &rt.resources.rules,
+                        &output.fire_events,
+                        &output.sound_events,
+                        crate::app::match_runtime::frame_pacer::wall_clock_ms(),
+                    );
             }
             let SimFrameOutput {
                 tick: tick_result,

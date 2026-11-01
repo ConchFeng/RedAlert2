@@ -11,7 +11,7 @@ use crate::rules::ruleset::DetailRules;
 use crate::sim::timer::CdTimer;
 
 /// One owner for the native process globals, retained across scenario loads.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) struct DetailState {
     logic_visits: u32,
     frame_rate: u32,

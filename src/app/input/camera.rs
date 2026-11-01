@@ -2039,7 +2039,59 @@ fn clamp_camera_point_for_state(
 ) -> (f32, f32) {
     let (frame_w, frame_h) = (sw.max(0.0) as u32, sh.max(0.0) as u32);
     let (viewport_w, viewport_h) = state.sidebar_frame_for(frame_w, frame_h).tactical_size();
-    let viewport = (viewport_w as f32, viewport_h as f32);
+    clamp_camera_point_for_view(
+        state,
+        point,
+        (viewport_w as f32, viewport_h as f32),
+        state.match_state.input.zoom_level,
+    )
+}
+
+pub(crate) fn current_view(state: &AppState) -> crate::ui::second_view::CameraView {
+    let saved = saved_tactical_view(state);
+    crate::ui::second_view::CameraView {
+        center: saved.view_center_world_pixels,
+        zoom: saved.zoom,
+    }
+}
+
+pub(crate) fn set_view(state: &mut AppState, view: crate::ui::second_view::CameraView) {
+    spectator::manual_navigation(state);
+    state.match_state.input.follow_target = None;
+    state.match_state.input.zoom_level = view.zoom;
+    state.match_state.input.zoom_target = view.zoom;
+    let viewport = tactical_viewport_size(state);
+    let point = tactical_camera_top_left(
+        (view.center[0], view.center[1]),
+        viewport.0 as f32,
+        viewport.1 as f32,
+        view.zoom,
+    );
+    set_camera_position(&mut state.match_state.input, point);
+    clamp_camera_to_playable_area(
+        state,
+        state.render_width() as f32,
+        state.render_height() as f32,
+    );
+}
+
+pub(crate) fn clamp_view_center(
+    state: &AppState,
+    center: [f32; 2],
+    zoom: f32,
+    extent: [f32; 2],
+) -> [f32; 2] {
+    let top_left = tactical_camera_top_left((center[0], center[1]), extent[0], extent[1], zoom);
+    let top_left = clamp_camera_point_for_view(state, top_left, (extent[0], extent[1]), zoom);
+    let center = tactical_camera_center(top_left, extent[0], extent[1], zoom);
+    [center.0, center.1]
+}
+fn clamp_camera_point_for_view(
+    state: &AppState,
+    point: (f32, f32),
+    viewport: (f32, f32),
+    zoom: f32,
+) -> (f32, f32) {
     if let Some(runtime) = state.match_state.sim_runtime.as_ref() {
         // The radar rectangle enumerates mode-zero cells. Tactical6D8640
         // instead reads the five final MapClass LocalSize fields directly,
@@ -2050,12 +2102,7 @@ fn clamp_camera_point_for_state(
             .playfield_authority()
             .0
             .map_or(point, |bounds| {
-                clamp_camera_point_to_local_bounds(
-                    point,
-                    bounds,
-                    viewport,
-                    state.match_state.input.zoom_level,
-                )
+                clamp_camera_point_to_local_bounds(point, bounds, viewport, zoom)
             });
     }
     // Renderer fixtures without a simulation clamp to the whole grid.
@@ -2071,7 +2118,7 @@ fn clamp_camera_point_for_state(
             grid.world_height,
         ),
         viewport,
-        state.match_state.input.zoom_level,
+        zoom,
     )
 }
 

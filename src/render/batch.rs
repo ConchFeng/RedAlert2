@@ -619,15 +619,7 @@ impl BatchRenderer {
             native_z_origin_y: 0.0,
             _native_z_pad: 0.0,
         };
-        let camera_buffer: wgpu::Buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("Camera Uniform"),
-                contents: &crate::render::webgl::uniform_bytes(
-                    device,
-                    bytemuck::cast_slice(&[camera_uniform]),
-                ),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
+        let camera_buffer = create_camera_buffer(device, "Camera Uniform", camera_uniform);
 
         let (neutral_a, neutral_a_uniform) =
             crate::render::shroud_buffer::neutral_gpu_source(device, queue);
@@ -641,15 +633,8 @@ impl BatchRenderer {
         let camera_bind_group = surface_camera_bind_group.clone();
 
         // UI camera — identical layout but always zoom=1.0 for screen-fixed elements.
-        let ui_camera_buffer: wgpu::Buffer =
-            device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-                label: Some("UI Camera Uniform"),
-                contents: &crate::render::webgl::uniform_bytes(
-                    device,
-                    bytemuck::cast_slice(&[camera_uniform]),
-                ),
-                usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-            });
+        let ui_camera_buffer = create_camera_buffer(device, "UI Camera Uniform", camera_uniform);
+
         let ui_camera_bind_group = camera_group(
             device,
             &camera_bind_group_layout,
@@ -1206,6 +1191,60 @@ impl BatchRenderer {
         }
     }
 
+    /// Share pipelines and atlas layouts while retaining independent camera buffers.
+    /// Queue writes execute before the next submission's encoded commands, so
+    /// rewriting one view's uniform cannot isolate two pending projections.
+    /// https://docs.rs/wgpu/30.0.1/wgpu/struct.Queue.html#method.write_buffer
+    pub(crate) fn fork_view(&self, gpu: &GpuContext) -> Self {
+        self.fork_view_with_device(&gpu.device)
+    }
+
+    pub(crate) fn fork_view_with_device(&self, device: &wgpu::Device) -> Self {
+        let world = self.camera_uniform();
+        let ui = self.ui_camera_uniform();
+        let camera_buffer = create_camera_buffer(device, "View world camera", world);
+        let ui_camera_buffer = create_camera_buffer(device, "View UI camera", ui);
+        let group = |buffer: &wgpu::Buffer| {
+            camera_group(
+                device,
+                &self.camera_bind_group_layout,
+                buffer,
+                &self.neutral_a.0,
+                &self.neutral_a.1,
+            )
+        };
+        let surface_camera_bind_group = group(&camera_buffer);
+        let ui_camera_bind_group = group(&ui_camera_buffer);
+        Self {
+            overlay_pipeline: self.overlay_pipeline.clone(),
+            zsprite_read_pipeline: self.zsprite_read_pipeline.clone(),
+            zsprite_write_pipeline: self.zsprite_write_pipeline.clone(),
+            zshape_bind_group_layout: self.zshape_bind_group_layout.clone(),
+            default_zshape_bind_group: self.default_zshape_bind_group.clone(),
+            zdepth_pipeline: self.zdepth_pipeline.clone(),
+            overlay_passthrough_pipeline: self.overlay_passthrough_pipeline.clone(),
+            depth_test_pipeline: self.depth_test_pipeline.clone(),
+            texture_bind_group_layout: self.texture_bind_group_layout.clone(),
+            default_source_indices: self.default_source_indices.clone(),
+            zdepth_texture_bind_group_layout: self.zdepth_texture_bind_group_layout.clone(),
+            unit_atlas_bind_group_layout: self.unit_atlas_bind_group_layout.clone(),
+            voxel_palette_bind_group_layout: self.voxel_palette_bind_group_layout.clone(),
+            voxel_sprite_pipeline: self.voxel_sprite_pipeline.clone(),
+            voxel_passthrough_pipeline: self.voxel_passthrough_pipeline.clone(),
+            camera_bind_group_layout: self.camera_bind_group_layout.clone(),
+            #[cfg(test)]
+            depth_stamp_pipeline: self.depth_stamp_pipeline.clone(),
+            uploaded_camera: std::sync::RwLock::new(UploadedCameras { world, ui }),
+            camera_buffer,
+            camera_bind_group: surface_camera_bind_group.clone(),
+            surface_camera_bind_group,
+            bound_shroud_view: None,
+            ui_camera_buffer,
+            ui_camera_bind_group,
+            neutral_a: (self.neutral_a.0.clone(), self.neutral_a.1.clone()),
+        }
+    }
+
     /// Create a single-channel R8Uint atlas texture from byte data.
     ///
     /// Used for voxel sprite atlases where each byte is a palette index
@@ -1573,14 +1612,11 @@ impl BatchRenderer {
         &self,
         device: &wgpu::Device,
     ) -> (wgpu::Buffer, wgpu::BindGroup) {
-        let buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Surface UI Camera Uniform"),
-            contents: &crate::render::webgl::uniform_bytes(
-                device,
-                bytemuck::bytes_of(&self.ui_camera_uniform()),
-            ),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let buffer = create_camera_buffer(
+            device,
+            "Surface UI Camera Uniform",
+            self.ui_camera_uniform(),
+        );
         let group = camera_group(
             device,
             &self.camera_bind_group_layout,
@@ -2092,6 +2128,14 @@ fn ui_camera(world: CameraUniform) -> CameraUniform {
         _pad: 0.0,
         ..world
     }
+}
+
+fn create_camera_buffer(device: &wgpu::Device, label: &str, camera: CameraUniform) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some(label),
+        contents: &crate::render::webgl::uniform_bytes(device, bytemuck::bytes_of(&camera)),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    })
 }
 
 fn camera_group(

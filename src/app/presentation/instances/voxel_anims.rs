@@ -142,6 +142,22 @@ pub(crate) fn build_voxel_anim_instances(
     objects: &mut Vec<PlannedObjectInstance>,
     order: &NativeDisplayOrder,
 ) {
+    build_voxel_anim_instances_for_view(
+        state,
+        crate::app::presentation::render::TacticalView::main(state),
+        &crate::app::presentation::render::WorldViewResources::main(state),
+        objects,
+        order,
+    );
+}
+
+pub(crate) fn build_voxel_anim_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    resources: &crate::app::presentation::render::WorldViewResources<'_>,
+    objects: &mut Vec<PlannedObjectInstance>,
+    order: &NativeDisplayOrder,
+) {
     let (Some(rt), Some(assets)) = (
         state.match_state.sim_runtime.as_ref(),
         state.process_assets.manager(),
@@ -156,19 +172,15 @@ pub(crate) fn build_voxel_anim_instances(
         return;
     }
     let rules = &rt.resources.rules;
-    let input = &state.match_state.input;
-    let (_, _, width, height) = crate::app::input::camera::tactical_viewport_px(state);
-    let view = DebrisView {
+    let [_, _, width, height] = view.viewport;
+    let debris_view = DebrisView {
         terrain,
-        camera: [input.camera_x, input.camera_y],
-        viewport: [
-            width as f32 / input.zoom_level,
-            height as f32 / input.zoom_level,
-        ],
+        camera: view.camera,
+        viewport: [width as f32 / view.zoom, height as f32 / view.zoom],
         axis: super::helpers::depth_axis(state),
     };
     let presentation = &state.match_state.match_presentation;
-    let mut cache = state.renderer.vxl_pose_frame_cache.borrow_mut();
+    let mut cache = resources.pose_cache.borrow_mut();
     for (&id, piece) in sim.voxel_anims().iter() {
         let kind = rules.voxel_anim_type(piece.type_id());
         let palette = piece_palette(
@@ -190,7 +202,7 @@ pub(crate) fn build_voxel_anim_instances(
             painted,
             kind,
             palette,
-            &view,
+            &debris_view,
             order,
             |image, section, matrix| cache.render_tumble(assets, image, section, matrix),
         ) {

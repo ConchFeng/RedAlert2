@@ -230,7 +230,7 @@ impl SpectatorCamera {
         }
     }
 
-    fn target(&mut self, now_ms: u64) -> Option<(f32, f32)> {
+    pub(crate) fn target(&mut self, now_ms: u64) -> Option<(f32, f32)> {
         self.prune(now_ms);
         if !self.enabled || self.manual_remaining(now_ms) > 0 {
             return None;

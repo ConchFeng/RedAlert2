@@ -13,6 +13,7 @@ use crate::app::AppState;
 use crate::app::presentation::render::draw_plan_lowering::{
     NativeDisplayOrder, ObjectPieceInstance, ObjectTexture, PlannedObjectInstance,
 };
+use crate::app::presentation::render::{TacticalView, WorldViewResources};
 use crate::map::entities::EntityCategory;
 use crate::map::lighting;
 use crate::map::terrain::{TILE_HEIGHT, TILE_WIDTH};
@@ -335,6 +336,39 @@ pub(crate) fn build_unit_instances(
     objects: &mut Vec<PlannedObjectInstance>,
     display_order: &NativeDisplayOrder,
 ) {
+    build_unit_instances_for_view(
+        state,
+        TacticalView::main(state),
+        &WorldViewResources::main(state),
+        true,
+        objects,
+        display_order,
+    );
+}
+
+struct UnitViewInputs<'a> {
+    view: TacticalView,
+    pose_cache: &'a std::cell::RefCell<crate::render::unit_pose_cache::VxlPoseFrameCache>,
+    waterlines: &'a std::cell::RefCell<crate::render::sinking::SinkingWaterlines>,
+    barrel_pitches: &'a std::cell::RefCell<crate::render::unit_atlas::BarrelImagePitches>,
+    primary: bool,
+}
+
+pub(crate) fn build_unit_instances_for_view(
+    state: &AppState,
+    view: TacticalView,
+    resources: &WorldViewResources<'_>,
+    primary: bool,
+    objects: &mut Vec<PlannedObjectInstance>,
+    display_order: &NativeDisplayOrder,
+) {
+    let input = UnitViewInputs {
+        view,
+        pose_cache: resources.pose_cache,
+        waterlines: resources.sinking_waterlines,
+        barrel_pitches: resources.barrel_image_pitches,
+        primary,
+    };
     let (sim, atlas) = match (
         state
             .match_state
@@ -346,20 +380,22 @@ pub(crate) fn build_unit_instances(
         (Some(s), Some(a)) => (s, a),
         _ => return,
     };
-    let z = state.match_state.input.zoom_level;
+    let z = view.zoom;
     // Presentation runs after the just-completed simulation frame; snapshot
     // the one binary frame used by every Drive/Ship Draw_Matrix in this pass.
     let display_binary_frame =
         display_binary_frame_for_committed_session(sim.session().binary_frame());
     let (cam_x, cam_y, sw, sh) = (
-        state.match_state.input.camera_x,
-        state.match_state.input.camera_y,
-        state.render_width() as f32 / z,
-        state.render_height() as f32 / z,
+        view.camera[0],
+        view.camera[1],
+        view.size[0] as f32 / z,
+        view.size[1] as f32 / z,
     );
-    let (_, _, tactical_width, tactical_height) =
-        crate::app::input::camera::tactical_viewport_px(state);
-    let unit_viewport = [tactical_width as f32 / z, tactical_height as f32 / z];
+    let unit_camera = [
+        cam_x + view.viewport[0] as f32 / z,
+        cam_y + view.viewport[1] as f32 / z,
+    ];
+    let unit_viewport = [view.viewport[2] as f32 / z, view.viewport[3] as f32 / z];
     let local_owner = crate::app::input::commands::preferred_local_owner_name(state);
     let local_owner_id = local_owner.as_deref().and_then(|o| sim.interner().get(o));
     let ignore_visibility = state.match_state.sandbox_full_visibility;
@@ -373,14 +409,12 @@ pub(crate) fn build_unit_instances(
     // The draw's own query of the live map: lighting and Hover's Is_Powered
     // height read through it, and a miss stamps its dummy, not the simulation's.
     let cells = terrain.map(crate::map::resolved_terrain::NativeCellQuery::isolated);
-    state
-        .match_state
-        .match_presentation
-        .sinking_waterlines
+    input
+        .waterlines
         .borrow_mut()
         .retain(|id| sim.entities().contains(id));
 
-    let surface_view = crate::app::presentation::render::tactical_surface_line_viewport(state);
+    let surface_view = view.surface_line_viewport();
     let laser_palette = std::cell::OnceCell::new();
     let encounter_order = super::helpers::tactical_entity_encounter_order(sim);
     for stable_id in encounter_order {
@@ -405,7 +439,11 @@ pub(crate) fn build_unit_instances(
             .map_or((None, None), |sample| (sample.shadow, Some(sample.pose)));
         let Some([sx, _sy]) = unit_draw_anchor(
             entity,
-            [cam_x, cam_y],
+            if entity.category() == EntityCategory::Unit {
+                unit_camera
+            } else {
+                [cam_x, cam_y]
+            },
             viewport,
             aircraft_shadow.as_ref().map(|pose| pose.anchor),
         ) else {
@@ -637,6 +675,7 @@ pub(crate) fn build_unit_instances(
             };
             emit_pose_sprite(
                 state,
+                &input,
                 sim,
                 cells.as_ref(),
                 &mut pieces,
@@ -672,6 +711,7 @@ pub(crate) fn build_unit_instances(
                 center_x,
                 center_y,
                 state,
+                &input,
                 interp_z,
                 body_tint,
                 body_light,
@@ -702,25 +742,31 @@ pub(crate) fn build_unit_instances(
                 slope_type: stable_slope_for_key(slope_state),
                 barrel_pitch: 0,
             };
-            if let Some((entry, texture_source)) = unit_entry_for_pose(state, atlas, &key, None) {
+            if let Some((entry, texture_source)) =
+                unit_entry_for_pose(state, &input, atlas, &key, None)
+            {
                 let depth_y: f32 =
                     center_y + entry.offset_y + entry.pixel_size[1] + dock_depth_y_offset;
                 let depth: f32 = body_sort_depth(state, entity, depth_y, interp_z);
                 let voxel_adjust =
                     super::foot_depth::unit_z_adjust(state, entity, true, None) as f32;
                 let native_shadow = matches!(texture_source, UnitTextureSource::Stable(_))
-                    && prepare_unit_shadow(
-                        state,
-                        atlas,
-                        entity,
-                        type_str,
-                        body_facing,
-                        no_shadow,
-                        slope_state,
-                        band,
-                        [(entry, [0.0, 0.0])],
-                    );
-                if !native_shadow {
+                    .then(|| {
+                        prepare_unit_shadow(
+                            state,
+                            &input,
+                            atlas,
+                            entity,
+                            type_str,
+                            body_facing,
+                            no_shadow,
+                            slope_state,
+                            band,
+                            [(entry, [0.0, 0.0])],
+                        )
+                    })
+                    .flatten();
+                if native_shadow.is_none() {
                     emit_unit_shadow_sprite(
                         native_shadow,
                         no_shadow,
@@ -755,7 +801,7 @@ pub(crate) fn build_unit_instances(
                 let (composite_rect, split) =
                     bounds.depth_rect(super::foot_depth::unit_bridge_split(state, entity, true));
                 let body_draw_state =
-                    unit_body_draw_state(state, entity, draw_state, split, bounds);
+                    unit_body_draw_state(view, input.waterlines, entity, draw_state, split, bounds);
                 let sprite = SpriteInstance {
                     position: [
                         body_center[0] + entry.offset_x,
@@ -775,7 +821,7 @@ pub(crate) fn build_unit_instances(
                     ..Default::default()
                 };
                 push_unit_sprite(texture_source, sprite, &mut pieces);
-                if native_shadow {
+                if native_shadow.is_some() {
                     emit_unit_shadow_sprite(
                         native_shadow,
                         no_shadow,
@@ -798,6 +844,7 @@ pub(crate) fn build_unit_instances(
 
         emit_jumpjet_unit_shadow(
             state,
+            &input,
             atlas,
             entity,
             type_str,
@@ -842,14 +889,16 @@ pub(crate) fn build_unit_instances(
             );
             if let Some(parent) = parent {
                 // Opt-in app measurement of an actually admitted draw-plan object.
-                state.match_state.match_diagnostics.record_actor_draw(
-                    sim,
-                    entity,
-                    sim.session().binary_frame(),
-                    render_pose.screen,
-                    render_pose.body,
-                    &state.match_state.match_presentation.interpolation,
-                );
+                if primary {
+                    state.match_state.match_diagnostics.record_actor_draw(
+                        sim,
+                        entity,
+                        sim.session().binary_frame(),
+                        render_pose.screen,
+                        render_pose.body,
+                        &state.match_state.match_presentation.interpolation,
+                    );
+                }
                 let mut planned = PlannedObjectInstance::object(parent, pieces);
                 if let Some(rules) = state.rules() {
                     planned.tail_draws = crate::app::presentation::target_lines::target_laser_draws(
@@ -1194,6 +1243,7 @@ fn ground_pose_with_angles(
 /// callers emit their shadow separately in native order.
 fn emit_pose_sprite(
     state: &AppState,
+    input: &UnitViewInputs<'_>,
     sim: &crate::sim::world::Simulation,
     cells: Option<&crate::map::resolved_terrain::NativeCellQuery<'_>>,
     pieces: &mut Vec<ObjectPieceInstance>,
@@ -1209,12 +1259,10 @@ fn emit_pose_sprite(
     let Some(assets) = state.process_assets.manager() else {
         return;
     };
-    let Some(entry) =
-        state
-            .renderer
-            .vxl_pose_frame_cache
-            .borrow_mut()
-            .render(assets, state.rules(), key, tilt)
+    let Some(entry) = input
+        .pose_cache
+        .borrow_mut()
+        .render(assets, state.rules(), key, tilt)
     else {
         return;
     };
@@ -1238,7 +1286,14 @@ fn emit_pose_sprite(
             tint,
             palette_light,
             alpha: 1.0,
-            draw_state: unit_body_draw_state(state, entity, draw_state, split, bounds),
+            draw_state: unit_body_draw_state(
+                input.view,
+                input.waterlines,
+                entity,
+                draw_state,
+                split,
+                bounds,
+            ),
             z_adjust: voxel_adjust,
             z_gradient: pack_voxel_z_gradient(ZGradient::Vertical, split),
             zshape_origin: composite_rect,
@@ -1387,13 +1442,14 @@ fn slope_blend_for_render_state(
 
 fn unit_entry_for_pose(
     state: &AppState,
+    input: &UnitViewInputs<'_>,
     atlas: &crate::render::unit_atlas::UnitAtlas,
     key: &UnitSpriteKey,
     ground_pose: Option<crate::render::vxl_raster::GroundPose>,
 ) -> Option<(UnitSpriteEntry, UnitTextureSource)> {
     if let Some(pose) = ground_pose {
         let assets = state.process_assets.manager()?;
-        let entry = state.renderer.vxl_pose_frame_cache.borrow_mut().render(
+        let entry = input.pose_cache.borrow_mut().render(
             assets,
             state.rules(),
             key,
@@ -1409,8 +1465,11 @@ fn unit_entry_for_pose(
 /// First-fill mask owner for the supported ordinary flat ground path. The
 /// input entries are precisely the parts selected for this parent's draw;
 /// cache hits skip their pixel work and retain the first completed mask.
+type PreparedUnitShadow = (UnitSpriteEntry, UnitTextureSource);
+
 fn prepare_unit_shadow(
     state: &AppState,
+    input: &UnitViewInputs<'_>,
     atlas: &crate::render::unit_atlas::UnitAtlas,
     entity: &crate::sim::game_entity::GameEntity,
     type_id: &str,
@@ -1418,10 +1477,10 @@ fn prepare_unit_shadow(
     no_shadow: bool,
     slope: UnitRenderSlopeState,
     band: EntityDrawBand,
-    parts: impl IntoIterator<Item = (crate::render::unit_atlas::UnitSpriteEntry, [f32; 2])>,
-) -> bool {
+    parts: impl IntoIterator<Item = (UnitSpriteEntry, [f32; 2])>,
+) -> Option<PreparedUnitShadow> {
     if !native_shadow_caller_eligible(entity, no_shadow, slope, band) {
-        return false;
+        return None;
     }
     let key = shadow_lookup_key(
         UnitSpriteKey {
@@ -1435,7 +1494,31 @@ fn prepare_unit_shadow(
         },
         true,
     );
-    atlas.prepare_native_shadow(&state.renderer.gpu.queue, &key, parts)
+    if input.primary {
+        return atlas
+            .prepare_native_shadow(&state.renderer.gpu.queue, &key, parts)
+            .then(|| atlas.get(&key).copied())
+            .flatten()
+            .map(|entry| (entry, UnitTextureSource::Stable(entry.page)));
+    }
+    let parts: Vec<_> = parts
+        .into_iter()
+        .map(
+            |(entry, offset)| crate::render::unit_atlas::UnitShadowPart {
+                entry,
+                point: [
+                    128 + entry.offset_x as i32 + offset[0] as i32,
+                    128 + entry.offset_y as i32 + offset[1] as i32,
+                ],
+                posed: false,
+            },
+        )
+        .collect();
+    input
+        .pose_cache
+        .borrow_mut()
+        .render_unit_shadow(atlas, &key, [0, 0], &parts)
+        .map(|entry| (entry, UnitTextureSource::Pose(entry.page)))
 }
 
 fn native_shadow_caller_eligible(
@@ -1504,7 +1587,7 @@ fn shadow_lookup_key(mut key: UnitSpriteKey, native_shadow: bool) -> UnitSpriteK
 /// packed RGB565 half and full native cache lifecycle remain outside this fix.
 /// `shadow_slope` is [`unit_shadow_slope`]'s.
 fn emit_unit_shadow_sprite(
-    native_shadow: bool,
+    native_shadow: Option<PreparedUnitShadow>,
     no_shadow: bool,
     voxel_adjust: f32,
     atlas: &crate::render::unit_atlas::UnitAtlas,
@@ -1532,13 +1615,19 @@ fn emit_unit_shadow_sprite(
         slope_type: shadow_slope,
         barrel_pitch: 0,
     };
-    let lookup_key = shadow_lookup_key(key.clone(), native_shadow);
-    let Some(entry) = atlas.get(&lookup_key).or_else(|| atlas.get(&key)).copied() else {
+    let Some((entry, source)) = native_shadow.or_else(|| {
+        let lookup_key = shadow_lookup_key(key.clone(), false);
+        atlas
+            .get(&lookup_key)
+            .or_else(|| atlas.get(&key))
+            .copied()
+            .map(|entry| (entry, UnitTextureSource::Stable(entry.page)))
+    }) else {
         return;
     };
     emit_shadow_stencil(
         entry,
-        UnitTextureSource::Stable(entry.page),
+        source,
         [center_x, center_y],
         depth,
         voxel_adjust,
@@ -1583,6 +1672,7 @@ fn emit_shadow_stencil(
 /// unmasked, and positive low flight uses the existing frame-local pages.
 fn emit_jumpjet_unit_shadow(
     state: &AppState,
+    input: &UnitViewInputs<'_>,
     atlas: &crate::render::unit_atlas::UnitAtlas,
     entity: &crate::sim::game_entity::GameEntity,
     type_id: &str,
@@ -1661,8 +1751,8 @@ fn emit_jumpjet_unit_shadow(
                 })
             })
             .collect();
-        let mut cache = state.renderer.vxl_pose_frame_cache.borrow_mut();
-        if pose.mask == UnitShadowMask::Retained {
+        let mut cache = input.pose_cache.borrow_mut();
+        if pose.mask == UnitShadowMask::Retained && input.primary {
             if !atlas.prepare_native_shadow_with(&state.renderer.gpu.queue, &key, |body| {
                 cache.stamp_shadow_parts(atlas, &parts, body)
             }) {
@@ -1914,21 +2004,18 @@ fn composite_draw_bounds(
 }
 
 fn unit_body_draw_state(
-    state: &AppState,
+    view: TacticalView,
+    waterlines: &std::cell::RefCell<crate::render::sinking::SinkingWaterlines>,
     entity: &crate::sim::game_entity::GameEntity,
     draw_state: DrawState,
     split: bool,
     bounds: CompositeDrawBounds,
 ) -> DrawState {
-    let mut draw_state = composite_draw_state(state, draw_state, split);
+    let mut draw_state = composite_draw_state(view, draw_state, split);
     // The final parent rectangle is known only after all selected voxel parts
     // have been admitted. Never capture from an intermediate/offscreen part.
     if entity.category() == EntityCategory::Unit {
-        let mut cache = state
-            .match_state
-            .match_presentation
-            .sinking_waterlines
-            .borrow_mut();
+        let mut cache = waterlines.borrow_mut();
         let clip =
             bounds.unit_waterline(&mut cache, entity.stable_id(), entity.sinking.is_active());
         crate::render::sinking::apply_waterline_clip(&mut draw_state, clip);
@@ -1936,13 +2023,12 @@ fn unit_body_draw_state(
     draw_state
 }
 
-fn composite_draw_state(state: &AppState, mut draw_state: DrawState, split: bool) -> DrawState {
+fn composite_draw_state(view: TacticalView, mut draw_state: DrawState, split: bool) -> DrawState {
     if split {
         // Only voxel body draws use this otherwise unused parameter. Shadows
         // keep their own unsplit state and depth. The shader needs the actual
         // tactical scissor to seed each clipped native blit independently.
-        let (_, _, _, height) = crate::app::input::camera::tactical_viewport_px(state);
-        draw_state.fx_params[3] = height as f32 / state.match_state.input.zoom_level;
+        draw_state.fx_params[3] = view.viewport[3] as f32 / view.zoom;
     }
     draw_state
 }
@@ -1966,6 +2052,7 @@ fn emit_turret_unit_sprites(
     center_x: f32,
     center_y: f32,
     state: &AppState,
+    input: &UnitViewInputs<'_>,
     z: u8,
     tint: [f32; 3],
     palette_light: crate::render::palette_light::PaletteLight,
@@ -2032,16 +2119,11 @@ fn emit_turret_unit_sprites(
     let drawn_pitch = crate::render::vxl_raster::voxel_facing_step_u16(barrel_elevation) as i8 - 8;
     barrel_key.barrel_pitch = if ground_pose.is_none() && turret_images_cached(entity, slope_state)
     {
-        state
-            .match_state
-            .match_presentation
-            .barrel_image_pitches
-            .borrow_mut()
-            .pitch(
-                &turret_key,
-                (art_offset != 0).then_some(canonical_unit_facing(body_facing)),
-                drawn_pitch,
-            )
+        input.barrel_pitches.borrow_mut().pitch(
+            &turret_key,
+            (art_offset != 0).then_some(canonical_unit_facing(body_facing)),
+            drawn_pitch,
+        )
     } else {
         drawn_pitch
     };
@@ -2063,7 +2145,7 @@ fn emit_turret_unit_sprites(
     // (body, then turret/barrel) controls visual stacking via stable sort.
     // Per-layer depth derived from each sprite's bounding box caused tie-break
     // collisions where body could sort over turret at certain facings.
-    let body_entry_opt = unit_entry_for_pose(state, atlas, &body_key, ground_pose);
+    let body_entry_opt = unit_entry_for_pose(state, input, atlas, &body_key, ground_pose);
     let entity_depth_y: f32 = match body_entry_opt {
         Some((e, _)) => center_y + e.offset_y + e.pixel_size[1] + dock_depth_y_offset,
         None => center_y + dock_depth_y_offset,
@@ -2082,7 +2164,7 @@ fn emit_turret_unit_sprites(
     )
     .into_iter()
     .filter_map(|(key, offset)| {
-        unit_entry_for_pose(state, atlas, key, ground_pose)
+        unit_entry_for_pose(state, input, atlas, key, ground_pose)
             .map(|(entry, source)| (entry, source, offset))
     })
     .collect();
@@ -2090,26 +2172,31 @@ fn emit_turret_unit_sprites(
         .is_some_and(|(_, source)| matches!(source, UnitTextureSource::Stable(_)))
         && turret_layers
             .iter()
-            .all(|(_, source, _)| matches!(source, UnitTextureSource::Stable(_)))
-        && prepare_unit_shadow(
-            state,
-            atlas,
-            entity,
-            type_id,
-            body_facing,
-            no_shadow,
-            slope_state,
-            band,
-            body_entry_opt
-                .into_iter()
-                .map(|(entry, _)| (entry, [0.0, 0.0]))
-                .chain(
-                    turret_layers
-                        .iter()
-                        .map(|(entry, _, offset)| (*entry, *offset)),
-                ),
-        );
-    if !native_shadow {
+            .all(|(_, source, _)| matches!(source, UnitTextureSource::Stable(_)));
+    let native_shadow = native_shadow
+        .then(|| {
+            prepare_unit_shadow(
+                state,
+                input,
+                atlas,
+                entity,
+                type_id,
+                body_facing,
+                no_shadow,
+                slope_state,
+                band,
+                body_entry_opt
+                    .into_iter()
+                    .map(|(entry, _)| (entry, [0.0, 0.0]))
+                    .chain(
+                        turret_layers
+                            .iter()
+                            .map(|(entry, _, offset)| (*entry, *offset)),
+                    ),
+            )
+        })
+        .flatten();
+    if native_shadow.is_none() {
         emit_unit_shadow_sprite(
             native_shadow,
             no_shadow,
@@ -2139,7 +2226,14 @@ fn emit_turret_unit_sprites(
     );
     let (composite_rect, split) =
         bounds.depth_rect(super::foot_depth::unit_bridge_split(state, entity, true));
-    let body_draw_state = unit_body_draw_state(state, entity, draw_state, split, bounds);
+    let body_draw_state = unit_body_draw_state(
+        input.view,
+        input.waterlines,
+        entity,
+        draw_state,
+        split,
+        bounds,
+    );
     if let Some((entry, texture_source)) = body_entry_opt {
         let sprite = SpriteInstance {
             position: [center_x + entry.offset_x, center_y + entry.offset_y],
@@ -2180,7 +2274,7 @@ fn emit_turret_unit_sprites(
         };
         push_unit_sprite(texture_source, sprite, pieces);
     }
-    if native_shadow {
+    if native_shadow.is_some() {
         emit_unit_shadow_sprite(
             native_shadow,
             no_shadow,
@@ -2421,6 +2515,63 @@ mod tests {
     use crate::sim::spawn_manager::{SpawnManagerState, SpawnSlot, SpawnSlotState};
     use crate::sim::timer::CdTimer;
     use crate::sim::world::Simulation;
+
+    #[test]
+    fn explicit_unit_view_uses_its_clip_height_and_waterline_history() {
+        let primary = std::cell::RefCell::new(crate::render::sinking::SinkingWaterlines::default());
+        let secondary =
+            std::cell::RefCell::new(crate::render::sinking::SinkingWaterlines::default());
+        primary.borrow_mut().restore([(1, 125)]);
+        secondary.borrow_mut().restore([(1, 275)]);
+        let entity = GameEntity::test_default_of_category(
+            1,
+            "AEGIS",
+            "Americans",
+            4,
+            4,
+            EntityCategory::Unit,
+        );
+        let view = TacticalView {
+            camera: [500., 900.],
+            size: [320, 180],
+            zoom: 2.,
+            viewport: [0, 0, 320, 180],
+        };
+        let bounds = CompositeDrawBounds {
+            padded: [100., 40.],
+            native: Some([0, 100, 20, 40]),
+        };
+        let draw = unit_body_draw_state(
+            view,
+            &secondary,
+            &entity,
+            DrawState::default(),
+            true,
+            bounds,
+        );
+        assert_eq!(draw.fx_params[3], 90.);
+        assert_eq!(draw.sinking_row, 275.);
+        assert_ne!(
+            draw.fx_flags & crate::render::draw_state::FX_SINKING_CLIP,
+            0
+        );
+        assert_eq!(primary.borrow().saved(), [(1, 125)]);
+        assert_eq!(secondary.borrow().saved(), [(1, 275)]);
+        let main_draw = unit_body_draw_state(
+            TacticalView {
+                zoom: 1.,
+                viewport: [0, 0, 800, 600],
+                ..view
+            },
+            &primary,
+            &entity,
+            DrawState::default(),
+            true,
+            bounds,
+        );
+        assert_eq!(main_draw.fx_params[3], 600.);
+        assert_eq!(main_draw.sinking_row, 125.);
+    }
 
     /// OREGATH's row rounds the body facing to eight directions, `0x1000` on
     /// either side of each (`0x0073D1E7..0x0073D1FD`); the frame within the

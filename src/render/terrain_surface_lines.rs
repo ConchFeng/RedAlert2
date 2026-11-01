@@ -422,6 +422,21 @@ impl SurfaceLineGpu {
         }
     }
 
+    pub(super) fn fork_view(&self) -> Self {
+        Self {
+            pipeline: self.pipeline.clone(),
+            layout: self.layout.clone(),
+            batches: Vec::new(),
+            active: 0,
+            #[cfg(test)]
+            test_operation_limit: self.test_operation_limit,
+            work: Vec::new(),
+            written: Default::default(),
+            operations: Vec::new(),
+            instances: Vec::new(),
+        }
+    }
+
     fn upload(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, zoom: f32, size: [u32; 2]) {
         if self.work.is_empty() {
             return;

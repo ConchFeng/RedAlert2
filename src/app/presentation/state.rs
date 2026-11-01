@@ -25,6 +25,8 @@ use crate::render::unit_atlas::UnitAtlas;
 use crate::ui::sidebar::{SidebarChromeLayoutSpec, SidebarTab};
 
 pub(crate) struct MatchPresentationState {
+    pub(crate) second_view: crate::ui::second_view::SecondViewState,
+    pub(crate) second_view_runtime: super::second_view::SecondViewRuntime,
     pub(crate) spectator_tools: super::spectator_tools::SpectatorTools,
     pub(crate) interpolation: super::interpolation::RenderInterpolation,
     /// Native Techno+3CA waterline cache, captured by drawing and retained in

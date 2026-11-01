@@ -68,21 +68,36 @@ pub(crate) fn build_projectile_visual_instances(
     objects: &mut Vec<PlannedObjectInstance>,
     order: &NativeDisplayOrder,
 ) {
+    build_projectile_visual_instances_for_view(
+        state,
+        crate::app::presentation::render::TacticalView::main(state),
+        &crate::app::presentation::render::WorldViewResources::main(state),
+        objects,
+        order,
+    );
+}
+
+pub(crate) fn build_projectile_visual_instances_for_view(
+    state: &AppState,
+    view: crate::app::presentation::render::TacticalView,
+    resources: &crate::app::presentation::render::WorldViewResources<'_>,
+    objects: &mut Vec<PlannedObjectInstance>,
+    order: &NativeDisplayOrder,
+) {
     let Some(rt) = state.match_state.sim_runtime.as_ref() else {
         return;
     };
     let atlas = state.match_state.match_presentation.sprite_atlas.as_ref();
     let assets = state.process_assets.manager();
-    let mut pose_cache = state.renderer.vxl_pose_frame_cache.borrow_mut();
+    let mut pose_cache = resources.pose_cache.borrow_mut();
     let sim = &rt.simulation;
     let Some(terrain) = sim.resolved_terrain() else {
         return;
     };
     let rules = &rt.resources.rules;
-    let input = &state.match_state.input;
-    let (_, _, width, height) = crate::app::input::camera::tactical_viewport_px(state);
-    let width = width as f32 / input.zoom_level;
-    let height = height as f32 / input.zoom_level;
+    let [_, _, width, height] = view.viewport;
+    let width = width as f32 / view.zoom;
+    let height = height as f32 / view.zoom;
     let axis = super::helpers::depth_axis(state);
     // Bullet468090's FirersPalette arm (`0x004683A1..0x004683D1`): the
     // retained +114 House's scheme, else the local player's.
@@ -144,7 +159,7 @@ pub(crate) fn build_projectile_visual_instances(
             scheme,
             atlas,
             terrain,
-            [input.camera_x, input.camera_y],
+            view.camera,
             [width, height],
             axis,
             order,

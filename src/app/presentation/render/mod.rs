@@ -34,6 +34,7 @@ mod building_slot_native_gpu_tests;
 #[cfg(test)]
 mod building_viewport_bounds_tests;
 mod draw_passes;
+pub(crate) mod second_view;
 #[cfg(test)]
 mod magnetic_wave_gpu_tests;
 mod object_extras;
@@ -69,8 +70,57 @@ use crate::app::input::commands::preferred_local_owner_name;
 use crate::render::batch::InstanceBufferPool;
 use crate::ui::sidebar::SidebarView;
 
-pub(crate) use build_instances::tactical_world_viewport;
+pub(crate) use build_instances::{tactical_world_viewport, tactical_world_viewport_for_view};
 use build_instances::{DebugInstances, SidebarInstances, UiInstances, WorldInstances};
+
+/// One camera projection in world pixels, independent of the main input camera.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub(crate) struct TacticalView {
+    pub camera: [f32; 2],
+    pub size: [u32; 2],
+    pub zoom: f32,
+    pub viewport: [u32; 4],
+}
+
+impl TacticalView {
+    pub(crate) fn main(state: &AppState) -> Self {
+        let (x, y, width, height) = crate::app::input::camera::tactical_viewport_px(state);
+        Self {
+            camera: [state.match_state.input.camera_x, state.match_state.input.camera_y],
+            size: [state.render_width(), state.render_height()],
+            zoom: state.match_state.input.zoom_level,
+            viewport: [x, y, width, height],
+        }
+    }
+
+    pub(crate) fn surface_line_viewport(self) -> crate::render::surface_line::SurfaceLineViewport {
+        crate::render::surface_line::SurfaceLineViewport {
+            camera: self.camera.map(|value| value.floor() as i32),
+            clip: self.viewport.map(|value| (value as f32 / self.zoom) as i32),
+            z_origin_y: (self.viewport[1] as f32 / self.zoom) as i32,
+            zoom: 1.0,
+        }
+    }
+
+}
+
+pub(crate) struct WorldViewResources<'a> {
+    pub pose_cache: &'a std::cell::RefCell<crate::render::unit_pose_cache::VxlPoseFrameCache>,
+    pub barrel_image_pitches: &'a std::cell::RefCell<crate::render::unit_atlas::BarrelImagePitches>,
+    pub sinking_waterlines: &'a std::cell::RefCell<crate::render::sinking::SinkingWaterlines>,
+    pub detail: &'a std::cell::RefCell<crate::app::presentation::detail::DetailState>,
+}
+
+impl<'a> WorldViewResources<'a> {
+    pub(crate) fn main(state: &'a AppState) -> Self {
+        Self {
+            pose_cache: &state.renderer.vxl_pose_frame_cache,
+            barrel_image_pitches: &state.match_state.match_presentation.barrel_image_pitches,
+            sinking_waterlines: &state.match_state.match_presentation.sinking_waterlines,
+            detail: &state.match_state.match_presentation.detail,
+        }
+    }
+}
 
 /// Exact sidebar-related instance counts emitted by the production render path.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -732,6 +782,8 @@ pub(crate) fn render_game(
         world_camera.zoom,
     );
 
+    second_view::prepare(state, encoder);
+
     // Phase 7: Dispatch draw calls in render order.
     draw_passes::dispatch_draw_passes(
         state,
@@ -781,18 +833,7 @@ pub(crate) fn render_game(
 pub(crate) fn tactical_surface_line_viewport(
     state: &AppState,
 ) -> crate::render::surface_line::SurfaceLineViewport {
-    let z = state.match_state.input.zoom_level;
-    let (x, y, w, h) = crate::app::input::camera::tactical_viewport_px(state);
-    crate::render::surface_line::SurfaceLineViewport {
-        camera: [
-            state.match_state.input.camera_x,
-            state.match_state.input.camera_y,
-        ]
-        .map(|v| v.floor() as i32),
-        clip: [x, y, w, h].map(|v| (v as f32 / z) as i32),
-        z_origin_y: (y as f32 / z) as i32,
-        zoom: 1.0,
-    }
+    TacticalView::main(state).surface_line_viewport()
 }
 
 /// Upload all per-frame instance vectors to the GPU buffer pool.
@@ -858,41 +899,7 @@ fn upload_to_gpu(
     pool.upload(&state.renderer.gpu, "debug_foot_text", &debug.foot_text);
     pool.upload(&state.renderer.gpu, "debug_heightmap", &debug.heightmap);
 
-    // Terrain + overlays
-    pool.upload(&state.renderer.gpu, "terrain", &world.terrain.normal);
-    pool.upload(&state.renderer.gpu, "cell_body", &world.cell_bodies);
-    pool.upload(
-        &state.renderer.gpu,
-        "building_status_text",
-        &world.building_status_text.instances,
-    );
-    pool.upload(
-        &state.renderer.gpu,
-        "fogged_objects",
-        &world.fogged_objects.instances,
-    );
-    for (layer, objects) in world.object_layers.iter().enumerate() {
-        pool.upload_page(
-            &state.renderer.gpu,
-            "object_layer",
-            layer,
-            &objects.instances,
-        );
-        pool.upload_page(
-            &state.renderer.gpu,
-            "object_extras",
-            layer,
-            &objects.extras_instances,
-        );
-    }
-    pool.upload(
-        &state.renderer.gpu,
-        "overlay_bridge_body_shadow",
-        &world.bridge_body_shadow,
-    );
-    // Smudges: drawn inside the terrain layer, before the cell bodies,
-    // matching the native per-cell tile-then-smudge dispatch.
-    pool.upload(&state.renderer.gpu, "smudge", &world.smudge);
+    upload_world(&state.renderer.gpu, pool, world);
 
     // Residual effects keep their existing uploads and pass ownership.
     pool.upload(&state.renderer.gpu, "cell_sparkles", &world.cell_sparkles);
@@ -1001,6 +1008,45 @@ fn upload_to_gpu(
     pool.upload(&state.renderer.gpu, "tooltip_fill", &tooltip_fill);
     pool.upload(&state.renderer.gpu, "tooltip_border", &tooltip_border);
     pool.upload(&state.renderer.gpu, "tooltip_text", &tooltip_text);
+}
+
+fn upload_world(gpu: &crate::render::gpu::GpuContext, pool: &mut InstanceBufferPool, world: &WorldInstances) {
+    // Terrain + overlays
+    pool.upload(gpu, "terrain", &world.terrain.normal);
+    pool.upload(gpu, "cell_body", &world.cell_bodies);
+    pool.upload(
+        gpu,
+        "building_status_text",
+        &world.building_status_text.instances,
+    );
+    pool.upload(
+        gpu,
+        "fogged_objects",
+        &world.fogged_objects.instances,
+    );
+    for (layer, objects) in world.object_layers.iter().enumerate() {
+        pool.upload_page(
+            gpu,
+            "object_layer",
+            layer,
+            &objects.instances,
+        );
+        pool.upload_page(
+            gpu,
+            "object_extras",
+            layer,
+            &objects.extras_instances,
+        );
+    }
+    pool.upload(
+        gpu,
+        "overlay_bridge_body_shadow",
+        &world.bridge_body_shadow,
+    );
+    // Smudges: drawn inside the terrain layer, before the cell bodies,
+    // matching the native per-cell tile-then-smudge dispatch.
+    pool.upload(gpu, "smudge", &world.smudge);
+
 }
 
 #[cfg(test)]

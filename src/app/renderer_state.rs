@@ -27,6 +27,8 @@ pub(crate) struct RendererState {
     /// above 1 for this window (`App::sync_zoom_pass`). Captures never zoom.
     pub(crate) upscale_pass: Option<crate::render::upscale_pass::UpscalePass>,
     /// Wheel zoom resolves the native world before adding screen-fixed UI.
+    pub(crate) second_view:
+        Option<crate::app::presentation::render::second_view::SecondViewRenderer>,
     pub(crate) world_zoom_pass: Option<crate::render::upscale_pass::WorldZoomPass>,
     /// The sidebar's own surface, made by the first match frame and following
     /// the frame and the Sidebar size (`render_game`).

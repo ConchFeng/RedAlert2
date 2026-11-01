@@ -5,6 +5,7 @@ use crate::app::App;
 use serde_json::{Value, json};
 
 mod commanders;
+mod second_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PresentedShell {
@@ -240,6 +241,7 @@ pub(super) struct SkirmishCapture {
     observer_battlefield_ready: bool,
     observer_camera_step: Option<ObserverCameraStep>,
     observer_standings: bool,
+    observer_second_view: Option<second_view::SecondViewCapture>,
     ai_commanders: Option<commanders::CommanderCapture>,
     ai_series_target: Option<AiSeriesTarget>,
     ai_series_setup_presented: bool,
@@ -476,6 +478,26 @@ impl SkirmishCapture {
             observer_standings: true,
             ..Self::observer_generated_battlefield()
         }
+    }
+
+    pub(super) fn observer_second_view() -> Self {
+        Self {
+            observer_second_view: Some(Default::default()),
+            ..Self::observer_generated_battlefield()
+        }
+    }
+
+    pub(super) fn validate_second_view_pixels(
+        &mut self,
+        state: &AppState,
+        pixels: &[u8],
+        width: u32,
+        height: u32,
+    ) -> Result<()> {
+        if self.observer_second_view.is_some() {
+            second_view::validate_pixels(state, pixels, width, height, &mut self.route)?;
+        }
+        Ok(())
     }
 
     pub(super) fn ai_commanders(width: u32, height: u32) -> Self {
@@ -2712,6 +2734,15 @@ impl SkirmishCapture {
                     self.observe_ai_series_results(state, frame)?;
                 } else if self.ai_series_target == Some(AiSeriesTarget::Start) {
                     self.observe_ai_series_started(state, frame)?;
+                } else if self.observer_second_view.is_some() {
+                    if self.observer_initial_entities.is_none() || !self.observer_focused {
+                        self.observe_generated_battlefield(state, frame)?;
+                    }
+                    self.observer_battlefield_ready = self
+                        .observer_second_view
+                        .as_mut()
+                        .expect("second view route")
+                        .advance(state, frame, &mut self.route)?;
                 } else if self.observer_standings {
                     self.observe_standings_controls(state, frame)?;
                 } else if self.observer_camera_step.is_some() {

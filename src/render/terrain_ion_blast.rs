@@ -168,6 +168,19 @@ impl IonBlastGpu {
         }
     }
 
+    pub(super) fn fork_view(&self) -> Self {
+        Self {
+            pipeline: self.pipeline.clone(),
+            layout: self.layout.clone(),
+            binding: self.binding.clone(),
+            instances: None,
+            instance_capacity: 0,
+            staged: Vec::new(),
+            prepared: Vec::new(),
+            reach: self.reach,
+        }
+    }
+
     /// `frames` ([`FRAME_COUNT`] frames of bytes) and the moves.
     fn bind_frames(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, frames: &[u8]) {
         let size = wgpu::Extent3d {

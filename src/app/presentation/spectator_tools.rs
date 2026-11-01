@@ -22,6 +22,8 @@ pub(crate) enum SpectatorToolAction {
     ToggleCamera,
     ResumeCamera,
     ToggleStandings,
+    ToggleMore,
+    OpenSecondView,
     StopSeriesAfterMatch,
     SortStandings,
     PreviousStandings,
@@ -32,6 +34,7 @@ pub(crate) enum SpectatorToolAction {
 #[derive(Default)]
 pub(crate) struct SpectatorTools {
     pub(crate) standings: spectator_standings_ui::StandingsView,
+    more_open: bool,
     pressed: Option<SpectatorToolAction>,
     captured: Option<MouseButton>,
     focused: Option<SpectatorToolAction>,
@@ -79,6 +82,7 @@ struct ToolbarLayout {
     panel: GadgetRect,
     toggle: GadgetRect,
     standings: GadgetRect,
+    more: GadgetRect,
     stop_series: Option<GadgetRect>,
     resume: Option<GadgetRect>,
     status: GadgetRect,
@@ -87,7 +91,7 @@ struct ToolbarLayout {
 impl ToolbarLayout {
     fn new(
         view: (u32, u32),
-        widths: [i32; 4],
+        widths: [i32; 5],
         status_width: i32,
         text_height: i32,
         resume: bool,
@@ -111,6 +115,13 @@ impl ToolbarLayout {
         }
         let standings = GadgetRect::new(next_x, next_y, standings_width, button_height);
         next_x += standings_width + GAP;
+        let more_width = widths[4].max(72).min(inside_width);
+        if next_x + more_width > MARGIN + PAD + inside_width {
+            next_x = MARGIN + PAD;
+            next_y += button_height + GAP;
+        }
+        let more = GadgetRect::new(next_x, next_y, more_width, button_height);
+        next_x += more_width + GAP;
         let stop_series = series.then(|| {
             let width = widths[3].max(160).min(inside_width);
             if next_x + width > MARGIN + PAD + inside_width {
@@ -145,6 +156,7 @@ impl ToolbarLayout {
             .max(resume_rect.map_or(0, |rect| rect.x + rect.w - MARGIN + PAD))
             .max(toggle.x + toggle.w - MARGIN + PAD)
             .max(standings.x + standings.w - MARGIN + PAD)
+            .max(more.x + more.w - MARGIN + PAD)
             .max(stop_series.map_or(0, |rect| rect.x + rect.w - MARGIN + PAD))
             .min(available_width);
         let panel_height = status.y + status.h - TOP + PAD;
@@ -156,6 +168,7 @@ impl ToolbarLayout {
             panel: GadgetRect::new(MARGIN, TOP, panel_width, panel_height),
             toggle,
             standings,
+            more,
             stop_series,
             resume: resume_rect,
             status,
@@ -167,6 +180,8 @@ impl ToolbarLayout {
             Some(SpectatorToolAction::ToggleCamera)
         } else if self.standings.contains(point.0, point.1) {
             Some(SpectatorToolAction::ToggleStandings)
+        } else if self.more.contains(point.0, point.1) {
+            Some(SpectatorToolAction::ToggleMore)
         } else if self
             .stop_series
             .is_some_and(|rect| rect.contains(point.0, point.1))
@@ -197,6 +212,7 @@ struct ToolbarContent {
     toggle: String,
     resume: String,
     standings: String,
+    more: String,
     stop_series: String,
     status: String,
     layout: ToolbarLayout,
@@ -237,6 +253,7 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
         localized(state, key, &fallback)
     };
     let standings = localized(state, "VERA:SpectatorStandings", "Standings");
+    let more = localized(state, "VERA:SpectatorMore", "More");
     let stop_series = if crate::app::ai_series::stop_requested(state) {
         localized(
             state,
@@ -261,6 +278,7 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
             font.text_width(&resume) as i32 + 2 * PAD,
             font.text_width(&standings) as i32 + 2 * PAD,
             font.text_width(&stop_series) as i32 + 2 * PAD,
+            font.text_width(&more) as i32 + 2 * PAD,
         ],
         font.text_width(&status) as i32,
         font.cell_height() as i32,
@@ -271,6 +289,7 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
         toggle,
         resume,
         standings,
+        more,
         stop_series,
         status,
         layout,
@@ -283,6 +302,8 @@ pub(crate) fn action_center(state: &AppState, action: SpectatorToolAction) -> Op
         SpectatorToolAction::ToggleCamera => layout.toggle,
         SpectatorToolAction::ResumeCamera => layout.resume?,
         SpectatorToolAction::ToggleStandings => layout.standings,
+        SpectatorToolAction::ToggleMore => layout.more,
+        SpectatorToolAction::OpenSecondView => more_rect(state, &layout)?,
         SpectatorToolAction::StopSeriesAfterMatch => layout.stop_series?,
         _ => {
             return spectator_standings_ui::layout(state, layout.panel.y + layout.panel.h + GAP)?
@@ -292,6 +313,30 @@ pub(crate) fn action_center(state: &AppState, action: SpectatorToolAction) -> Op
     Some((rect.x + rect.w / 2, rect.y + rect.h / 2))
 }
 
+pub(crate) fn toolbar_bottom(state: &AppState) -> Option<i32> {
+    let toolbar = content(state, wall_clock_ms())?.layout;
+    Some(toolbar.panel.y + toolbar.panel.h + GAP)
+}
+
+fn more_rect(state: &AppState, toolbar: &ToolbarLayout) -> Option<GadgetRect> {
+    if !state
+        .match_state
+        .match_presentation
+        .spectator_tools
+        .more_open
+    {
+        return None;
+    }
+    let (width, height) = tactical_viewport_size(state);
+    let rect = GadgetRect::new(
+        toolbar.panel.x,
+        toolbar.panel.y + toolbar.panel.h + GAP,
+        192.min(width as i32 - 2 * MARGIN),
+        36,
+    );
+    (rect.y + rect.h <= height as i32 - MARGIN).then_some(rect)
+}
+
 pub(crate) fn panel_layout(state: &AppState) -> Option<spectator_standings_ui::StandingsLayout> {
     let toolbar = content(state, wall_clock_ms())?.layout;
     spectator_standings_ui::layout(state, toolbar.panel.y + toolbar.panel.h + GAP)
@@ -299,6 +344,31 @@ pub(crate) fn panel_layout(state: &AppState) -> Option<spectator_standings_ui::S
 
 fn activate(state: &mut AppState, control: SpectatorToolAction, now: u64) {
     match control {
+        SpectatorToolAction::ToggleMore => {
+            let tools = &mut state.match_state.match_presentation.spectator_tools;
+            tools.more_open = !tools.more_open;
+            if tools.more_open {
+                super::spectator_standings_ui::close(state);
+                state.match_state.match_presentation.second_view.close();
+            }
+        }
+        SpectatorToolAction::OpenSecondView => {
+            state
+                .match_state
+                .match_presentation
+                .spectator_tools
+                .more_open = false;
+            super::second_view::open(state);
+        }
+        SpectatorToolAction::ToggleStandings => {
+            state
+                .match_state
+                .match_presentation
+                .spectator_tools
+                .more_open = false;
+            state.match_state.match_presentation.second_view.close();
+            spectator_standings_ui::activate(state, control);
+        }
         SpectatorToolAction::ToggleCamera => {
             state.match_state.input.spectator_camera.toggle(now);
             if state.match_state.input.spectator_camera.enabled() {
@@ -317,6 +387,9 @@ fn activate(state: &mut AppState, control: SpectatorToolAction, now: u64) {
 }
 
 pub(crate) fn owns_pointer(state: &AppState) -> bool {
+    if super::second_view::owns_pointer(state) {
+        return true;
+    }
     let Some(content) = content(state, wall_clock_ms()) else {
         return false;
     };
@@ -335,6 +408,8 @@ pub(crate) fn owns_pointer(state: &AppState) -> bool {
             .layout
             .panel
             .contains(pointer.0.floor() as i32, pointer.1.floor() as i32)
+        || more_rect(state, &content.layout)
+            .is_some_and(|rect| rect.contains(pointer.0.floor() as i32, pointer.1.floor() as i32))
         || panel.is_some_and(|panel| {
             panel.contains((pointer.0.floor() as i32, pointer.1.floor() as i32))
         })
@@ -352,6 +427,7 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) ->
         state,
         content.layout.panel.y + content.layout.panel.h + GAP,
     );
+    let more = more_rect(state, &content.layout);
     let (consumed, action) = state
         .match_state
         .match_presentation
@@ -360,12 +436,24 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) ->
             content
                 .layout
                 .hit(point)
-                .or_else(|| panel.as_ref().and_then(|panel| panel.hit(point))),
+                .or_else(|| panel.as_ref().and_then(|panel| panel.hit(point)))
+                .or_else(|| {
+                    more.filter(|rect| rect.contains(point.0, point.1))
+                        .map(|_| SpectatorToolAction::OpenSecondView)
+                }),
             content.layout.panel.contains(point.0, point.1)
-                || panel.as_ref().is_some_and(|panel| panel.contains(point)),
+                || panel.as_ref().is_some_and(|panel| panel.contains(point))
+                || more.is_some_and(|rect| rect.contains(point.0, point.1)),
             button,
             pressed,
         );
+    if pressed && !consumed {
+        state
+            .match_state
+            .match_presentation
+            .spectator_tools
+            .more_open = false;
+    }
     if consumed {
         state.match_state.input.cancel_tactical_drag();
     }
@@ -388,7 +476,14 @@ pub(crate) fn key(state: &mut AppState, edge: &InGameKeyEdge<'_>) -> bool {
     if matches!(edge.logical, Key::Named(NamedKey::Escape))
         && edge.state.is_pressed()
         && !edge.repeat
-        && spectator_standings_ui::close(state)
+        && (std::mem::replace(
+            &mut state
+                .match_state
+                .match_presentation
+                .spectator_tools
+                .more_open,
+            false,
+        ) || spectator_standings_ui::close(state))
     {
         state.match_state.match_presentation.spectator_tools.focused = None;
         return true;
@@ -396,7 +491,11 @@ pub(crate) fn key(state: &mut AppState, edge: &InGameKeyEdge<'_>) -> bool {
     let mut actions = vec![
         SpectatorToolAction::ToggleCamera,
         SpectatorToolAction::ToggleStandings,
+        SpectatorToolAction::ToggleMore,
     ];
+    if more_rect(state, &content.layout).is_some() {
+        actions.push(SpectatorToolAction::OpenSecondView);
+    }
     if content.layout.stop_series.is_some() {
         actions.push(SpectatorToolAction::StopSeriesAfterMatch);
     }
@@ -475,6 +574,15 @@ pub(crate) fn build_instances(state: &AppState) -> (Vec<SpriteInstance>, Vec<Spr
     };
     let mut fills = vec![fill(content.layout.panel, [0.035, 0.045, 0.055])];
     let mut texts = Vec::new();
+    let second_view_label = if super::second_view::supported(state) {
+        localized(state, "VERA:SecondViewTitle", "Second View")
+    } else {
+        localized(
+            state,
+            "VERA:SecondViewNeedsSpace",
+            "Second View (larger window needed)",
+        )
+    };
     for (control, label, rect) in [
         (
             SpectatorToolAction::ToggleCamera,
@@ -485,6 +593,16 @@ pub(crate) fn build_instances(state: &AppState) -> (Vec<SpriteInstance>, Vec<Spr
             SpectatorToolAction::ToggleStandings,
             content.standings.as_str(),
             Some(content.layout.standings),
+        ),
+        (
+            SpectatorToolAction::ToggleMore,
+            content.more.as_str(),
+            Some(content.layout.more),
+        ),
+        (
+            SpectatorToolAction::OpenSecondView,
+            second_view_label.as_str(),
+            more_rect(state, &content.layout),
         ),
         (
             SpectatorToolAction::StopSeriesAfterMatch,
@@ -563,8 +681,13 @@ mod tests {
     #[test]
     fn narrow_toolbar_wraps_with_shared_hit_rectangles_inside_the_view() {
         let layout =
-            ToolbarLayout::new((452, 480), [160, 120, 104, 168], 300, 12, true, false).unwrap();
+            ToolbarLayout::new((452, 480), [160, 120, 104, 168, 72], 300, 12, true, false).unwrap();
         assert!(layout.status.y > layout.toggle.y);
+        assert_eq!(
+            layout.hit((layout.more.x, layout.more.y)),
+            Some(SpectatorToolAction::ToggleMore)
+        );
+        assert!(layout.more.h >= 28);
         assert_eq!(
             layout.hit((layout.toggle.x, layout.toggle.y)),
             Some(SpectatorToolAction::ToggleCamera)
@@ -574,7 +697,13 @@ mod tests {
             layout.hit((resume.x, resume.y)),
             Some(SpectatorToolAction::ResumeCamera)
         );
-        for rect in [layout.toggle, resume, layout.status] {
+        for rect in [
+            layout.toggle,
+            layout.standings,
+            layout.more,
+            resume,
+            layout.status,
+        ] {
             assert!(rect.x >= layout.panel.x && rect.y >= layout.panel.y);
             assert!(rect.x + rect.w <= layout.panel.x + layout.panel.w);
             assert!(rect.y + rect.h <= layout.panel.y + layout.panel.h);
@@ -664,18 +793,19 @@ mod tests {
     #[test]
     fn resume_layout_is_absent_outside_manual_cooldown_and_tiny_views_stay_safe() {
         let layout =
-            ToolbarLayout::new((800, 480), [160, 120, 104, 168], 200, 12, false, false).unwrap();
+            ToolbarLayout::new((800, 480), [160, 120, 104, 168, 72], 200, 12, false, false)
+                .unwrap();
         assert!(layout.resume.is_none());
         assert!(layout.status.y >= layout.toggle.y);
         let stacked =
-            ToolbarLayout::new((220, 320), [160, 120, 104, 168], 200, 12, true, false).unwrap();
+            ToolbarLayout::new((220, 320), [160, 120, 104, 168, 72], 200, 12, true, false).unwrap();
         assert!(stacked.resume.unwrap().y > stacked.toggle.y);
         assert!(stacked.panel.x + stacked.panel.w <= 220);
         assert!(
-            ToolbarLayout::new((80, 480), [160, 120, 104, 168], 200, 12, true, false).is_none()
+            ToolbarLayout::new((80, 480), [160, 120, 104, 168, 72], 200, 12, true, false).is_none()
         );
         assert!(
-            ToolbarLayout::new((452, 60), [160, 120, 104, 168], 200, 12, true, false).is_none()
+            ToolbarLayout::new((452, 60), [160, 120, 104, 168, 72], 200, 12, true, false).is_none()
         );
     }
 }

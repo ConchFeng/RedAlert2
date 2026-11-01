@@ -182,6 +182,7 @@ const CHECKPOINT_SKIRMISH_DEFEAT_REPLAY: &str = "skirmish-defeat-replay";
 const CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD: &str = "skirmish-observer-generated-battlefield";
 const CHECKPOINT_SKIRMISH_OBSERVER_CAMERA: &str = "skirmish-observer-camera";
 const CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS: &str = "skirmish-observer-standings";
+const CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW: &str = "skirmish-observer-second-view";
 const CHECKPOINT_SKIRMISH_AI_COMMANDERS: &str = "skirmish-ai-commanders";
 const CHECKPOINT_SKIRMISH_AI_SERIES_SETUP: &str = "skirmish-ai-series-setup";
 const CHECKPOINT_SKIRMISH_AI_SERIES_START: &str = "skirmish-ai-series-start";
@@ -368,6 +369,7 @@ pub enum ShellCaptureCheckpoint {
     SkirmishObserverBattlefield,
     SkirmishObserverCamera,
     SkirmishObserverStandings,
+    SkirmishObserverSecondView,
     SkirmishAiCommanders,
     SkirmishAiSeriesSetup,
     SkirmishAiSeriesStart,
@@ -596,6 +598,7 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD => Ok(Self::SkirmishObserverBattlefield),
             CHECKPOINT_SKIRMISH_OBSERVER_CAMERA => Ok(Self::SkirmishObserverCamera),
             CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS => Ok(Self::SkirmishObserverStandings),
+            CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW => Ok(Self::SkirmishObserverSecondView),
             CHECKPOINT_SKIRMISH_AI_COMMANDERS => Ok(Self::SkirmishAiCommanders),
             CHECKPOINT_SKIRMISH_AI_SERIES_SETUP => Ok(Self::SkirmishAiSeriesSetup),
             CHECKPOINT_SKIRMISH_AI_SERIES_START => Ok(Self::SkirmishAiSeriesStart),
@@ -1004,6 +1007,7 @@ impl ShellCaptureCheckpoint {
             Self::SkirmishObserverBattlefield => CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD,
             Self::SkirmishObserverCamera => CHECKPOINT_SKIRMISH_OBSERVER_CAMERA,
             Self::SkirmishObserverStandings => CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
+            Self::SkirmishObserverSecondView => CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW,
             Self::SkirmishAiCommanders => CHECKPOINT_SKIRMISH_AI_COMMANDERS,
             Self::SkirmishAiSeriesSetup => CHECKPOINT_SKIRMISH_AI_SERIES_SETUP,
             Self::SkirmishAiSeriesStart => CHECKPOINT_SKIRMISH_AI_SERIES_START,
@@ -2391,6 +2395,9 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::SkirmishObserverStandings => {
                 Some(skirmish::SkirmishCapture::observer_standings())
             }
+            ShellCaptureCheckpoint::SkirmishObserverSecondView => {
+                Some(skirmish::SkirmishCapture::observer_second_view())
+            }
             ShellCaptureCheckpoint::SkirmishAiCommanders => Some(
                 skirmish::SkirmishCapture::ai_commanders(request.width, request.height),
             ),
@@ -2558,6 +2565,7 @@ impl ShellCaptureSession {
             self.request.checkpoint,
             ShellCaptureCheckpoint::SkirmishObserverBattlefield
                 | ShellCaptureCheckpoint::SkirmishObserverStandings
+                | ShellCaptureCheckpoint::SkirmishObserverSecondView
                 | ShellCaptureCheckpoint::SkirmishAiCommanders
                 | ShellCaptureCheckpoint::SkirmishAiSeriesSetup
                 | ShellCaptureCheckpoint::SkirmishAiSeriesStart
@@ -2963,6 +2971,14 @@ impl ShellCaptureSession {
             "capture state changed before bundle write"
         );
 
+        if let Some(capture) = self.skirmish.as_mut() {
+            capture.validate_second_view_pixels(
+                state,
+                pixels,
+                self.request.width,
+                self.request.height,
+            )?;
+        }
         let mut manifest_bytes = match (
             &self.skirmish,
             &self.movies,
@@ -4658,6 +4674,11 @@ mod tests {
             (
                 CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
                 ShellCaptureCheckpoint::SkirmishObserverStandings,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_OBSERVER_SECOND_VIEW,
+                ShellCaptureCheckpoint::SkirmishObserverSecondView,
                 40_000,
             ),
             (

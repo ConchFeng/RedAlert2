@@ -13,6 +13,14 @@ struct Beam {
     geometry: Option<BeamGeometry>,
 }
 
+struct BeamProjection {
+    birth: RadiationBeamBirth,
+    geometry: BeamGeometry,
+    progress: i32,
+    spacing: i32,
+    visible: bool,
+}
+
 #[cfg(test)]
 #[path = "radiation_beams_tests.rs"]
 mod tests;
@@ -46,6 +54,7 @@ pub(crate) struct RadiationBeams {
     /// Derived last-composite work, rebuilt exactly once per composite.
     draws: Vec<SurfaceDraw>,
     composites: Vec<BeamCompositeObservation>,
+    projections: Vec<BeamProjection>,
 }
 
 impl RadiationBeams {
@@ -77,6 +86,7 @@ impl RadiationBeams {
     ) {
         self.draws.clear();
         self.composites.clear();
+        self.projections.clear();
         if self.live.is_empty() {
             return;
         }
@@ -90,7 +100,15 @@ impl RadiationBeams {
                 .get_or_insert_with(|| BeamGeometry::new(beam.birth.from, beam.birth.to));
             let before = self.draws.len();
             beam.spacing = spacing;
-            if visible(&beam.birth) {
+            let visible = visible(&beam.birth);
+            self.projections.push(BeamProjection {
+                birth: beam.birth,
+                geometry,
+                progress: beam.progress,
+                spacing,
+                visible,
+            });
+            if visible {
                 geometry.lines(beam.birth, beam.progress, spacing, viewport, |line| {
                     self.draws.push(SurfaceDraw::Line(line))
                 });
@@ -106,6 +124,26 @@ impl RadiationBeams {
             });
         }
         self.live.retain(|beam| beam.progress < beam.birth.duration);
+    }
+
+    /// Project the last committed composite, including its final retiring frame,
+    /// without another registry advance or visibility decision.
+    pub(crate) fn project(&self, viewport: SurfaceLineViewport) -> Vec<SurfaceDraw> {
+        let mut draws = Vec::new();
+        for projection in self
+            .projections
+            .iter()
+            .filter(|projection| projection.visible)
+        {
+            projection.geometry.lines(
+                projection.birth,
+                projection.progress,
+                projection.spacing,
+                viewport,
+                |line| draws.push(SurfaceDraw::Line(line)),
+            );
+        }
+        draws
     }
 
     pub(crate) fn draws(&self) -> &[SurfaceDraw] {

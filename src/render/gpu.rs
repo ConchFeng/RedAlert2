@@ -322,10 +322,17 @@ impl GpuContext {
         } else {
             required_limits
         };
+        let timestamp_features = wgpu::Features::TIMESTAMP_QUERY;
+        let required_features = if hidden_capture && adapter.features().contains(timestamp_features)
+        {
+            timestamp_features
+        } else {
+            wgpu::Features::empty()
+        };
         let (device, queue): (wgpu::Device, wgpu::Queue) = adapter
             .request_device(&wgpu::DeviceDescriptor {
                 label: Some("RA2 Device"),
-                required_features: wgpu::Features::empty(),
+                required_features,
                 required_limits,
                 ..Default::default()
             })

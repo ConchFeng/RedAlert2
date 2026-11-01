@@ -31,13 +31,10 @@ pub struct VxlPoseFrameCache {
     pages: Vec<PosePage>,
     /// Only frame-local derived sprites; immutable models remain cached below.
     unit_poses: HashMap<UnitSpriteKey, HashMap<PoseTiltKey, UnitSpriteEntry>>,
-    /// `VOXELS.VPL`, parsed on the first pose.
-    vpl: Option<Option<VplFile>>,
-    /// Each posed type's voxel model, parsed on its first pose.
-    models: BTreeMap<String, Option<UnitModel>>,
-    /// Image-file models shared by voxel debris and bullets. These keys are
-    /// retained image-load attempts, unlike the rules type keys in `models`.
-    image_models: BTreeMap<String, ImageModel>,
+    /// Views share parsed sources, including failed loads, while retaining
+    /// separate frame-local sprites and GPU pages on the render thread.
+    sources: std::rc::Rc<std::cell::RefCell<PoseSources>>,
+    image_poses: BTreeMap<String, BTreeMap<MatrixPoseKey, UnitSpriteEntry>>,
 }
 
 struct PosePage {
@@ -94,10 +91,11 @@ impl From<PoseTilt> for PoseTiltKey {
     }
 }
 
-struct ImageModel {
-    model: Option<UnitModel>,
-    /// Equal direct matrices share a page slot only within this frame.
-    poses: BTreeMap<MatrixPoseKey, UnitSpriteEntry>,
+#[derive(Default)]
+struct PoseSources {
+    vpl: Option<Option<VplFile>>,
+    models: BTreeMap<String, Option<UnitModel>>,
+    image_models: BTreeMap<String, Option<UnitModel>>,
 }
 
 #[derive(PartialEq, Eq, PartialOrd, Ord)]
@@ -109,6 +107,13 @@ struct MatrixPoseKey {
 }
 
 impl VxlPoseFrameCache {
+    pub(crate) fn fork_view(&self) -> Self {
+        Self {
+            sources: std::rc::Rc::clone(&self.sources),
+            ..Self::default()
+        }
+    }
+
     /// Read only the visible body's frame-local pixels through their owner.
     /// Stable atlas pieces use the same native composite copy owner.
     pub(crate) fn stamp_shadow_parts(
@@ -203,8 +208,8 @@ impl VxlPoseFrameCache {
     /// page allocations. No live instance survives this presentation boundary.
     pub fn begin_frame(&mut self) {
         self.unit_poses.clear();
-        for image in self.image_models.values_mut() {
-            image.poses.clear();
+        for poses in self.image_poses.values_mut() {
+            poses.clear();
         }
         for page in &mut self.pages {
             page.begin_frame();
@@ -228,20 +233,22 @@ impl VxlPoseFrameCache {
         {
             return Some(*entry);
         }
-        let vpl = self
-            .vpl
-            .get_or_insert_with(|| {
-                asset_manager
-                    .get_ref("VOXELS.VPL")
-                    .and_then(|data| VplFile::from_bytes(data).ok())
-            })
-            .as_ref();
-        let model = self
-            .models
-            .entry(key.type_id.clone())
-            .or_insert_with(|| UnitModel::load(asset_manager, &key.type_id, rules))
-            .as_ref()?;
-        let (sprite, native_draw_bounds) = model.render_pose(key, vpl, tilt)?;
+        let (sprite, native_draw_bounds) = {
+            let mut sources = self.sources.borrow_mut();
+            let PoseSources { vpl, models, .. } = &mut *sources;
+            let vpl = vpl
+                .get_or_insert_with(|| {
+                    asset_manager
+                        .get_ref("VOXELS.VPL")
+                        .and_then(|data| VplFile::from_bytes(data).ok())
+                })
+                .as_ref();
+            let model = models
+                .entry(key.type_id.clone())
+                .or_insert_with(|| UnitModel::load(asset_manager, &key.type_id, rules))
+                .as_ref()?;
+            model.render_pose(key, vpl, tilt)?
+        };
         let entry = self.place(&sprite, native_draw_bounds)?;
         self.unit_poses
             .entry(key.clone())
@@ -262,24 +269,24 @@ impl VxlPoseFrameCache {
         section: i32,
         matrix: glam::Mat4,
     ) -> Option<(UnitSpriteEntry, Option<UnitSpriteEntry>)> {
-        let vpl = self
-            .vpl
-            .get_or_insert_with(|| {
-                asset_manager
-                    .get_ref("VOXELS.VPL")
-                    .and_then(|data| VplFile::from_bytes(data).ok())
-            })
-            .as_ref();
-        let model = self
-            .image_models
-            .entry(image.to_string())
-            .or_insert_with(|| ImageModel {
-                model: UnitModel::load(asset_manager, image, None),
-                poses: BTreeMap::new(),
-            })
-            .model
-            .as_ref()?;
-        let (body, shadow) = model.render_tumble(section, matrix, vpl)?;
+        let (body, shadow) = {
+            let mut sources = self.sources.borrow_mut();
+            let PoseSources {
+                vpl, image_models, ..
+            } = &mut *sources;
+            let vpl = vpl
+                .get_or_insert_with(|| {
+                    asset_manager
+                        .get_ref("VOXELS.VPL")
+                        .and_then(|data| VplFile::from_bytes(data).ok())
+                })
+                .as_ref();
+            let model = image_models
+                .entry(image.to_string())
+                .or_insert_with(|| UnitModel::load(asset_manager, image, None))
+                .as_ref()?;
+            model.render_tumble(section, matrix, vpl)?
+        };
         let shadow = shadow.and_then(|sprite| self.place(&sprite, None));
         Some((self.place(&body, None)?, shadow))
     }
@@ -304,33 +311,35 @@ impl VxlPoseFrameCache {
             lighting,
         };
         if let Some(entry) = self
-            .image_models
+            .image_poses
             .get(image)
-            .and_then(|model| model.poses.get(&key))
+            .and_then(|poses| poses.get(&key))
         {
             return Some(*entry);
         }
-        let vpl = self
-            .vpl
-            .get_or_insert_with(|| {
-                asset_manager
-                    .get_ref("VOXELS.VPL")
-                    .and_then(|data| VplFile::from_bytes(data).ok())
-            })
-            .as_ref();
-        let model = self
-            .image_models
-            .entry(image.to_owned())
-            .or_insert_with(|| ImageModel {
-                model: UnitModel::load(asset_manager, image, None),
-                poses: BTreeMap::new(),
-            });
-        let (sprite, bounds) = model
-            .model
-            .as_ref()?
-            .render_matrix(matrix, frame, use_hva, lighting, vpl)?;
+        let (sprite, bounds) = {
+            let mut sources = self.sources.borrow_mut();
+            let PoseSources {
+                vpl, image_models, ..
+            } = &mut *sources;
+            let vpl = vpl
+                .get_or_insert_with(|| {
+                    asset_manager
+                        .get_ref("VOXELS.VPL")
+                        .and_then(|data| VplFile::from_bytes(data).ok())
+                })
+                .as_ref();
+            let model = image_models
+                .entry(image.to_owned())
+                .or_insert_with(|| UnitModel::load(asset_manager, image, None))
+                .as_ref()?;
+            model.render_matrix(matrix, frame, use_hva, lighting, vpl)?
+        };
         let entry = self.place(&sprite, bounds)?;
-        self.image_models.get_mut(image)?.poses.insert(key, entry);
+        self.image_poses
+            .entry(image.to_owned())
+            .or_default()
+            .insert(key, entry);
         Some(entry)
     }
 
@@ -506,6 +515,51 @@ mod tests {
     }
 
     #[test]
+    fn independent_views_share_late_parsed_models_and_keep_frame_pages_local() {
+        let Some(battle) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+            return;
+        };
+        let Some((_, assets)) = crate::rules::retail_ini_fixture::retail_assets() else {
+            return;
+        };
+        let mut main = VxlPoseFrameCache::default();
+        let mut second = main.fork_view();
+        let key = ground_key(crate::rules::voxel_frame_catalog::VxlLayer::Body);
+        let main_entry = main
+            .render(&assets, Some(&battle.rules), &key, ground_pose(0.25))
+            .unwrap();
+        let main_pixels = pose_texels(&main, main_entry);
+        let model = main.sources.borrow().models["MTNK"].as_ref().unwrap() as *const UnitModel;
+        second
+            .render(&assets, Some(&battle.rules), &key, ground_pose(-0.25))
+            .unwrap();
+        assert_eq!(
+            second.sources.borrow().models["MTNK"].as_ref().unwrap() as *const UnitModel,
+            model
+        );
+        assert!(std::rc::Rc::ptr_eq(&main.sources, &second.sources));
+        second.fill_test_page();
+        second.begin_frame();
+        assert!(!main.unit_poses.is_empty());
+        assert_eq!(pose_texels(&main, main_entry), main_pixels);
+        let matrix = glam::Mat4::IDENTITY;
+        assert!(
+            second
+                .render_matrix(
+                    &assets,
+                    "VERA_MISSING_SECOND_VIEW_MODEL",
+                    matrix,
+                    0,
+                    true,
+                    VxlLighting::Diffuse
+                )
+                .is_none()
+        );
+        assert!(main.sources.borrow().image_models["VERA_MISSING_SECOND_VIEW_MODEL"].is_none());
+        assert!(main.image_poses.is_empty());
+    }
+
+    #[test]
     fn repeated_real_ground_parts_reuse_one_frame_allocation() {
         let Some(battle) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
             return;
@@ -606,7 +660,7 @@ mod tests {
             .unwrap();
         assert_same_entry(repeated, first);
         let page_count = cache.pages.len();
-        let model = cache.models["MTNK"].as_ref().unwrap() as *const UnitModel;
+        let model = cache.sources.borrow().models["MTNK"].as_ref().unwrap() as *const UnitModel;
         cache.begin_frame();
         assert!(cache.unit_poses.is_empty());
         assert_eq!(
@@ -621,7 +675,7 @@ mod tests {
                 .all(|page| page.used_rows() == 0 && page.pixels.iter().all(|&pixel| pixel == 0))
         );
         assert_eq!(
-            cache.models["MTNK"].as_ref().unwrap() as *const UnitModel,
+            cache.sources.borrow().models["MTNK"].as_ref().unwrap() as *const UnitModel,
             model
         );
         let next = cache
@@ -684,25 +738,24 @@ mod tests {
             .render_matrix(&assets, "ZBOMB", east, 0, true, VxlLighting::Diffuse)
             .unwrap();
         assert_ne!(first.uv_origin, changed.uv_origin);
-        assert_eq!(cache.image_models["ZBOMB"].poses.len(), 2);
+        assert_eq!(cache.image_poses["ZBOMB"].len(), 2);
         for missing in ["VERA_MISSING_BULLET_IMAGE", ""] {
             assert!(
                 cache
                     .render_matrix(&assets, missing, down, 0, true, VxlLighting::Diffuse)
                     .is_none()
             );
-            assert!(cache.image_models[missing].model.is_none());
+            assert!(cache.sources.borrow().image_models[missing].is_none());
         }
-        let parsed_model = cache.image_models["ZBOMB"].model.as_ref().unwrap() as *const UnitModel;
+        let parsed_model = cache.sources.borrow().image_models["ZBOMB"]
+            .as_ref()
+            .unwrap() as *const UnitModel;
         cache.begin_frame();
-        assert!(
-            cache
-                .image_models
-                .values()
-                .all(|model| model.poses.is_empty())
-        );
+        assert!(cache.image_poses.values().all(BTreeMap::is_empty));
         assert_eq!(
-            cache.image_models["ZBOMB"].model.as_ref().unwrap() as *const UnitModel,
+            cache.sources.borrow().image_models["ZBOMB"]
+                .as_ref()
+                .unwrap() as *const UnitModel,
             parsed_model,
             "a frame reset retains the parsed immutable asset"
         );
@@ -721,18 +774,14 @@ mod tests {
             next.uv_origin, first.uv_origin,
             "new frame starts at the first page slot, not a prior pose's slot"
         );
+        assert!(cache.sources.borrow().image_models["VERA_MISSING_BULLET_IMAGE"].is_none());
         assert!(
-            cache.image_models["VERA_MISSING_BULLET_IMAGE"]
-                .model
-                .is_none()
-        );
-        assert!(
-            cache.image_models[""].model.is_none(),
+            cache.sources.borrow().image_models[""].is_none(),
             "an empty attempted Image differs from no attempt"
         );
         let replacement = VxlPoseFrameCache::default();
         assert!(
-            replacement.image_models.is_empty(),
+            replacement.sources.borrow().image_models.is_empty(),
             "match/asset replacement drops model and failure caches"
         );
     }

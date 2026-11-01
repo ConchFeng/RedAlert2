@@ -104,6 +104,7 @@ impl App {
     /// routed to the region that captured it (the release that would free it
     /// was lost).
     pub(crate) fn release_in_game_pointer_state(state: &mut AppState) {
+        state.match_state.match_presentation.second_view.suspend();
         state.match_state.input.tactical_mouse.reset_on_focus_loss();
         state.match_state.input.selection_state.cancel_drag();
         state.match_state.input.minimap_dragging = false;
@@ -552,6 +553,7 @@ impl ApplicationHandler for App {
                 state.match_state.input.cursor_from_touch = true;
                 if let Some((dx, dy)) = output.pan
                     && in_game
+                    && !crate::app::presentation::spectator_tools::owns_pointer(state)
                 {
                     // Screen pixels to world pixels; the camera moves against
                     // the fingers so the map follows them. The per-frame camera
@@ -1663,6 +1665,10 @@ impl ApplicationHandler for App {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y as f32 / 30.0).clamp(-3.0, 3.0),
                 };
+                if crate::app::presentation::second_view::wheel(state, lines) {
+                    state.platform.window.request_redraw();
+                    return;
+                }
                 let screen = match crate::app::input::precedence::input_layer(state) {
                     InputLayer::Screen(screen) => screen,
                     InputLayer::Page(ModalPage::Keyboard) => {

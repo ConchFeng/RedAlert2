@@ -38,6 +38,23 @@ fn world_source_size(device: &wgpu::Device, target: [u32; 2], scale: f32) -> [u3
     target.map(|v| ((v as f32 / scale).ceil().max(1.0) as u32).min(max))
 }
 
+pub(crate) fn world_clip_for_view(
+    [x, y, w, h]: [u32; 4],
+    scale: f32,
+    source_size: [u32; 2],
+) -> [u32; 4] {
+    let left = (x as f32 / scale).floor() as u32;
+    let top = (y as f32 / scale).floor() as u32;
+    let right = (((x + w) as f32 / scale).ceil() as u32).min(source_size[0]);
+    let bottom = (((y + h) as f32 / scale).ceil() as u32).min(source_size[1]);
+    [
+        left,
+        top,
+        right.saturating_sub(left),
+        bottom.saturating_sub(top),
+    ]
+}
+
 impl WorldZoomPass {
     pub(crate) fn new(
         device: &wgpu::Device,
@@ -104,17 +121,8 @@ impl WorldZoomPass {
         self.surface.depth_view()
     }
 
-    pub(crate) fn world_clip(&self, [x, y, w, h]: [u32; 4]) -> [u32; 4] {
-        let left = (x as f32 / self.scale).floor() as u32;
-        let top = (y as f32 / self.scale).floor() as u32;
-        let right = (((x + w) as f32 / self.scale).ceil() as u32).min(self.source_size[0]);
-        let bottom = (((y + h) as f32 / self.scale).ceil() as u32).min(self.source_size[1]);
-        [
-            left,
-            top,
-            right.saturating_sub(left),
-            bottom.saturating_sub(top),
-        ]
+    pub(crate) fn world_clip(&self, tactical: [u32; 4]) -> [u32; 4] {
+        world_clip_for_view(tactical, self.scale, self.source_size)
     }
 
     pub(crate) fn composite(

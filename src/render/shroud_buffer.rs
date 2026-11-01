@@ -164,9 +164,9 @@ pub struct ShroudBuffer {
     source_uniform: wgpu::Buffer,
     /// Original SHROUD bytes plus immutable derived visible row spans.
     /// Recreated only with the source frame set, not on viewport/fog changes.
-    frames: Vec<BrightnessFrame>,
+    frames: std::sync::Arc<[BrightnessFrame]>,
     /// FOG.SHP is a second source for the same A plane, not an RGB overlay.
-    fog_frames: Vec<BrightnessFrame>,
+    fog_frames: std::sync::Arc<[BrightnessFrame]>,
     fog_canvas: [u32; 2],
     /// SHP canvas width (typically 60).
     canvas_w: u32,
@@ -299,7 +299,7 @@ impl ShroudBuffer {
                 .into_iter()
                 .map(|pixels| BrightnessFrame::new(pixels, [canvas_w, canvas_h]))
                 .collect(),
-            fog_frames: Vec::new(),
+            fog_frames: std::sync::Arc::from([]),
             fog_canvas: [0, 0],
             canvas_w,
             canvas_h,
@@ -318,6 +318,28 @@ impl ShroudBuffer {
         };
         result.upload(queue);
         result
+    }
+
+    pub(crate) fn fork_view(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        size: [u32; 2],
+    ) -> Self {
+        let mut view = Self::new(
+            device,
+            queue,
+            size,
+            [self.map_width, self.map_height],
+            Vec::new(),
+            [self.canvas_w, self.canvas_h],
+            self.lut,
+        );
+        view.frames = self.frames.clone();
+        view.fog_frames = self.fog_frames.clone();
+        view.fog_canvas = self.fog_canvas;
+        view.fog_strength_milli = self.fog_strength_milli;
+        view
     }
 
     /// Apply the local graphics preference through this A source's existing

@@ -416,6 +416,7 @@ impl App {
         state.match_state.match_presentation.restate = Default::default();
         state.match_state.match_presentation.sound_dialog = None;
         if will_be_open {
+            state.match_state.match_presentation.second_view.suspend();
             // Deactivate683EB0/4AEAD0 tears down drag/capture on the way into
             // the modal — WITHOUT dropping a pending building placement or
             // repair/sell (handle_options_hotkey). A release that arrives

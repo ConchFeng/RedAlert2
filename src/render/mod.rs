@@ -102,3 +102,6 @@ pub(crate) mod webgl;
 
 #[cfg(test)]
 mod sidebar_gpu_tests;
+
+#[cfg(test)]
+mod second_view_gpu_tests;

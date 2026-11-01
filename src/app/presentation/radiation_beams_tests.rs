@@ -79,3 +79,32 @@ fn original_manager_histories_match_without_logic_ticks_or_rng() {
     assert_eq!(sim.rng_state(), rng);
     assert_eq!(sim.state_hash(), hash);
 }
+
+#[test]
+fn additional_view_reprojects_the_final_beam_frame_without_advancing_it() {
+    let corpus = native::corpus();
+    let row = &corpus["geometry_rows"][0];
+    let mut birth = native::birth(&row["supplied_birth"]);
+    birth.duration = 1;
+    let viewport = native::viewport(row);
+    let clipped = SurfaceLineViewport {
+        camera: viewport.camera.map(|axis| axis + 3000),
+        ..viewport
+    };
+    let mut beams = RadiationBeams::default();
+    beams.create(birth, |_| [0; 3]);
+    beams.composite(30, clipped, |_| true);
+    assert!(beams.live.is_empty());
+    assert!(beams.draws().is_empty());
+    let projected = beams.project(viewport);
+    assert!(!projected.is_empty());
+    assert_eq!(beams.project(viewport), projected);
+    assert_eq!(beams.composites()[0].progress_before, 0);
+    assert_eq!(beams.composites()[0].progress_after, 1);
+    assert!(beams.composites()[0].expired);
+    beams.composite(30, viewport, |_| true);
+    assert!(beams.project(viewport).is_empty());
+    beams.create(birth, |_| [0; 3]);
+    beams.composite(30, viewport, |_| false);
+    assert!(beams.project(viewport).is_empty());
+}

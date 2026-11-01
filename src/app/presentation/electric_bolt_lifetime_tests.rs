@@ -373,3 +373,118 @@ fn a_unit_owns_one_bolt_whose_source_follows_it() {
         "the slot is free again"
     );
 }
+
+fn projection_fixture() -> (ElectricBoltBirth, SurfaceLineViewport, ElectricBoltPalette) {
+    let corpus: Value = serde_json::from_str(crate::test_fixture::text(
+        "tools/procedural_drawing_oracle/electric_bolt.json",
+    ))
+    .unwrap();
+    let row = corpus["draw_cases"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|row| row["input"]["name"] == "lifetime_same_frame")
+        .unwrap();
+    let source = &row["births"][0]["bolt"];
+    let mut camera = point(&row["input"]["camera"]);
+    camera[1] += 15;
+    (
+        ElectricBoltBirth {
+            frame: 0,
+            from: coord(&source["source"]),
+            to: coord(&source["target"]),
+            z_adjust: int(&source["z_adjust"]),
+            phase: int(&source["phase"]),
+            alternate_color: source["alternate"].as_bool().unwrap(),
+            owner: None,
+        },
+        SurfaceLineViewport {
+            camera,
+            clip: [0, 0, 160, 120],
+            z_origin_y: 0,
+            zoom: 1.0,
+        },
+        ElectricBoltPalette {
+            ordinary: 0xffff,
+            alternate: 0x001f,
+            center: 0xffff,
+        },
+    )
+}
+
+#[test]
+fn additional_view_reuses_the_final_bolt_geometry_without_main_or_aging() {
+    let (birth, viewport, palette) = projection_fixture();
+    let mut bolts = ElectricBolts::default();
+    bolts.create(birth);
+    bolts.live[0].decay = 1;
+    let main = MainRng::new(1);
+    let lines = bolts
+        .composite(viewport, Some(palette), &mut main.draws(), |_| true)
+        .to_vec();
+    assert!(!lines.is_empty());
+    assert!(
+        bolts.live.is_empty(),
+        "the ordinary manager retired its final frame"
+    );
+    let state = main.native_state_hex();
+    let same = bolts.project(viewport);
+    assert_eq!(
+        same,
+        lines
+            .iter()
+            .copied()
+            .map(SurfaceDraw::Line)
+            .collect::<Vec<_>>()
+    );
+    let shifted = SurfaceLineViewport {
+        camera: [viewport.camera[0] + 23, viewport.camera[1] - 11],
+        ..viewport
+    };
+    assert_eq!(
+        bolts.project(shifted),
+        lines
+            .iter()
+            .copied()
+            .map(|line| SurfaceDraw::Line(translate_line(line, [-23, 11])))
+            .collect::<Vec<_>>()
+    );
+    assert_eq!(bolts.project(viewport), same);
+    assert_eq!(main.native_state_hex(), state);
+    assert!(bolts.live.is_empty());
+    bolts.composite(viewport, Some(palette), &mut main.draws(), |_| true);
+    assert!(bolts.project(viewport).is_empty());
+}
+
+#[test]
+fn main_clipped_bolt_projects_locally_without_process_main_or_visibility_leaks() {
+    let (birth, viewport, palette) = projection_fixture();
+    let mut bolts = ElectricBolts::default();
+    bolts.create(birth);
+    let clipped = SurfaceLineViewport {
+        camera: viewport.camera.map(|axis| axis + 3000),
+        ..viewport
+    };
+    let main = MainRng::new(1);
+    let state = main.native_state_hex();
+    assert!(
+        bolts
+            .composite(clipped, Some(palette), &mut main.draws(), |_| true)
+            .is_empty()
+    );
+    let phase = bolts.live[0].phase;
+    let decay = bolts.live[0].decay;
+    let local = bolts.project(viewport);
+    assert!(!local.is_empty());
+    assert_eq!(bolts.project(viewport), local);
+    assert_eq!(main.native_state_hex(), state);
+    assert_eq!((bolts.live[0].phase, bolts.live[0].decay), (phase, decay));
+    bolts.composite(clipped, Some(palette), &mut main.draws(), |_| false);
+    assert!(
+        bolts.project(viewport).is_empty(),
+        "main visibility admission conceals every view"
+    );
+    assert_eq!(main.native_state_hex(), state);
+    bolts.clear_on_load();
+    assert!(bolts.project(viewport).is_empty());
+}

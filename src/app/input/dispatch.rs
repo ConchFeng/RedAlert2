@@ -85,6 +85,9 @@ fn handle_mouse_input_inner(state: &mut AppState, button: MouseButton, btn_state
         .input
         .tactical_mouse
         .record_physical_button(button, pressed);
+    if crate::app::presentation::second_view::consume_canceled_release(state, button, pressed) {
+        return;
+    }
     match modal_page(state) {
         // 0xEA is pushed over the game and any open page.
         Some(ModalPage::NetworkWait) => {
@@ -185,6 +188,15 @@ fn handle_mouse_input_inner(state: &mut AppState, button: MouseButton, btn_state
     // ScrollHandleMouse6930A0 refuses ordinary pointer messages while the
     // Scenario input lock is active; capture cancellation already ran in46.
     if crate::app::input::campaign_input::is_locked(state) {
+        return;
+    }
+    if !state
+        .match_state
+        .match_presentation
+        .spectator_tools
+        .has_capture()
+        && crate::app::presentation::second_view::mouse(state, button, pressed)
+    {
         return;
     }
     if crate::app::presentation::spectator_tools::mouse(state, button, pressed) {
@@ -907,6 +919,9 @@ pub(crate) fn handle_cursor_moved_in_game(state: &mut AppState) {
         } else {
             crate::app::input::in_game_options::in_game_options_drag(state);
         }
+        return;
+    }
+    if crate::app::presentation::second_view::pointer_moved(state) {
         return;
     }
     // Minimap: gamemd re-centers only on press edges and ignores held motion

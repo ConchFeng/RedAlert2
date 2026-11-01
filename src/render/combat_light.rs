@@ -94,24 +94,7 @@ impl CombatLightRenderer {
                 count: None,
             }],
         });
-        let camera_buffer = device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
-            label: Some("Combat Light Camera"),
-            contents: &super::webgl::uniform_bytes(
-                device,
-                bytemuck::bytes_of(&CameraUniform {
-                    screen_size: [1.0, 1.0],
-                    camera_pos: [0.0, 0.0],
-                    zoom: 1.0,
-                    world_origin_y: 0.0,
-                    world_height: 1.0,
-                    _pad: 0.0,
-
-                    native_z_origin_y: 0.0,
-                    _native_z_pad: 0.0,
-                }),
-            ),
-            usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
-        });
+        let camera_buffer = create_camera_buffer(device);
         let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
             label: Some("Combat Light Camera Bind Group"),
             layout: &camera_layout,
@@ -234,6 +217,46 @@ impl CombatLightRenderer {
             surface_format,
             encoded_format,
             targets,
+        }
+    }
+
+    pub(crate) fn fork_view(&self, gpu: &GpuContext) -> Self {
+        self.fork_view_with_device(&gpu.device)
+    }
+
+    pub(crate) fn fork_view_with_device(&self, device: &wgpu::Device) -> Self {
+        let camera_buffer = create_camera_buffer(device);
+        let camera_bind_group = device.create_bind_group(&wgpu::BindGroupDescriptor {
+            label: Some("Combat light view camera"),
+            layout: &self.pipeline.get_bind_group_layout(0),
+            entries: &[wgpu::BindGroupEntry {
+                binding: 0,
+                resource: camera_buffer.as_entire_binding(),
+            }],
+        });
+        Self {
+            pipeline: self.pipeline.clone(),
+            camera_buffer,
+            camera_bind_group,
+            mask_bind_group: self.mask_bind_group.clone(),
+            mask_texture: self.mask_texture.clone(),
+            spotlight_radius: self.spotlight_radius,
+            scene_bind_group_layout: self.scene_bind_group_layout.clone(),
+            instance_buffer: allocate_instance_buffer(device, INITIAL_CAPACITY),
+            capacity: INITIAL_CAPACITY,
+            prepared_indices: Vec::new(),
+            instances: Vec::new(),
+            copy_bounds: Vec::new(),
+            surface_format: self.surface_format,
+            encoded_format: self.encoded_format,
+            targets: create_composition_targets(
+                device,
+                &self.scene_bind_group_layout,
+                self.surface_format,
+                self.encoded_format,
+                1,
+                1,
+            ),
         }
     }
 
@@ -515,6 +538,27 @@ fn project_combat_light_anchor(coord: crate::sim::projectile::ProjectileCoord) -
             .wrapping_sub(crate::util::native_x87::adjust_for_z_standard(coord.z))
             .wrapping_add(15),
     ]
+}
+
+fn create_camera_buffer(device: &wgpu::Device) -> wgpu::Buffer {
+    device.create_buffer_init(&wgpu::util::BufferInitDescriptor {
+        label: Some("Combat Light Camera"),
+        contents: &super::webgl::uniform_bytes(
+            device,
+            bytemuck::bytes_of(&CameraUniform {
+                screen_size: [1.0, 1.0],
+                camera_pos: [0.0, 0.0],
+                zoom: 1.0,
+                world_origin_y: 0.0,
+                world_height: 1.0,
+                _pad: 0.0,
+
+                native_z_origin_y: 0.0,
+                _native_z_pad: 0.0,
+            }),
+        ),
+        usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST,
+    })
 }
 
 fn allocate_instance_buffer(device: &wgpu::Device, capacity: usize) -> wgpu::Buffer {

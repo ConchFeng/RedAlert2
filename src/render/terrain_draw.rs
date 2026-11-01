@@ -68,9 +68,9 @@ struct Targets {
     read_only_rows: u32,
 }
 
-/// Derived destination scratch for another native surface. The surface owner
-/// retains this beside its attachments; switching outputs never replaces the
-/// tactical scratch or creates a second destination-edit renderer.
+/// Derived destination scratch for another native surface using the same view.
+/// The surface owner retains this beside its attachments. Independent world
+/// views instead fork camera, command and scratch ownership with `fork_view`.
 pub(crate) struct PackedSurface {
     targets: Targets,
     stencil: packed::Stencil,
@@ -461,6 +461,40 @@ impl TerrainDrawRenderer {
         }
     }
 
+    pub(crate) fn fork_view(
+        &self,
+        device: &wgpu::Device,
+        queue: &wgpu::Queue,
+        batch: &BatchRenderer,
+    ) -> Self {
+        Self {
+            snapshot_pipeline: self.snapshot_pipeline.clone(),
+            body_pipeline: self.body_pipeline.clone(),
+            shadow_pipeline: self.shadow_pipeline.clone(),
+            read_only_snapshot_pipeline: self.read_only_snapshot_pipeline.clone(),
+            read_only_body_pipeline: self.read_only_body_pipeline.clone(),
+            read_only_shadow_pipeline: self.read_only_shadow_pipeline.clone(),
+            read_only_resolve_pipeline: self.read_only_resolve_pipeline.clone(),
+            source_layout: self.source_layout.clone(),
+            snapshot_layout: self.snapshot_layout.clone(),
+            read_only_layout: self.read_only_layout.clone(),
+            read_only_resolve_layout: self.read_only_resolve_layout.clone(),
+            #[cfg(test)]
+            reference_body_pipeline: self.reference_body_pipeline.clone(),
+            #[cfg(test)]
+            reference_shadow_pipeline: self.reference_shadow_pipeline.clone(),
+            webgl: self.webgl,
+            targets: None,
+            camera: batch.camera_uniform(),
+            batches: TerrainBatches::default(),
+            read_only_commands: Vec::new(),
+            submission: PassSubmission::new(device, queue),
+            surface_lines: self.surface_lines.fork_view(),
+            ion_blasts: self.ion_blasts.fork_view(),
+            packed: self.packed.fork_view(),
+        }
+    }
+
     /// Every pixel one ordinary sprite or destination edit reads or writes:
     /// its quad as the sprite vertex shaders place it, clipped to `tactical`.
     /// `None` when it draws nothing.
@@ -610,8 +644,7 @@ impl TerrainDrawRenderer {
             };
         }
         let read_only_rows = color.height().min(
-            (device.limits().max_storage_buffer_binding_size / 8 / u64::from(color.width()))
-                as u32,
+            (device.limits().max_storage_buffer_binding_size / 8 / u64::from(color.width())) as u32,
         );
         assert!(
             read_only_rows > 0,

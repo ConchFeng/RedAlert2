@@ -48,6 +48,9 @@ pub(crate) fn in_game_key_edge(
         }
         return;
     }
+    if crate::app::presentation::second_view::key(state, &edge) {
+        return;
+    }
     if crate::app::presentation::spectator_tools::key(state, &edge) {
         return;
     }

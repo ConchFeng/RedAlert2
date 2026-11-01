@@ -112,6 +112,30 @@ pub(super) struct PackedSpriteGpu {
 }
 
 impl PackedSpriteGpu {
+    pub(super) fn fork_view(&self) -> Self {
+        Self {
+            device: self.device.clone(),
+            queue: self.queue.clone(),
+            shp: self.shp.clone(),
+            mask: self.mask.clone(),
+            ui: self.ui.clone(),
+            voxel: self.voxel.clone(),
+            clear: self.clear.clone(),
+            compute: self.compute.clone(),
+            feedback: self.feedback.clone(),
+            results_layout: self.results_layout.clone(),
+            resolve_read: self.resolve_read.clone(),
+            resolve_write: self.resolve_write.clone(),
+            layout: self.layout.clone(),
+            stencil: None,
+            results: None,
+            uniform_chunks: Vec::new(),
+            uniform_slot: 0,
+            uniform_stride: self.uniform_stride,
+            batches: TerrainBatches::default(),
+        }
+    }
+
     pub(super) fn new(
         device: &wgpu::Device,
         queue: &wgpu::Queue,

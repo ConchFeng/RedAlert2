@@ -4,15 +4,23 @@
 //! they age on each tactical composite, even without Logic.
 
 use crate::render::electric_bolt::{ElectricBoltDraw, ElectricBoltPalette};
-use crate::render::surface_line::{SurfaceLine, SurfaceLineViewport};
+use crate::render::surface_line::{SurfaceDraw, SurfaceLine, SurfaceLineViewport};
 use crate::sim::combat::electric_bolt::{ElectricBoltBirth, ElectricBoltOwner};
 use crate::sim::projectile::ProjectileCoord;
-use crate::sim::rng::MainRngDraws;
+use crate::sim::rng::{MainRng, MainRngDraws};
 
 struct Bolt {
     birth: ElectricBoltBirth,
     phase: i32,
     decay: i32,
+}
+
+struct BoltProjection {
+    draw: ElectricBoltDraw,
+    palette: ElectricBoltPalette,
+    world_lines: Vec<SurfaceLine>,
+    admitted: bool,
+    seed: u64,
 }
 
 #[derive(Debug, serde::Serialize)]
@@ -30,6 +38,7 @@ pub(crate) struct ElectricBoltObservation {
 pub(crate) struct ElectricBolts {
     live: Vec<Bolt>,
     lines: Vec<SurfaceLine>,
+    projections: Vec<BoltProjection>,
 }
 
 impl ElectricBolts {
@@ -90,6 +99,7 @@ impl ElectricBolts {
         mut visible: impl FnMut(&ElectricBoltBirth) -> bool,
     ) -> &[SurfaceLine] {
         self.lines.clear();
+        self.projections.clear();
         for bolt in self.live.iter_mut().rev() {
             if bolt.decay != 0 {
                 let draw = ElectricBoltDraw {
@@ -104,22 +114,55 @@ impl ElectricBolts {
                 //4C2942. Conceal only emitted pixels: the optional fog style
                 // must not skip geometry's shared Main draws or either update.
                 let emit = visible(&bolt.birth);
-                draw.lines(
-                    viewport,
-                    palette.expect("loaded tactical PALETTE.PAL"),
-                    main,
-                    |line| {
-                        if emit {
-                            self.lines.push(line);
-                        }
-                    },
-                );
+                let palette = palette.expect("loaded tactical PALETTE.PAL");
+                let first_line = self.lines.len();
+                let admitted = draw.lines(viewport, palette, main, |line| {
+                    if emit {
+                        self.lines.push(line);
+                    }
+                });
+                if emit {
+                    let world_lines = self.lines[first_line..]
+                        .iter()
+                        .copied()
+                        .map(|line| translate_line(line, viewport.camera))
+                        .collect();
+                    self.projections.push(BoltProjection {
+                        draw,
+                        palette,
+                        world_lines,
+                        admitted,
+                        seed: projection_seed(bolt.birth, bolt.phase),
+                    });
+                }
                 bolt.phase = bolt.phase.wrapping_add(1);
             }
             bolt.decay >>= 1;
         }
         self.live.retain(|bolt| bolt.decay != 0);
         &self.lines
+    }
+
+    /// Additional views reuse admitted world geometry without another Main draw
+    /// or manager visit. A main-clipped bolt has no retained geometry; its
+    /// auxiliary-only shape uses a birth/phase-local stream, never process Main.
+    pub(crate) fn project(&self, viewport: SurfaceLineViewport) -> Vec<SurfaceDraw> {
+        let mut lines = Vec::new();
+        for projection in &self.projections {
+            if projection.admitted {
+                lines.extend(projection.world_lines.iter().copied().map(|line| {
+                    SurfaceDraw::Line(translate_line(line, viewport.camera.map(i32::wrapping_neg)))
+                }));
+            } else {
+                let local = MainRng::new(projection.seed);
+                projection
+                    .draw
+                    .lines(viewport, projection.palette, &mut local.draws(), |line| {
+                        lines.push(SurfaceDraw::Line(line));
+                    });
+            }
+        }
+        lines
     }
 
     pub(crate) fn observations(&self) -> impl Iterator<Item = ElectricBoltObservation> + '_ {
@@ -139,7 +182,36 @@ impl ElectricBolts {
     pub(crate) fn clear_on_load(&mut self) {
         self.live.clear();
         self.lines.clear();
+        self.projections.clear();
     }
+}
+
+fn translate_line(mut line: SurfaceLine, offset: [i32; 2]) -> SurfaceLine {
+    for point in [&mut line.from, &mut line.to] {
+        for axis in 0..2 {
+            point[axis] = point[axis].wrapping_add(offset[axis]);
+        }
+    }
+    line
+}
+
+fn projection_seed(birth: ElectricBoltBirth, phase: i32) -> u64 {
+    [
+        birth.frame,
+        birth.from.x,
+        birth.from.y,
+        birth.from.z,
+        birth.to.x,
+        birth.to.y,
+        birth.to.z,
+        birth.z_adjust,
+        phase,
+        i32::from(birth.alternate_color),
+    ]
+    .into_iter()
+    .fold(0x4542_4f4c_u64, |seed, value| {
+        seed.rotate_left(7) ^ u64::from(value as u32)
+    })
 }
 
 #[cfg(test)]
