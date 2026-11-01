@@ -202,6 +202,12 @@ impl SeriesRepository {
                         descriptor.id == id,
                         "Saved series belongs to another directory"
                     );
+                    // Creation publishes the descriptor before the launch
+                    // recipe; a series stopped between them cannot resume.
+                    ensure!(
+                        entry.path().join("launch.json").is_file(),
+                        "Saved series has no launch recipe"
+                    );
                     Ok(descriptor)
                 });
             match descriptor {
@@ -373,6 +379,15 @@ mod tests {
         assert_eq!(recovered.issues.len(), 1);
         assert_eq!(recovered.issues[0].round, 2);
         assert!(!recovered.issues[0].message.is_empty());
+        // A newer series created without its launch recipe stays unlisted.
+        let mut unlaunched = descriptor.clone();
+        unlaunched.id = "test-series2".into();
+        assert!(
+            SeriesRepository::at(&directory, &unlaunched.id)
+                .unwrap()
+                .create(&unlaunched)
+                .unwrap()
+        );
         assert_eq!(
             SeriesRepository::list(&directory).unwrap(),
             vec![descriptor]
