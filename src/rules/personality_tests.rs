@@ -391,3 +391,46 @@ fn commander_feedback_defaults_and_rules_overrides() {
     assert_eq!(assigned.assigned("computer3"), Some("Oleg"));
     assert_eq!(assigned.assigned("Computer2"), None);
 }
+
+#[test]
+fn setup_choices_are_canonical_compatible_and_reserve_setup_tokens() {
+    let rules = processed(
+        "[AIPersonalities]\n0=sTaNdArD\n1=rAnDoM\n2=Warren\n3=Oleg\n\
+         [Standard]\nTriggerRatio=1\nTeamDelayPercent=1\n\
+         [Random]\nCountry=*\n[Warren]\nCountry=Americans\n[Oleg]\nCountry=Russians\n",
+    );
+    let catalog = rules.personalities();
+    assert_eq!(catalog.len(), 2);
+    assert_eq!(catalog.index_of_name("Random"), None);
+    assert_eq!(
+        catalog.compatible_selection("Americans", "wArReN"),
+        Some("Warren")
+    );
+    assert_eq!(catalog.compatible_selection("Russians", "Warren"), None);
+    assert_eq!(catalog.compatible_selection("Americans", "Missing"), None);
+    assert_eq!(
+        catalog.compatible_selection("French", "Random"),
+        Some("Random")
+    );
+    assert_eq!(catalog.resolve_for_country("French", "Random", 7), None);
+    assert_eq!(
+        PersonalityCatalog::default().compatible_selection("Americans", "Random"),
+        None
+    );
+    assert_eq!(
+        catalog.resolve_for_country("Americans", "Standard", 7),
+        None
+    );
+    let random = catalog
+        .resolve_for_country("Americans", "Random", 7)
+        .unwrap();
+    assert_eq!(catalog.get(random).unwrap().name, "Warren");
+    assert_eq!(
+        catalog.resolve_for_country("Americans", "Random", 7),
+        Some(random)
+    );
+    let standard = catalog.get(catalog.standard().unwrap()).unwrap();
+    assert!(standard.reserved);
+    assert_eq!(standard.trigger_ratio, NATIVE_TRIGGER_RATIO);
+    assert_eq!(standard.team_delay_percent, NEUTRAL_WEIGHT_PERCENT);
+}

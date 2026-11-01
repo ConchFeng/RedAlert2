@@ -156,6 +156,7 @@ pub fn pack_launch_session_without_start_validation(
         };
         let slot = idx + 1;
         opponents.push(SkirmishAiSlot {
+            commander: Some(opponent.commander.clone()),
             raw_slot_index: (idx + 1) as u8,
             country: opponent.country,
             country_random: opponent.country_random,

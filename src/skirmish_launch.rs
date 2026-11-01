@@ -522,6 +522,8 @@ pub struct SkirmishLocalSlot {
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SkirmishAiSlot {
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub commander: Option<String>,
     /// Index0..7 in native Session country/color/start/team arrays, before
     /// inactive entries are omitted. This is not a constructed House index.
     #[serde(default = "legacy_raw_ai_slot")]
@@ -1132,6 +1134,7 @@ mod tests {
                     let index = raw.as_u64().unwrap() as usize;
                     let row = &case["initial"]["ai"][index];
                     SkirmishAiSlot {
+                        commander: None,
                         raw_slot_index: index as u8,
                         country: LaunchCountry::from_country_index(
                             row[0].as_i64().unwrap().max(0) as u32
@@ -1371,6 +1374,7 @@ mod tests {
             ai_player_count: 2,
             opponents: vec![
                 SkirmishAiSlot {
+                    commander: None,
                     raw_slot_index: 1,
                     country: LaunchCountry::Russia,
                     country_random: true,
@@ -1381,6 +1385,7 @@ mod tests {
                     difficulty: AiDifficulty::Easy,
                 },
                 SkirmishAiSlot {
+                    commander: None,
                     raw_slot_index: 2,
                     country: LaunchCountry::Cuba,
                     country_random: false,

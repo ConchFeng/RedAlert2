@@ -49,3 +49,4 @@ pub(crate) mod campaign_input;
 pub(crate) mod touch;
 
 pub(crate) mod ai_series;
+pub(crate) mod ai_commanders;

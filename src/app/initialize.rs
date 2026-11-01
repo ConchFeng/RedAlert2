@@ -1025,6 +1025,9 @@ impl App {
             frontend: crate::app::frontend::state::FrontendState {
                 ai_series_dialog_buttons: Default::default(),
                 ai_series_setup: None,
+                ai_commanders_setup: None,
+                ai_commanders_buttons: Default::default(),
+                ai_commanders_notice: None,
                 ai_series: None,
                 shell_dialog_background: None,
                 campaign_speed_control: startup_options.campaign_speed_control,
@@ -1388,6 +1391,7 @@ mod tests {
                 // Its empty second contender must still exercise ordinary
                 // automatic defeat/victory, rather than globally disabling it.
                 session.opponents.push(SkirmishAiSlot {
+                    commander: None,
                     raw_slot_index: 1,
                     country: LaunchCountry::Russia,
                     country_random: false,

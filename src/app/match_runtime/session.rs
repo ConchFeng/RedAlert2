@@ -1244,6 +1244,7 @@ impl MatchSession {
         if let NetworkRowKind::Ai(difficulty) = kind {
             let defaults = native_network_row_defaults(&launch.mode, true);
             launch.opponents.push(SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: row,
                 country: defaults.country,
                 country_random: defaults.country_random,
@@ -3919,6 +3920,7 @@ mod tests {
         launch
             .opponents
             .push(crate::skirmish_launch::SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: 2,
                 country: LaunchCountry::Yuri,
                 country_random: false,

@@ -4,6 +4,8 @@ use super::*;
 use crate::app::App;
 use serde_json::{Value, json};
 
+mod commanders;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum PresentedShell {
     Other,
@@ -40,6 +42,7 @@ enum Phase {
     MainMenu,
     SinglePlayer,
     Skirmish,
+    AiCommandersSetup,
     AiSeriesSetup,
     AiSeriesRecovery,
     /// Back pressed: the teardown slide runs toward the held tick.
@@ -237,6 +240,7 @@ pub(super) struct SkirmishCapture {
     observer_battlefield_ready: bool,
     observer_camera_step: Option<ObserverCameraStep>,
     observer_standings: bool,
+    ai_commanders: Option<commanders::CommanderCapture>,
     ai_series_target: Option<AiSeriesTarget>,
     ai_series_setup_presented: bool,
     ai_series_map_identity: Option<(String, String, usize)>,
@@ -252,6 +256,7 @@ pub(super) struct SkirmishCapture {
 struct CaptureGuard {
     main_menu_screen: bool,
     surface: (u32, u32),
+    expected_surface: (u32, u32),
     failed: bool,
     developer_shortcut: bool,
     software_cursor: bool,
@@ -264,7 +269,7 @@ impl CaptureGuard {
     fn validate(self) -> Result<()> {
         ensure!(self.main_menu_screen, "skirmish capture left the shell");
         ensure!(
-            self.surface == (EXPECTED_WIDTH, EXPECTED_HEIGHT),
+            self.surface == self.expected_surface,
             "skirmish capture surface changed"
         );
         ensure!(
@@ -291,6 +296,7 @@ fn guard(
     chooser: Option<ChooserTarget>,
     loading: bool,
     expected_cursor: (f32, f32),
+    expected_surface: (u32, u32),
 ) -> Result<()> {
     let shell = &state.frontend.skirmish_shell_state;
     CaptureGuard {
@@ -301,6 +307,7 @@ fn guard(
                     GameScreen::Loading | GameScreen::InGame | GameScreen::MissionResult { .. }
                 )),
         surface: (state.render_width(), state.render_height()),
+        expected_surface,
         failed: state.frontend.main_menu_shell_error.is_some(),
         developer_shortcut: false,
         software_cursor: state.use_software_cursor(),
@@ -467,6 +474,13 @@ impl SkirmishCapture {
     pub(super) fn observer_standings() -> Self {
         Self {
             observer_standings: true,
+            ..Self::observer_generated_battlefield()
+        }
+    }
+
+    pub(super) fn ai_commanders(width: u32, height: u32) -> Self {
+        Self {
+            ai_commanders: Some(commanders::CommanderCapture::new((width, height))),
             ..Self::observer_generated_battlefield()
         }
     }
@@ -1504,6 +1518,7 @@ impl SkirmishCapture {
                     | Phase::Diplomacy
             ),
             self.expected_cursor(state.frontend.screen == GameScreen::Loading),
+            self.ai_commanders.as_ref().map_or((EXPECTED_WIDTH, EXPECTED_HEIGHT), |capture| capture.surface()),
         ).with_context(|| format!(
             "Skirmish capture guard: phase={:?}, screen={:?}, series_target={:?}, actual_cursor=({:?},{:?}), rest={rest:?}, hover={:?}, hovered={}, chooser={}, random_map={}, terminal_rounds={}",
             self.phase, state.frontend.screen, self.ai_series_target,
@@ -2025,10 +2040,24 @@ impl SkirmishCapture {
             if self.chooser == Some(ChooserTarget::RandomMap(RandomMapTarget::UseMap)) {
                 self.selected_scene = None;
             }
-            Some((RANDOM_MAP_GENERATE_POINT, "GenerateMap"))
+            let point = if self.ai_commanders.is_some() {
+                let rect =
+                    crate::app::frontend::shell_layout::random_map_setup_layout(state).generate;
+                (rect.x + rect.w / 2, rect.y + rect.h / 2)
+            } else {
+                RANDOM_MAP_GENERATE_POINT
+            };
+            Some((point, "GenerateMap"))
         } else if generated && !self.pointer_rested {
             self.pointer_rested = true;
-            Some((RANDOM_MAP_USE_MAP_POINT, "UseMap"))
+            let point = if self.ai_commanders.is_some() {
+                let rect =
+                    crate::app::frontend::shell_layout::random_map_setup_layout(state).use_map;
+                (rect.x + rect.w / 2, rect.y + rect.h / 2)
+            } else {
+                RANDOM_MAP_USE_MAP_POINT
+            };
+            Some((point, "UseMap"))
         } else {
             None
         };
@@ -2256,7 +2285,10 @@ impl SkirmishCapture {
         self.last_presented = Some(rendered);
         match (self.phase, rendered) {
             (Phase::MainMenu, PresentedShell::MainMenu) => {
-                if steady_main_menu_capture_ready(MainMenuCaptureSnapshot::from_state(state))? {
+                if steady_main_menu_capture_ready_for(
+                    MainMenuCaptureSnapshot::from_state(state),
+                    self.ai_commanders.is_some(),
+                )? {
                     self.route
                         .push(json!({"dialog": 0xe2, "frame": frame, "action": "SinglePlayer"}));
                     App::handle_main_menu_shell_action(
@@ -2364,6 +2396,12 @@ impl SkirmishCapture {
                     && !state.frontend.skirmish_shell_state.short_game
                 {
                     self.check_short_game(state, frame)?;
+                } else if self.selected_scene.is_some() && self.ai_commanders.is_some() {
+                    self.ai_commanders
+                        .as_mut()
+                        .unwrap()
+                        .open(state, &mut self.route, frame)?;
+                    self.phase = Phase::AiCommandersSetup;
                 } else if self.selected_scene.is_some() && self.ai_series_target.is_some() {
                     self.open_ai_series(state, frame)?;
                 } else if self.selected_scene.is_some() && self.loading.is_some() {
@@ -2407,6 +2445,12 @@ impl SkirmishCapture {
                         .push(json!({"dialog": 0x102, "frame": frame, "action": "ChooseMap"}));
                     self.phase = Phase::Chooser;
                 }
+            }
+            (Phase::AiCommandersSetup, PresentedShell::Skirmish) => {
+                self.ai_commanders
+                    .as_mut()
+                    .context("commander capture state missing")?
+                    .after_present(state, &mut self.route, frame)?;
             }
             (Phase::AiSeriesSetup, PresentedShell::Skirmish) => {
                 self.ai_series_setup_presented = true;
@@ -2825,6 +2869,11 @@ impl SkirmishCapture {
 
     pub(super) fn ready(&self, state: &AppState) -> Result<bool> {
         self.guard(state)?;
+        if let Some(commanders) = &self.ai_commanders {
+            return Ok(self.phase == Phase::AiCommandersSetup
+                && self.last_presented == Some(PresentedShell::Skirmish)
+                && commanders.ready(state));
+        }
         if self.ai_series_target == Some(AiSeriesTarget::Recovery) {
             return Ok(self.phase == Phase::AiSeriesRecovery
                 && self.observer_battlefield_ready
@@ -3040,7 +3089,7 @@ impl SkirmishCapture {
                 "pixel_layout": "BGRA8", "row_order": "top-left", "row_stride": request.width * 4},
             "cursor": {"x": request.cursor_x, "y": request.cursor_y, "policy": "software-composited"},
             "route": self.route,
-            "dialog_resource_id": if self.ai_series_target.is_some() { None } else { match (self.chooser, self.loading) {
+            "dialog_resource_id": if self.ai_series_target.is_some() || self.ai_commanders.is_some() { None } else { match (self.chooser, self.loading) {
                 (
                     Some(
                         ChooserTarget::Steady
@@ -3095,6 +3144,7 @@ mod tests {
         let guard = |cursor, expected_cursor| CaptureGuard {
             main_menu_screen: true,
             surface: (800, 600),
+            expected_surface: (800, 600),
             failed: false,
             developer_shortcut: false,
             software_cursor: true,
@@ -3134,6 +3184,7 @@ mod tests {
         let valid = CaptureGuard {
             main_menu_screen: true,
             surface: (800, 600),
+            expected_surface: (800, 600),
             failed: false,
             developer_shortcut: false,
             software_cursor: true,
@@ -3142,6 +3193,20 @@ mod tests {
             interaction_active: false,
         };
         assert!(valid.validate().is_ok());
+        let compact = CaptureGuard {
+            surface: (640, 480),
+            expected_surface: (640, 480),
+            ..valid
+        };
+        assert!(compact.validate().is_ok());
+        assert!(
+            CaptureGuard {
+                surface: (800, 600),
+                ..compact
+            }
+            .validate()
+            .is_err()
+        );
         for invalid in [
             CaptureGuard {
                 main_menu_screen: false,

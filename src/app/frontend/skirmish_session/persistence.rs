@@ -108,12 +108,16 @@ pub struct MultiplayerSetupSnapshot {
     /// same process profile through row29; the network profiles write only the
     /// native prefix to INI.
     pub slots: [SkirmishPersistedSlot; RETAINED_SETUP_SLOT_COUNT],
+    pub commanders: [String; RETAINED_SETUP_SLOT_COUNT],
 }
 
 impl MultiplayerSetupSnapshot {
     pub fn from_global_defaults(defaults: SkirmishGlobalDefaults, profile: SetupProfile) -> Self {
         Self {
             profile,
+            commanders: std::array::from_fn(|_| {
+                crate::rules::personality::PersonalityCatalog::STANDARD.to_owned()
+            }),
             observer: false,
             game_mode: defaults.game_mode,
             scenario_index: defaults.scenario_index,
@@ -185,6 +189,12 @@ impl MultiplayerSetupSnapshot {
         match self.profile.extended_section() {
             Some(section) => {
                 let mut updates = self.extended_slot_updates();
+                updates.extend(
+                    self.commanders
+                        .iter()
+                        .enumerate()
+                        .map(|(index, name)| (format!("Commander{:02}", index + 1), name.clone())),
+                );
                 updates.push((
                     "ObserverMode".to_string(),
                     yes_no(self.observer).to_string(),
@@ -244,6 +254,11 @@ pub fn read_setup_snapshot(
     if let Some(extended) = profile.extended_section() {
         let section = ini.section_or_empty(extended);
         snapshot.observer = section.read_bool("ObserverMode", snapshot.observer);
+        for (index, name) in snapshot.commanders.iter_mut().enumerate() {
+            if let Some(value) = section.read_name(&format!("Commander{:02}", index + 1), 256) {
+                *name = value.to_owned();
+            }
+        }
         for (slot_index, slot) in snapshot
             .slots
             .iter_mut()
@@ -293,6 +308,24 @@ mod tests {
             mcv_repacks: true,
             crates_appear: true,
         }
+    }
+
+    #[test]
+    fn commander_names_round_trip_including_the_last_extended_slot() {
+        let original =
+            b"[Other]\nKeep=unchanged\n[SkirmishVERA]\nCommander01=Warren\nCommander29=Random\n";
+        let mut snapshot =
+            read_setup_snapshot(original, defaults(), SetupProfile::Skirmish).unwrap();
+        assert_eq!(snapshot.commanders[0], "Warren");
+        assert_eq!(snapshot.commanders[28], "Random");
+        assert_eq!(snapshot.commanders[1], "Standard");
+        snapshot.commanders[28] = "Oleg".into();
+        let bytes = snapshot.update_ini_bytes(original);
+        let read = read_setup_snapshot(&bytes, defaults(), SetupProfile::Skirmish).unwrap();
+        assert_eq!(read, snapshot);
+        assert!(bytes.starts_with(b"[Other]\nKeep=unchanged\n"));
+        let lan = read_setup_snapshot(original, defaults(), SetupProfile::Lan).unwrap();
+        assert!(lan.commanders.iter().all(|name| name == "Standard"));
     }
 
     #[test]
@@ -497,7 +530,8 @@ Slot01=4,8,1\r\n";
         };
         let skirmish = written(SetupProfile::Skirmish);
         assert!(skirmish.contains("[SkirmishVERA]\r\nSlot08=1,-2,-2\r\n"));
-        assert!(skirmish.ends_with("Slot29=4,-2,-2\r\nObserverMode=yes\r\n"));
+        assert!(skirmish.contains("Slot29=4,-2,-2\r\n"));
+        assert!(skirmish.ends_with("ObserverMode=yes\r\n"));
         let lan = written(SetupProfile::Lan);
         assert!(!lan.contains("Slot08"));
         assert!(!lan.contains("ObserverMode"));

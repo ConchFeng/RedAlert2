@@ -568,16 +568,12 @@ pub struct HouseState {
     /// game-mode initializer explicitly assigns another native value.
     #[serde(default)]
     difficulty: HouseDifficulty,
-    /// Registration index into `Rules.personalities`, assigned once when a
-    /// skirmish computer house is created.
-    ///
-    /// Product extension (no native counterpart). Persisted because it decides
-    /// which AI triggers this house suppresses or reweights, so a save that
-    /// dropped it would reload as a different opponent. `None` — every human
-    /// house, every campaign house, and every rules set without
-    /// `[AIPersonalities]` — leaves the trigger table exactly as retail has it.
-    #[serde(default)]
+    /// Derived catalog index rebuilt from `personality_name` against active rules.
+    #[serde(skip)]
     personality: Option<u16>,
+    /// Product extension identity; names survive catalog reordering in saves.
+    #[serde(default)]
+    personality_name: Option<String>,
     /// Original House scalar difficulty fields. All seven biases begin at1.0
     /// and both delays at0.0; the shared SetDifficulty owner replaces them.
     #[serde(default)]
@@ -1428,8 +1424,51 @@ impl HouseState {
     /// Installed once by the skirmish launch (`crate::rules::personality`) when
     /// the slot asked for a commander. Nothing else writes it: a house keeps
     /// its commander for the match, and the talking-head layer only reads it.
-    pub const fn set_personality(&mut self, personality: Option<u16>) {
-        self.personality = personality;
+    pub fn set_personality(
+        &mut self,
+        personality: Option<u16>,
+        catalog: &crate::rules::personality::PersonalityCatalog,
+    ) {
+        self.personality_name = personality
+            .and_then(|index| catalog.get(index))
+            .filter(|definition| !definition.reserved)
+            .map(|definition| definition.name.clone());
+        self.personality = self
+            .personality_name
+            .as_deref()
+            .and_then(|name| catalog.index_of_name(name));
+    }
+
+    pub fn personality_name(&self) -> Option<&str> {
+        self.personality_name.as_deref()
+    }
+
+    pub(crate) fn restore_personality(
+        &mut self,
+        catalog: &crate::rules::personality::PersonalityCatalog,
+    ) -> Result<(), String> {
+        self.personality = self
+            .personality_name
+            .as_deref()
+            .map(|name| {
+                catalog
+                    .index_of_name(name)
+                    .filter(|index| {
+                        catalog
+                            .get(*index)
+                            .is_some_and(|definition| !definition.reserved)
+                    })
+                    .ok_or_else(|| format!("Commander {name:?} is missing from the active rules"))
+            })
+            .transpose()?;
+        Ok(())
+    }
+
+    pub(crate) fn hash_personality(&self, hasher: &mut impl std::hash::Hasher) {
+        if let Some(name) = self.personality_name() {
+            std::hash::Hash::hash(b"house-commander-name-v1", hasher);
+            std::hash::Hash::hash(name, hasher);
+        }
     }
 
     /// The strategy half of a commander, applied once right after
@@ -2647,6 +2686,7 @@ impl HouseState {
             difficulty: HouseDifficulty::Normal,
             difficulty_biases: HouseDifficultyBiases::default(),
             personality: None,
+            personality_name: None,
             multiplay_passive: false,
             country_cost_mults: CountryCostMults::default(),
             country_speed_mults: CountrySpeedMults::default(),

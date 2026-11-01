@@ -284,6 +284,7 @@ fn round_options(
             words.team,
         )?;
         opponents.push(SkirmishAiSlot {
+            commander: None,
             raw_slot_index: row as u8,
             country: choices.country,
             country_random: choices.country_random,
@@ -355,6 +356,7 @@ mod tests {
             humans: vec![(0, launch.humans[0].slot.clone()), (1, guest_choices)],
             ai_player_count: 1,
             opponents: vec![SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: 3,
                 country: LaunchCountry::from_country_index(2),
                 country_random: false,

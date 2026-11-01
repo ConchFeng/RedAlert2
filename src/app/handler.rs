@@ -1129,6 +1129,9 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                if crate::app::input::ai_commanders::key(state, &event) {
+                    return;
+                }
                 if crate::app::input::ai_series::key(state, &event) {
                     return;
                 }
@@ -1394,6 +1397,9 @@ impl ApplicationHandler for App {
                     state.match_state.input.cursor_from_touch = false;
                 }
                 state.set_cursor_from_window(position.x as f32, position.y as f32);
+                if crate::app::input::ai_commanders::cursor_moved(state) {
+                    return;
+                }
                 if crate::app::input::ai_series::cursor_moved(state) {
                     return;
                 }
@@ -1529,6 +1535,9 @@ impl ApplicationHandler for App {
                         return;
                     }
                 };
+                if crate::app::input::ai_commanders::mouse(state, button, btn_state.is_pressed()) {
+                    return;
+                }
                 if crate::app::input::ai_series::mouse(state, button, btn_state.is_pressed()) {
                     return;
                 }
@@ -1645,7 +1654,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
-                if crate::app::frontend::ai_series_render::dialog_active(state) {
+                if crate::app::frontend::ai_series_render::dialog_active(state)
+                    || crate::app::frontend::ai_commanders_render::dialog_active(state)
+                {
                     return;
                 }
                 let lines = match delta {

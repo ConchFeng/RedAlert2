@@ -920,6 +920,7 @@ mod tests {
             local_player_index: 0,
             ai_player_count: 1,
             opponents: vec![SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: 1,
                 country: LaunchCountry::Russia,
                 country_random: false,

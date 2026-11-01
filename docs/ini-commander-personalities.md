@@ -24,9 +24,10 @@ reweighted, no team delay is scaled, no clip plays. Retail data — which has no
 1=Oleg
 ```
 
-`N=Name` names the `[Name]` sections that are personalities. The index is the
-identity a save file stores, so appending is safe and reordering is not. A name
-without a section warns and is skipped.
+`N=Name` names the `[Name]` sections that are personalities. Setup, launch slots,
+and saves retain the name; the registry index is a derived runtime lookup.
+`Standard` and `Random` are reserved setup choices and cannot name custom
+definitions. A name without a section warns and is skipped.
 
 ## One personality
 
@@ -54,7 +55,7 @@ Entry1.Timeout=9999999
 |---|---|---|---|
 | `Country=` | `[Countries]` keys, comma or space separated, any case; `*` or `All` for every country | absent = every country | Which countries may be offered this personality, at `rules.ini`'s `Owner=` granularity. Exact key match: no side expansion, no `ParentCountry=` inheritance, so a country a mod adds under its own name just works. `Side=` is not supported: it restated what a `[Countries]` key already says, and a section that still writes it is ignored with a warning rather than silently reinterpreted. |
 | `DisplayName=` | CSF key or plain text (256) | none | For a selector. The simulation never reads it. |
-| `DisplayDesc=` | CSF key or plain text (1024) | none | One-line description for a selector. Never read by the simulation. |
+| `DisplayDesc=` | CSF key or plain text (1024) | none | Parsed metadata for custom consumers. The setup panel derives its strategy summary from actual settings rather than trusting an unvalidated description. Never read by the simulation. |
 | `TriggerDeny=` | `[AITriggerTypes]` keys, comma or space separated | empty | Those triggers leave the draw for this house: never built, never counted. |
 | `TriggerWeight.<id>=` | percent, `0..65535` | `100` | That trigger weighs `native * percent / 100`. |
 | `TriggerRatio=` | `0..100` | `100` | The house's `+0x565C` starting value: how often a team-creation pass picks a trigger at all. Low = patient. A map's `RatioAITriggerTeam=` and trigger op 76 still overwrite it. |
@@ -135,7 +136,7 @@ Assign.Computer1=Warren
 | `Personalities=` | `yes` | `no` gives no house a personality at all: retail's AI, weights untouched, no clips. This is what a map with preset AI (tower defence, a scripted mission) wants. |
 | `TroubleBuildingsLost=` | `1` | Buildings a house must lose from its own high-water mark before `InTrouble` fires. Minimum 1. |
 | `TroubleQuiet=` | `180` | Seconds of silence after an `InTrouble` clip whose entry names no `Timeout=`. |
-| `Assign.<house>=` | none | Names a personality for one launch slot — `Computer1`…`ComputerN`, the same names the startup log prints. The test seam until a selector exists; a slot's own `commander` field outranks it. |
+| `Assign.<house>=` | none | Names a personality for one launch slot — `Computer1`…`ComputerN`, the same names the startup log prints. A programmatic fallback; a slot's own `commander` field outranks it. The offline selector writes an explicit choice, including Standard. |
 
 The player also has `[VERA] CommanderFeedback=` in their profile (default on),
 which switches the clips off without touching the data. It is presentation only:
@@ -163,8 +164,9 @@ Per match, once the scenario is built:
 Commander feedback active: 6 personalities, 3 computer houses with a commander; local=Americans; speakers: Computer1 (Warren, ally), Computer2 (Oleg, enemy) …
 ```
 
-`0 computer houses with a commander` with `Personalities=yes` means nothing
-requested one — which is the default state, not an error. Add an `Assign.` line.
+`0 computer houses with a commander` with `Personalities=yes` means no custom
+profile was assigned. Standard deliberately leaves the house without a
+personality. Use the setup panel or a programmatic `Assign.` fallback.
 
 Each clip that plays logs its own line:
 
@@ -172,13 +174,52 @@ Each clip that plays logs its own line:
 Commander feedback: AWAGR1.BIK for Computer1 (Warren, ally, StartGame)
 ```
 
-## What this does not do
+## Offline setup
 
-- No selector UI yet. `NormalizedSkirmishSlot::commander` and
-  `PersonalityCatalog::candidates_for` are the seams: the first takes a name, the
-  second lists what a given country may be offered.
-- `Country=` is a filter on what a draw may offer, not a restriction on explicit
-  choices: a name requested by a map, a test or a future selector is assigned
-  even when the country is not listed, with a warning.
-- Screens and save files carry the personality as its registry index. Inserting a
-  personality in the middle of `[AIPersonalities]` renumbers the rest.
+Open **AI Commanders...** from Skirmish setup. Each active computer has a paged
+row showing its country, difficulty, commander, and strategy summary. Open a
+row to choose **Standard**, **Random compatible commander**, or a compatible
+named profile. **All: Standard** and **All: Random Compatible** apply across
+all 29 slots, including later pages. **Apply** saves the current setup and
+commander names; **Cancel** discards the draft. Tab, Enter, Space, and Escape
+operate the panel without issuing tactical commands.
+
+A fixed country offers its admitted definitions. While the country is Random,
+explicit named choices are limited to unrestricted `Country=All` definitions;
+Random Compatible resolves after the launch country is known. An incompatible
+or missing saved name resets to Standard, marks the entry with an asterisk,
+and explains the change in the panel. Random Compatible falls back to Standard
+when the resolved country has no candidate. Assignment uses the accepted slot,
+color, and country as a stable key and consumes no gameplay RNG.
+
+The feedback audio/video switch writes the existing independent
+`[VERA] CommanderFeedback=` preference. It leaves strategy settings active.
+Standard is an explicit opt-out, including when an INI `Assign.` fallback
+exists. Programmatic slots without a choice can still use `Assign.`; those
+explicit INI assignments retain their legacy cross-country override behavior.
+
+The panel describes `TeamDelayPercent`, `TriggerRatio`, and the number of
+configured trigger preferences. A profile with neutral settings says
+**Feedback only; standard AI tactics**. It does not infer tank, air, or defensive
+specialization from a name, portrait, or `DisplayDesc`. Such claims require
+validation of the actual compatible AI trigger and team definitions.
+
+No named profiles are bundled with retail rules. A catalog-free installation
+shows **No custom commanders available with these game rules**, keeps Standard
+playable, and disables bulk Random. The selector does not add an AI planner.
+
+## Persistence and validation
+
+`SkirmishVERA` in VERA.INI stores `Commander01` through `Commander29` as names.
+Accepted launch slots and supported replay startup retain the chosen name;
+AI series pin resolved names with their accepted round recipe. Houses save a
+name and rebuild their cached catalog index against the restored rules without
+reapplying initial strategy timers. A missing saved definition fails restoration
+with a readable error. Existing snapshot layout compatibility checks continue
+to reject incompatible older save layouts.
+
+The `skirmish-ai-commanders` production capture exercises all 29 rows, named
+selection when available, bulk assignment, feedback, and Apply/reopen at
+800×600 and 640×480. Focused regressions cover compatibility fallback,
+name persistence, Standard hash/RNG preservation, named strategy installation,
+and restoration after catalog reordering.

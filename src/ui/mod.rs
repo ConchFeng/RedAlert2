@@ -46,3 +46,4 @@ pub(crate) mod wol_verify;
 // pub mod settings;
 
 pub(crate) mod ai_series;
+pub(crate) mod ai_commanders;

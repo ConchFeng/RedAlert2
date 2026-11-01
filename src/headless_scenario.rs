@@ -69,6 +69,7 @@ pub fn battle_session(
             .iter()
             .enumerate()
             .map(|(slot, &(country, difficulty))| SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: (slot + 1) as u8,
                 country,
                 country_random: false,

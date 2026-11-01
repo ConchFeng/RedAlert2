@@ -522,6 +522,7 @@ pub(crate) fn render_skirmish_shell_to_target(
     target: ShellRenderTarget<'_>,
     mode: ShellRenderMode,
 ) -> anyhow::Result<SkirmishShellAction> {
+    crate::app::ai_commanders::reconcile(state);
     let chrome = state.frontend.skirmish_shell_chrome.take();
     let result = render_skirmish_shell_with_atlas(state, encoder, target, chrome.as_ref(), mode);
     state.frontend.skirmish_shell_chrome = chrome;
@@ -776,6 +777,22 @@ fn render_skirmish_shell_with_atlas(
             RIGHT_PANEL_BUTTON_DEPTH,
         );
     }
+    if parent_showing
+        && !sliding
+        && let Some(rect) = crate::app::frontend::ai_commanders_render::entry_rect(state)
+    {
+        push_right_panel_button_shp(
+            &mut instances,
+            atlas,
+            rect,
+            state
+                .frontend
+                .ai_commanders_buttons
+                .is_pressed(crate::app::frontend::ai_commanders_render::ENTRY),
+            false,
+            RIGHT_PANEL_BUTTON_DEPTH,
+        );
+    }
     // ComboDropWin is a popup over the dialog: its frame and rows go after
     // every dialog text, which this unbuffered pass paints in queue order.
     let mut dropdown_instances = Vec::new();
@@ -824,6 +841,31 @@ fn render_skirmish_shell_with_atlas(
             &localized_vera_label(state, "VERA:AISeries", "AI Series..."),
             rect,
             state.frontend.ai_series_dialog_buttons.is_pressed(0xF220),
+            SHELL_CONTROL_TEXT_DEPTH,
+            layout.scale,
+        );
+    }
+    if parent_showing
+        && !sliding
+        && let Some(rect) = crate::app::frontend::ai_commanders_render::entry_rect(state)
+    {
+        push_button_label_draw(
+            &mut shell_draws,
+            state,
+            &localized_vera_label(
+                state,
+                "VERA:AICommanders",
+                if state.frontend.ai_commanders_notice.is_some() {
+                    "AI Commanders... *"
+                } else {
+                    "AI Commanders..."
+                },
+            ),
+            rect,
+            state
+                .frontend
+                .ai_commanders_buttons
+                .is_pressed(crate::app::frontend::ai_commanders_render::ENTRY),
             SHELL_CONTROL_TEXT_DEPTH,
             layout.scale,
         );

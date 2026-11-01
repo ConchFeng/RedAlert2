@@ -1146,11 +1146,8 @@ pub struct NormalizedSkirmishSlot {
     pub(crate) difficulty: HouseDifficulty,
     /// The commander this house must get, if any.
     ///
-    /// Reserved seam: no UI offers it yet, so every launch path passes `None`
-    /// and no house gets a commander at all. A selector, `spawn.ini`, or a map
-    /// with preset AI sets it to a `[AIPersonalities]` name, to `Standard`
-    /// (native behaviour, no clips) or to `none`, and
-    /// [`crate::rules::personality::personality_for_house`] does the rest.
+    /// Setup stores a compatible definition name, `Standard`, or `Random`.
+    /// An absent slot choice retains the explicit rules assignment fallback.
     pub commander: Option<String>,
 }
 
@@ -1762,7 +1759,7 @@ pub fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<Normalize
             handle: None,
             difficulty: HouseDifficulty::from_native(opponent.difficulty.as_i32())
                 .expect("native AI difficulty"),
-            commander: None,
+            commander: opponent.commander.clone(),
         });
     }
     slots
@@ -1921,16 +1918,20 @@ pub fn populate_launch_houses(
         // house at once: a map that ships preset AI (tower defence, a scripted
         // mission) writes it and keeps the native skirmish brain.
         if !slot.is_human && feedback.personalities {
-            let requested = slot
-                .commander
-                .as_deref()
-                .or_else(|| feedback.assigned(&slot.owner_name));
-            let personality = crate::rules::personality::personality_for_house(
-                rules.personalities(),
-                country_name,
-                requested,
-            );
-            house.set_personality(personality);
+            let catalog = rules.personalities();
+            let personality = if let Some(requested) = slot.commander.as_deref() {
+                let key = ((sim.houses.order().len() as u64) << 40)
+                    | (u64::from(slot.country.raw_index()) << 8)
+                    | u64::from(slot.color_index);
+                catalog.resolve_for_country(country_name, requested, key)
+            } else {
+                crate::rules::personality::personality_for_house(
+                    catalog,
+                    country_name,
+                    feedback.assigned(&slot.owner_name),
+                )
+            };
+            house.set_personality(personality, catalog);
             if let Some(definition) = personality
                 .and_then(|index| rules.personalities().get(index))
                 .filter(|definition| !definition.reserved)
@@ -3451,6 +3452,7 @@ mod tests {
                 start_position: LaunchStartPosition::Auto,
                 team: LaunchTeam::None,
                 difficulty: crate::skirmish_launch::AiDifficulty::Normal,
+                commander: None,
             });
         session.rebuild_house_roster();
         let descriptor = MatchLaunchDescriptor::from_resolved(session).unwrap();
@@ -4443,6 +4445,7 @@ mod tests {
                 start_position: LaunchStartPosition::Auto,
                 team: LaunchTeam::None,
                 difficulty: AiDifficulty::Normal,
+                commander: None,
             })
             .collect();
         session.rebuild_house_roster();
@@ -4666,6 +4669,49 @@ mod tests {
         .expect("one-player Battle fixture is fully resolved")
     }
 
+    #[test]
+    fn commander_launch_preserves_standard_and_installs_named_strategy_without_rng() {
+        use crate::skirmish_launch::{AiDifficulty, SkirmishAiSlot};
+        let mut session = one_player_battle_launch("commanders.map").session().clone();
+        session.opponents.push(SkirmishAiSlot {
+            raw_slot_index: 1,
+            country: LaunchCountry::America,
+            country_random: false,
+            color_index: 1,
+            color_random: false,
+            start_position: LaunchStartPosition::Auto,
+            team: LaunchTeam::None,
+            difficulty: AiDifficulty::Normal,
+            commander: None,
+        });
+        let source = "[AIPersonalities]\n0=Warren\n[Warren]\nCountry=Americans\nTriggerRatio=80\nTeamDelayPercent=75\n";
+        let rules = RuleSet::from_ini(&launch_fixture_ini(source)).unwrap();
+        let mut baseline = Simulation::with_seed(99);
+        populate_launch_houses(&mut baseline, &normalized_launch_slots(&session), &rules);
+        session.opponents[0].commander = Some("Standard".into());
+        let assigned = RuleSet::from_ini(&launch_fixture_ini(&format!(
+            "{source}[CommanderFeedback]\nAssign.Computer1=Warren\n"
+        )))
+        .unwrap();
+        let mut standard = Simulation::with_seed(99);
+        populate_launch_houses(&mut standard, &normalized_launch_slots(&session), &assigned);
+        assert_eq!(standard.state_hash(), baseline.state_hash());
+        assert_eq!(standard.rng_state(), baseline.rng_state());
+        session.opponents[0].commander = Some("Warren".into());
+        let mut named = Simulation::with_seed(99);
+        populate_launch_houses(&mut named, &normalized_launch_slots(&session), &rules);
+        let owner = named.interner.get("Computer1").unwrap();
+        let house = &named.houses[&owner];
+        assert_eq!(house.personality_name(), Some("Warren"));
+        assert_eq!(house.team_creation().ratio(), 80);
+        assert_ne!(
+            house.team_creation().timer(),
+            baseline.houses[&owner].team_creation().timer()
+        );
+        assert_eq!(named.rng_state(), baseline.rng_state());
+        assert_ne!(named.state_hash(), baseline.state_hash());
+    }
+
     fn prefix_map_with_starts(starts: &[Waypoint]) -> MapFile {
         MapFile {
             header: crate::map::map_file::MapHeader {
@@ -4826,6 +4872,7 @@ mod tests {
                         start_position: LaunchStartPosition::Auto,
                         team: LaunchTeam::None,
                         difficulty: crate::skirmish_launch::AiDifficulty::Easy,
+                        commander: None,
                     });
                 launch.session.ai_player_count = 1;
                 launch.session.rebuild_house_roster();
@@ -5462,6 +5509,7 @@ mod tests {
                 start_position: LaunchStartPosition::Position(index + 1),
                 team: LaunchTeam::None,
                 difficulty: AiDifficulty::Easy,
+                commander: None,
             })
             .collect();
         session.ai_player_count = session.opponents.len() as i32;
@@ -6588,6 +6636,7 @@ mod tests {
                     start_position,
                     team: LaunchTeam::None,
                     difficulty: crate::skirmish_launch::AiDifficulty::Easy,
+                    commander: None,
                 },
             )
             .collect();

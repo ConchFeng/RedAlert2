@@ -290,6 +290,7 @@ mod tests {
             local_player_index: 0,
             ai_player_count: 1,
             opponents: vec![SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: 1,
                 country: LaunchCountry::Russia,
                 country_random: false,
@@ -1370,6 +1371,7 @@ mod tests {
             (5, AiDifficulty::Easy),
         ] {
             session.opponents.push(SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: (session.opponents.len() + 1) as u8,
                 color_index,
                 difficulty,
@@ -1462,6 +1464,7 @@ mod tests {
         session.local_slot_mut().team = LaunchTeam::Team(0);
         session.opponents[0].team = LaunchTeam::Team(0);
         session.opponents.push(SkirmishAiSlot {
+            commander: None,
             raw_slot_index: (session.opponents.len() + 1) as u8,
             country: LaunchCountry::Cuba,
             country_random: false,
@@ -1497,6 +1500,7 @@ mod tests {
         let mut session = test_session();
         session.mode = test_cooperative_mode();
         session.opponents.push(SkirmishAiSlot {
+            commander: None,
             raw_slot_index: (session.opponents.len() + 1) as u8,
             country: LaunchCountry::Cuba,
             country_random: false,
@@ -1812,6 +1816,7 @@ mod tests {
         session.local_slot_mut().start_position = LaunchStartPosition::Auto;
         session.opponents[0].start_position = LaunchStartPosition::Auto;
         session.opponents.push(SkirmishAiSlot {
+            commander: None,
             raw_slot_index: (session.opponents.len() + 1) as u8,
             country: LaunchCountry::Cuba,
             country_random: false,
@@ -2372,6 +2377,7 @@ mod tests {
         let ai_template = session.opponents[0].clone();
         session.opponents = (1..8)
             .map(|index| SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: index as u8,
                 color_index: (index + 1) as u8,
                 start_position: LaunchStartPosition::Position(index as u8),

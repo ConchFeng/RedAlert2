@@ -59,6 +59,7 @@ pub mod frontend;
 mod game_data_check;
 mod handler;
 pub(crate) mod ai_series;
+pub(crate) mod ai_commanders;
 mod in_game;
 mod initialize;
 pub(crate) mod input;

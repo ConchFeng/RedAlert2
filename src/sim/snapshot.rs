@@ -346,6 +346,8 @@ pub enum SnapshotRestoreError {
         object_id: u64,
         reason: &'static str,
     },
+    #[error("invalid saved commander for house {owner:?}: {reason}")]
+    InvalidHouseCommander { owner: InternedId, reason: String },
     #[error("invalid saved VoxelAnimType damage identity")]
     InvalidVoxelTypeDamage,
     #[error("invalid saved VoxelAnim {object_id} type identity")]
@@ -2095,6 +2097,11 @@ impl Simulation {
         prepare_terrain_assets: Option<&mut SnapshotTerrainAssetPreparation<'_>>,
         saved_land: Option<crate::map::resolved_terrain::SavedCellLandValues>,
     ) -> Result<SnapshotMapRestoreOutput, SnapshotRestoreError> {
+        for (&owner, house) in self.houses.iter_mut() {
+            house
+                .restore_personality(rules.personalities())
+                .map_err(|reason| SnapshotRestoreError::InvalidHouseCommander { owner, reason })?;
+        }
         self.validate_type_tech_levels(rules)?;
         for (id, name, _) in self.voxel_type_damage_identity_entries() {
             if rules.voxel_anim_type_id_by_name(name) != Some(id)
@@ -8343,6 +8350,54 @@ mod tests {
             Some(HouseDifficulty::Easy),
         );
         assert_eq!(loaded.sim.state_hash(), expected_hash);
+    }
+
+    #[test]
+    fn commander_snapshot_retains_names_and_rebinds_catalog_indices() {
+        use crate::rules::ini_parser::IniFile;
+        use crate::rules::ruleset::RuleSet;
+        use crate::sim::house_state::HouseState;
+
+        let profiles = |order: &str| {
+            RuleSet::from_ini(&IniFile::from_str(&format!(
+                "[OverlayTypes]\n0=WALL\n[WALL]\nWall=yes\nStrength=100\n[AIPersonalities]\n{order}[Warren]\nCountry=Americans\n[Oleg]\nCountry=Russians\n"
+            )))
+            .unwrap()
+        };
+        let original_rules = profiles("0=Warren\n1=Oleg\n");
+        let reordered_rules = profiles("0=Oleg\n1=Warren\n");
+        let (mut sim, _, registry) = terrain_asset_restore_fixture();
+        let owner = sim.interner.intern("Computer1");
+        let mut house = HouseState::new(owner, 0, None, false, 0, 10);
+        house.set_personality(Some(0), original_rules.personalities());
+        house.team_creation_mut().set_trigger_ratio(37);
+        house.team_creation_mut().restart(91, 123);
+        let saved_team_creation = *house.team_creation();
+        sim.houses.register(house);
+        let bytes = GameSnapshot::save(&sim, 0, 0, "commanders", 0);
+        let mut restored = GameSnapshot::load(&bytes).unwrap().sim;
+        assert_eq!(restored.houses[&owner].personality_name(), Some("Warren"));
+        assert_eq!(restored.houses[&owner].personality(), None);
+        restored.rebuild_caches_after_load(
+            flat_terrain(4, 4),
+            crate::sim::pathfinding::terrain_speed::TerrainSpeedConfig::default(),
+            &reordered_rules,
+        );
+        restored
+            .restore_map_authority_after_snapshot_load(&reordered_rules, &registry, None)
+            .unwrap();
+        assert_eq!(restored.houses[&owner].personality(), Some(1));
+        assert_eq!(
+            *restored.houses[&owner].team_creation(),
+            saved_team_creation
+        );
+        let missing = RuleSet::from_ini(&IniFile::from_str("")).unwrap();
+        assert!(matches!(
+            restored.restore_map_authority_after_snapshot_load(
+                &missing, &crate::rules::overlay_types::OverlayTypeRegistry::empty(), None
+            ),
+            Err(SnapshotRestoreError::InvalidHouseCommander { owner: failed, .. }) if failed == owner
+        ));
     }
 
     /// Issue #1949. Retail witnesses register an extra hostile House beside

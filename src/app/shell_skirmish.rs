@@ -144,6 +144,7 @@ impl App {
     pub(super) fn teardown_skirmish_shell_for_start(state: &mut AppState) {
         state.frontend.shell_route = crate::app::shell_route::ShellRoute::MainMenu;
         state.frontend.shell_first_paint_slide = None;
+        state.frontend.ai_commanders_setup = None;
         state.frontend.skirmish_shell_state.choose_map_modal = None;
         state.frontend.skirmish_shell_state.validation_modal = None;
         state.frontend.skirmish_shell_state.open_combo_dropdown = None;
@@ -310,6 +311,7 @@ impl App {
     /// Start Game on `0x102` (`0x006ACEE0` case `0x617`): validate and pack
     /// the session, then slide the dialog out before the launch.
     pub(crate) fn start_game_from_shell(state: &mut AppState) {
+        crate::app::ai_commanders::reconcile(state);
         Self::note_skirmish_scenario(state);
         match crate::ui::skirmish_shell::launch_session(
             &state.frontend.skirmish_shell_state,
@@ -327,7 +329,10 @@ impl App {
                         &state.frontend.skirmish_modes,
                         &raw_session,
                     ) {
-                    Ok(resolved_session) => {
+                    Ok(mut resolved_session) => {
+                        if let Some(rules) = state.rules() {
+                            crate::app::ai_commanders::resolve_launch(rules, &mut resolved_session);
+                        }
                         // 0x006ACEE0 packs the session and writes
                         // result 0x617; the runner (0x006AE2C0) then
                         // slides the dialog out before the launch.

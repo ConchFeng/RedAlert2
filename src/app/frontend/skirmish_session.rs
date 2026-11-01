@@ -526,6 +526,7 @@ impl MultiplayerShellRuntime {
             }
             if let Some(difficulty) = difficulty.filter(|_| !observe && !self.lan_observer()) {
                 opponents.push(SkirmishAiSlot {
+                    commander: None,
                     raw_slot_index: row,
                     country: menu_country_from_item_data(persisted.country)
                         .unwrap_or(LaunchCountry::America),
@@ -1003,7 +1004,13 @@ impl MultiplayerShellRuntime {
         state.player_color_index = usize::try_from(self.local_preferences.color_index).unwrap_or(0);
         state.player_color_claimed = self.local_preferences.color_ex != RANDOM_ITEM_DATA;
 
-        for (opponent, persisted) in state.opponents.iter_mut().zip(self.snapshot.slots) {
+        for (index, (opponent, persisted)) in state
+            .opponents
+            .iter_mut()
+            .zip(self.snapshot.slots)
+            .enumerate()
+        {
+            opponent.commander = self.snapshot.commanders[index].clone();
             opponent.row_type = ai_row_type_from_persisted(persisted.row_type);
             opponent.enabled = opponent.row_type.is_active();
             if let Some(difficulty) = opponent.row_type.difficulty() {
@@ -1558,11 +1565,15 @@ impl MultiplayerShellRuntime {
         self.scenario_rng.state()
     }
 
+    pub(crate) fn scenario_rng_logical_state(&self) -> crate::sim::rng::SimRngLogicalState {
+        self.scenario_rng.logical_state()
+    }
+
     #[cfg(test)]
     pub(crate) fn scenario_rng_logical_state_for_test(
         &self,
     ) -> crate::sim::rng::SimRngLogicalState {
-        self.scenario_rng.logical_state()
+        self.scenario_rng_logical_state()
     }
 }
 
@@ -1605,7 +1616,18 @@ fn pack_snapshot_selection(
     };
 }
 
+fn pack_snapshot_commanders(snapshot: &mut MultiplayerSetupSnapshot, state: &SkirmishShellState) {
+    for (index, name) in snapshot.commanders.iter_mut().enumerate() {
+        *name = state
+            .opponents
+            .get(index)
+            .map(|opponent| opponent.commander.clone())
+            .unwrap_or_else(|| crate::rules::personality::PersonalityCatalog::STANDARD.to_owned());
+    }
+}
+
 fn pack_snapshot_slots(snapshot: &mut MultiplayerSetupSnapshot, state: &SkirmishShellState) {
+    pack_snapshot_commanders(snapshot, state);
     for (index, destination) in snapshot.slots.iter_mut().enumerate() {
         let Some(opponent) = state.opponents.get(index) else {
             *destination = SkirmishPersistedSlot {
@@ -2408,6 +2430,7 @@ mod tests {
                 )
                 .unwrap();
             let ai = SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: 1,
                 country: LaunchCountry::from_country_index(8),
                 country_random: false,
@@ -2420,6 +2443,7 @@ mod tests {
             launch.opponents = vec![
                 ai.clone(),
                 SkirmishAiSlot {
+                    commander: None,
                     raw_slot_index: 24,
                     ..ai
                 },
@@ -2626,6 +2650,7 @@ mod tests {
             local_player_index: 0,
             ai_player_count: 1,
             opponents: vec![SkirmishAiSlot {
+                commander: None,
                 raw_slot_index: 1,
                 country: LaunchCountry::Russia,
                 country_random: true,
@@ -3482,6 +3507,41 @@ WOLTaunts=junk
     /// A terminal exit has no Start/Back transaction, so the page's own values
     /// have to reach the durable record. No launch is happening, so the pack may
     /// not spend a `Scenario` draw turning a Random marker into a pick.
+    #[test]
+    fn commander_apply_persists_current_setup_and_names_without_drawing_rng() {
+        let mut owner = runtime(
+            MultiplayerSetupSnapshot::from_global_defaults(defaults(), SetupProfile::Skirmish),
+            17,
+        );
+        let mut shell = SkirmishShellState::default();
+        shell.opponents[0].commander = "Warren".into();
+        shell.opponents[28].commander = "Random".into();
+        shell.unit_count = 77;
+        let before_rng = owner.scenario_rng_logical_state();
+        let ffa = SkirmishGameMode {
+            id: 2,
+            class: crate::skirmish_modes::MpModeClass::FreeForAll,
+            ..mode()
+        };
+        shell.selected_mode_id = 2;
+        owner.pack_durable_state(&shell, &[map()], std::slice::from_ref(&ffa));
+        assert_eq!(owner.snapshot.game_mode, 2);
+        assert_eq!(owner.snapshot.unit_count, 77);
+        assert_eq!(owner.snapshot.commanders[0], "Warren");
+        assert_eq!(owner.snapshot.commanders[28], "Random");
+        assert_eq!(owner.scenario_rng_logical_state(), before_rng);
+        let saved = owner.update_persistence_bytes(b"");
+        let reopened = runtime(
+            read_setup_snapshot(&saved, defaults(), SetupProfile::Skirmish).unwrap(),
+            17,
+        );
+        let mut hydrated = SkirmishShellState::default();
+        reopened.hydrate_shell(&mut hydrated, &[map()], &[ffa]);
+        assert_eq!(hydrated.selected_mode_id, 2);
+        assert_eq!(hydrated.opponents[0].commander, "Warren");
+        assert_eq!(hydrated.opponents[28].commander, "Random");
+    }
+
     #[test]
     fn terminal_exit_pack_keeps_page_edits_and_spends_no_random_draw() {
         let mut runtime = runtime(

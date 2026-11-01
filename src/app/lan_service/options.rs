@@ -680,6 +680,7 @@ fn parse_options(
         let old = session.network_row_choices(row).expect("eight setup rows");
         let choices = decoded_choices(&old, country, color, start, team)?;
         opponents.push(SkirmishAiSlot {
+            commander: None,
             raw_slot_index: row,
             country: choices.country,
             country_random: choices.country_random,

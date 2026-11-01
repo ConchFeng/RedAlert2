@@ -550,6 +550,7 @@ fn skirmish(
         rows.push(raw_slot as u8);
         colors.push(color_index);
         opponents.push(SkirmishAiSlot {
+            commander: None,
             raw_slot_index: raw_slot as u8,
             country: country(ini.section_or_empty("HouseCountries"), &key)?,
             country_random: false,

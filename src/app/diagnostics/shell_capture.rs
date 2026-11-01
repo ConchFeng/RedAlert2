@@ -182,6 +182,7 @@ const CHECKPOINT_SKIRMISH_DEFEAT_REPLAY: &str = "skirmish-defeat-replay";
 const CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD: &str = "skirmish-observer-generated-battlefield";
 const CHECKPOINT_SKIRMISH_OBSERVER_CAMERA: &str = "skirmish-observer-camera";
 const CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS: &str = "skirmish-observer-standings";
+const CHECKPOINT_SKIRMISH_AI_COMMANDERS: &str = "skirmish-ai-commanders";
 const CHECKPOINT_SKIRMISH_AI_SERIES_SETUP: &str = "skirmish-ai-series-setup";
 const CHECKPOINT_SKIRMISH_AI_SERIES_START: &str = "skirmish-ai-series-start";
 const CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS: &str = "skirmish-ai-series-results";
@@ -367,6 +368,7 @@ pub enum ShellCaptureCheckpoint {
     SkirmishObserverBattlefield,
     SkirmishObserverCamera,
     SkirmishObserverStandings,
+    SkirmishAiCommanders,
     SkirmishAiSeriesSetup,
     SkirmishAiSeriesStart,
     SkirmishAiSeriesResults,
@@ -594,6 +596,7 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD => Ok(Self::SkirmishObserverBattlefield),
             CHECKPOINT_SKIRMISH_OBSERVER_CAMERA => Ok(Self::SkirmishObserverCamera),
             CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS => Ok(Self::SkirmishObserverStandings),
+            CHECKPOINT_SKIRMISH_AI_COMMANDERS => Ok(Self::SkirmishAiCommanders),
             CHECKPOINT_SKIRMISH_AI_SERIES_SETUP => Ok(Self::SkirmishAiSeriesSetup),
             CHECKPOINT_SKIRMISH_AI_SERIES_START => Ok(Self::SkirmishAiSeriesStart),
             CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS => Ok(Self::SkirmishAiSeriesResults),
@@ -1001,6 +1004,7 @@ impl ShellCaptureCheckpoint {
             Self::SkirmishObserverBattlefield => CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD,
             Self::SkirmishObserverCamera => CHECKPOINT_SKIRMISH_OBSERVER_CAMERA,
             Self::SkirmishObserverStandings => CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
+            Self::SkirmishAiCommanders => CHECKPOINT_SKIRMISH_AI_COMMANDERS,
             Self::SkirmishAiSeriesSetup => CHECKPOINT_SKIRMISH_AI_SERIES_SETUP,
             Self::SkirmishAiSeriesStart => CHECKPOINT_SKIRMISH_AI_SERIES_START,
             Self::SkirmishAiSeriesResults => CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS,
@@ -1634,8 +1638,10 @@ where
 
     ensure!(
         (width == EXPECTED_WIDTH && height == EXPECTED_HEIGHT)
-            || (online_latency && width == 640 && height == 480),
-        "checkpoint {} requires exactly {EXPECTED_WIDTH}x{EXPECTED_HEIGHT} (640x480 also allowed for --online-latency), got {width}x{height}",
+            || ((online_latency || checkpoint == ShellCaptureCheckpoint::SkirmishAiCommanders)
+                && width == 640
+                && height == 480),
+        "checkpoint {} requires exactly {EXPECTED_WIDTH}x{EXPECTED_HEIGHT} (640x480 also allowed for --online-latency and skirmish-ai-commanders), got {width}x{height}",
         checkpoint.as_str()
     );
     ensure!(
@@ -2182,7 +2188,7 @@ fn steady_main_menu_capture_ready(snapshot: MainMenuCaptureSnapshot) -> Result<b
     steady_main_menu_capture_ready_for(snapshot, false)
 }
 
-/// Live latency runs may use the normal 640x480 shell. Other captures retain
+/// Live latency and commander setup runs may use the normal 640x480 shell. Other captures retain
 /// their fixed reference surface and large movie. The outer live capture also
 /// checks that its actual surface equals the requested dimensions each frame.
 fn steady_main_menu_capture_ready_for(
@@ -2385,6 +2391,9 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::SkirmishObserverStandings => {
                 Some(skirmish::SkirmishCapture::observer_standings())
             }
+            ShellCaptureCheckpoint::SkirmishAiCommanders => Some(
+                skirmish::SkirmishCapture::ai_commanders(request.width, request.height),
+            ),
             ShellCaptureCheckpoint::SkirmishAiSeriesSetup => Some(
                 skirmish::SkirmishCapture::ai_series(skirmish::AiSeriesTarget::Setup),
             ),
@@ -2549,6 +2558,7 @@ impl ShellCaptureSession {
             self.request.checkpoint,
             ShellCaptureCheckpoint::SkirmishObserverBattlefield
                 | ShellCaptureCheckpoint::SkirmishObserverStandings
+                | ShellCaptureCheckpoint::SkirmishAiCommanders
                 | ShellCaptureCheckpoint::SkirmishAiSeriesSetup
                 | ShellCaptureCheckpoint::SkirmishAiSeriesStart
                 | ShellCaptureCheckpoint::SkirmishAiSeriesResults
@@ -3770,6 +3780,26 @@ mod tests {
     }
 
     #[test]
+    fn commander_capture_accepts_compact_setup_without_relaxing_retail_surfaces() {
+        let output = new_output_path("compact-commanders");
+        let mut values = valid_args(&output);
+        values[1] = CHECKPOINT_SKIRMISH_AI_COMMANDERS.into();
+        let width = values.iter().position(|arg| arg == "--width").unwrap();
+        let height = values.iter().position(|arg| arg == "--height").unwrap();
+        values[width + 1] = "640".into();
+        values[height + 1] = "480".into();
+        let AppLaunchMode::ShellCapture(request) = parse_launch_args(values.clone()).unwrap()
+        else {
+            panic!("capture");
+        };
+        assert_eq!((request.width(), request.height()), (640, 480));
+        let session = ShellCaptureSession::new(request);
+        assert!(session.skirmish.is_some());
+        values[1] = CHECKPOINT_SKIRMISH_0X102_STEADY.into();
+        assert!(parse_launch_args(values).is_err());
+    }
+
+    #[test]
     fn online_ai_capture_requires_a_singleton_host_and_actual_play() {
         let output = new_output_path("online-ai-admission");
         let mut values = valid_args(&output);
@@ -4628,6 +4658,11 @@ mod tests {
             (
                 CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
                 ShellCaptureCheckpoint::SkirmishObserverStandings,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_AI_COMMANDERS,
+                ShellCaptureCheckpoint::SkirmishAiCommanders,
                 40_000,
             ),
             (

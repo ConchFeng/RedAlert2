@@ -29,7 +29,7 @@
 //!
 //! Assignment is opt-in. A house with no requested commander keeps `None` and
 //! behaves exactly as retail's AI does; [`PersonalityCatalog::draw_for`] exists
-//! for a selector's "random" button, not for the launch path.
+//! for an explicit random-compatible choice without consuming gameplay RNG.
 
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -51,9 +51,10 @@ impl PersonalityCatalog {
     ///
     /// It is never drawn: [`Self::candidates_for`] skips it, so a match
     /// never hands it to an opponent by chance. It exists to be *named* — by a
-    /// future selector, by `spawn.ini`, or by a map that ships preset AI and
+    /// setup selector, by `spawn.ini`, or by a map that ships preset AI and
     /// has no business playing commander clips (tower defence, for one).
     pub const STANDARD: &'static str = "Standard";
+    pub const RANDOM: &'static str = "Random";
 
     /// No `[AIPersonalities]` in any rules layer: the whole feature is absent,
     /// and skirmish AI behaves exactly as it does without this module. The
@@ -75,7 +76,7 @@ impl PersonalityCatalog {
             .count()
     }
 
-    /// Registration order is the stable identity a save file stores.
+    /// Runtime catalog index. Saved houses retain the definition name instead.
     pub fn get(&self, index: u16) -> Option<&PersonalityDef> {
         self.definitions.get(usize::from(index))
     }
@@ -113,8 +114,7 @@ impl PersonalityCatalog {
     /// A personality for a house of `country`, chosen from
     /// [`Self::candidates_for`] by `key`.
     ///
-    /// This is a selector's "random" button, not the launch path: a house that
-    /// requested nothing gets nothing. `key` must be stable across every client
+    /// A house that requested nothing gets nothing. `key` must be stable across every client
     /// and every replay of one match — a slot index and its country, never a
     /// frame counter or a random draw. It deliberately consumes no RNG:
     /// assignment happens while the scenario is built, and drawing from the
@@ -128,6 +128,33 @@ impl PersonalityCatalog {
         }
         let pick = (fnv1a64(key) % candidates.len() as u64) as usize;
         Some(candidates[pick])
+    }
+
+    /// Canonical setup selection, or `None` when a missing/incompatible name
+    /// must visibly fall back to Standard. Random remains pending until the launch
+    /// country is resolved; its eventual draw can fall back to Standard.
+    pub fn compatible_selection(&self, country: &str, requested: &str) -> Option<&str> {
+        if requested.eq_ignore_ascii_case(Self::STANDARD) {
+            return Some(Self::STANDARD);
+        }
+        if requested.eq_ignore_ascii_case(Self::RANDOM) {
+            return (!self.is_empty()).then_some(Self::RANDOM);
+        }
+        let definition = self.get(self.index_of_name(requested)?)?;
+        (!definition.reserved && definition.admits(country)).then_some(definition.name.as_str())
+    }
+
+    /// Resolve an admitted setup choice using only accepted slot facts.
+    /// Standard and incompatible choices leave the native AI branch intact.
+    pub fn resolve_for_country(&self, country: &str, requested: &str, key: u64) -> Option<u16> {
+        let selection = self.compatible_selection(country, requested)?;
+        if selection == Self::STANDARD {
+            None
+        } else if selection == Self::RANDOM {
+            self.draw_for(country, key)
+        } else {
+            self.index_of_name(selection)
+        }
     }
 
     fn push(&mut self, definition: PersonalityDef) {
@@ -446,14 +473,19 @@ pub(crate) fn parse_commander_feedback(ini: &IniFile) -> CommanderFeedbackRules 
 pub(crate) fn parse_personalities(ini: &IniFile, ids: &[String]) -> PersonalityCatalog {
     let mut catalog = PersonalityCatalog::default();
     for id in ids {
+        if id.eq_ignore_ascii_case(PersonalityCatalog::STANDARD)
+            || id.eq_ignore_ascii_case(PersonalityCatalog::RANDOM)
+        {
+            log::warn!("[AIPersonalities] reserves {id} for a setup choice; definition ignored");
+            continue;
+        }
         let Some(section) = ini.section(id) else {
             log::warn!("[AIPersonalities] names {id}, but that section is missing");
             continue;
         };
         catalog.push(parse_personality_def(id, section));
     }
-    // The reserved no-clip personality, last so its identity cannot shift the
-    // IDs a save file already stores.
+    // The reserved no-clip personality remains available for explicit INI overrides.
     if catalog
         .index_of_name(PersonalityCatalog::STANDARD)
         .is_none()

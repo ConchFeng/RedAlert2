@@ -299,7 +299,7 @@ fn start_series(state: &mut AppState, setup: AiSeriesSetup) -> Result<()> {
         });
         recipes.push(recipe);
     }
-    let fixed = state
+    let mut fixed = state
         .frontend
         .multiplayer_shell_runtime
         .close_shell_transaction(
@@ -308,6 +308,9 @@ fn start_series(state: &mut AppState, setup: AiSeriesSetup) -> Result<()> {
             &state.frontend.skirmish_modes,
             &template,
         )?;
+    if let Some(rules) = state.rules() {
+        crate::app::ai_commanders::resolve_launch(rules, &mut fixed);
+    }
     let normalized = crate::sim::scenario_bootstrap::normalized_launch_slots(&fixed);
     let entrants = fixed
         .opponents
@@ -470,6 +473,9 @@ fn launch_round(state: &mut AppState, round: u16) -> Result<()> {
                 } else {
                     runtime.recipe.fixed.clone()
                 };
+                if let Some(rules) = state.rules() {
+                    crate::app::ai_commanders::resolve_launch(rules, &mut session);
+                }
                 session.selected_map_file = Some(map.identity.clone());
                 let recorded = RoundLaunchRecipe {
                     session: session.clone(),
@@ -1207,6 +1213,7 @@ mod tests {
                 .into_iter()
                 .enumerate()
                 .map(|(index, raw_slot_index)| SkirmishAiSlot {
+                    commander: None,
                     raw_slot_index,
                     country: LaunchCountry::Russia,
                     country_random: false,

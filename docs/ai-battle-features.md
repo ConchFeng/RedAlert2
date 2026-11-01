@@ -8,7 +8,8 @@ title: AI battle and spectator feature design
 This specification preserves the eight original ideas in delivery order. The
 current implementation scope is features **1–6**; the maintainer deferred
 features **7 and 8**. The automatic battle camera, live AI standings, and AI
-series are implemented in current source; features 4–6 remain planned. Features
+series are implemented in current source. Commander selection is implemented;
+features 5–6 remain planned. Features
 7–8 are design references outside the current implementation scope. These
 extensions are not included in the 1.0.1 release.
 Each numbered feature must finish its production path and validation before the
@@ -325,6 +326,32 @@ second AI planner or call an online language model every tick.
 Accept paging/persistence, country compatibility, normal production launch of a
 named profile, unchanged Standard behavior, and independent feedback controls.
 Document the real validated strategy of every shipped named profile.
+
+### Current implementation
+
+**AI Commanders...** opens a separate paged setup panel for all active computer
+slots. Rows show country, difficulty, the selected name, and a strategy summary
+derived from the profile settings. The chooser offers Standard, Random
+Compatible, and named profiles admitted by the current country. Random countries
+offer unrestricted named profiles or resolve Random Compatible after country
+assignment. Bulk Standard/Random, independent feedback, Apply/Cancel, and
+keyboard navigation use the existing shell presentation and input owners.
+
+Names persist in setup, accepted launch slots, supported replay startup, AI
+series recipes, and saved Houses. Incompatible or missing setup names visibly
+reset to Standard. Runtime catalog indices are derived from saved names, and
+restoration does not reapply initial strategy timers. Standard leaves the House
+without a personality and preserves ordinary simulation hashes and RNG draws.
+
+Retail rules contain no custom profiles; the panel explains their absence and
+keeps Standard available. No named strategies are bundled. The panel reports
+configured team delay, trigger chance, and preference count rather than making
+unvalidated unit-specialization claims. See the
+[commander guide](ini-commander-personalities.md) for rules and persistence.
+
+The `skirmish-ai-commanders` capture covers every AI slot, Apply/reopen, named
+selection with custom rules, and compact controls at 800×600 and 640×480.
+These source features are absent from the published 1.0.1 packages.
 
 ## 5. A second battlefield window
 

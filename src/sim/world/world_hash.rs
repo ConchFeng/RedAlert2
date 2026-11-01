@@ -1107,6 +1107,7 @@ impl Simulation {
                 house.player_control().hash(hasher);
             }
             (house.difficulty() as i32).hash(hasher);
+            house.hash_personality(hasher);
             house.rof_bias().bits().hash(hasher);
             house.is_defeated().hash(hasher);
             if house.is_to_die() {

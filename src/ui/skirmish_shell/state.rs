@@ -253,6 +253,7 @@ impl SkirmishAiRowType {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SkirmishShellOpponent {
+    pub commander: String,
     pub enabled: bool,
     pub row_type: SkirmishAiRowType,
     pub country: LaunchCountry,
@@ -315,6 +316,7 @@ fn default_opponents(first_country: LaunchCountry) -> Vec<SkirmishShellOpponent>
                 SkirmishAiRowType::None
             };
             let mut opponent = SkirmishShellOpponent {
+                commander: crate::rules::personality::PersonalityCatalog::STANDARD.to_owned(),
                 enabled: idx == 0,
                 row_type,
                 country,
