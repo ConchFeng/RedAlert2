@@ -317,6 +317,22 @@ impl App {
     }
 }
 
+/// VERA's full-screen shortcut: Alt+Enter (Option+Return on a Mac keyboard)
+/// everywhere, and macOS's own Ctrl+Cmd+F there. gamemd has no such key; its
+/// dialogs already treat Alt+Enter (`WM_SYSKEYDOWN`) apart from Enter.
+fn is_full_screen_toggle(code: KeyCode, modifiers: winit::keyboard::ModifiersState) -> bool {
+    let alt_enter = matches!(code, KeyCode::Enter | KeyCode::NumpadEnter)
+        && modifiers.alt_key()
+        && !modifiers.control_key()
+        && !modifiers.super_key();
+    let mac_shortcut = cfg!(target_os = "macos")
+        && code == KeyCode::KeyF
+        && modifiers.control_key()
+        && modifiers.super_key()
+        && !modifiers.alt_key();
+    alt_enter || mac_shortcut
+}
+
 /// winit 0.30 hides the menu bar and Dock just before a borderless game enters
 /// full screen and does not undo it on leaving, so a windowed game would keep
 /// them hidden while it is in front. Restore them once the window is out; the
@@ -1051,6 +1067,21 @@ impl ApplicationHandler for App {
                             dialog.sync_fps_counter(shown);
                         }
                         log::info!("FPS overlay: {}", if shown { "shown" } else { "hidden" });
+                        state.platform.window.request_redraw();
+                    }
+                    return;
+                }
+                // VERA's full-screen toggle, the same switch as the Options
+                // box. A sealed capture keeps its fixed window.
+                if let PhysicalKey::Code(code) = event.physical_key
+                    && is_full_screen_toggle(code, state.platform.live_modifiers)
+                {
+                    if event.state.is_pressed()
+                        && !event.repeat
+                        && state.platform.capture_client_size.is_none()
+                    {
+                        let full_screen = state.platform.window.fullscreen().is_none();
+                        Self::set_full_screen(state, full_screen);
                         state.platform.window.request_redraw();
                     }
                     return;
@@ -1973,6 +2004,29 @@ impl ApplicationHandler for App {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn alt_enter_toggles_full_screen_but_plain_and_ctrl_alt_enter_do_not() {
+        use winit::keyboard::ModifiersState as M;
+        assert!(is_full_screen_toggle(KeyCode::Enter, M::ALT));
+        assert!(is_full_screen_toggle(
+            KeyCode::NumpadEnter,
+            M::ALT | M::SHIFT
+        ));
+        assert!(!is_full_screen_toggle(KeyCode::Enter, M::empty()));
+        assert!(!is_full_screen_toggle(KeyCode::Enter, M::ALT | M::CONTROL));
+        // Ctrl+Alt+F stays the FPS readout's key on every platform.
+        assert!(!is_full_screen_toggle(KeyCode::KeyF, M::ALT | M::CONTROL));
+    }
+
+    #[test]
+    fn ctrl_cmd_f_toggles_full_screen_only_on_macos() {
+        use winit::keyboard::ModifiersState as M;
+        assert_eq!(
+            is_full_screen_toggle(KeyCode::KeyF, M::CONTROL | M::SUPER),
+            cfg!(target_os = "macos")
+        );
+    }
 
     #[test]
     fn deferred_capture_clears_render_delay_for_the_next_event_loop_pass() {

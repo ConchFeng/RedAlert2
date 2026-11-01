@@ -28,6 +28,9 @@ profile = "yr" # yr | mo | auto | custom
 extra_animations = true   # cosmetic effects: water/ore sparkles (future: laser pulses, particle trails)
 translucent_fog = false   # show terrain through fog; unseen enemy objects remain concealed
 # Full screen, zoom and the original 4:3 shape are on the Options page (saved in VERA.INI).
+# Alt+Enter (Option+Return on a Mac; Ctrl+Cmd+F also works there) switches full screen
+# on any screen. Auto zoom follows the window's physical pixels, so a Retina display
+# gets a larger zoom instead of a smaller game.
 
 [gameplay]
 input_delay_ticks = 15

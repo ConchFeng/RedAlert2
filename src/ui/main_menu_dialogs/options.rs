@@ -62,7 +62,8 @@ pub(crate) const ZOOM_HELP: &str =
 pub(crate) const SIDEBAR_LABEL: &str = "Sidebar";
 pub(crate) const SIDEBAR_HELP: &str = "How big the sidebar and bottom bar are in battles.";
 pub(crate) const FULL_SCREEN_LABEL: &str = "Full Screen";
-pub(crate) const FULL_SCREEN_HELP: &str = "Fill the whole screen. Untick it to play in a window.";
+pub(crate) const FULL_SCREEN_HELP: &str =
+    "Fill the whole screen. Untick it to play in a window. Alt+Enter also switches it.";
 pub(crate) const ORIGINAL_SHAPE_LABEL: &str = "Original 4:3 Shape";
 pub(crate) const ORIGINAL_SHAPE_HELP: &str =
     "Battles keep the original 4:3 shape, with bars on wide screens.";
