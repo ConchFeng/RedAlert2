@@ -736,13 +736,14 @@ impl Simulation {
         // Sight writes to the maps the pass never reads wait for its end,
         // and apply map by map in parallel (`vision::Planes`). Without a
         // current house the app's sound boundary reads the map of whichever
-        // house it falls back to, so none waits.
+        // house it falls back to, so none waits. A fair AI house's units scan
+        // and place through its own map in the pass, so its writes apply too.
         if let Some(current) = self.session.current_house() {
             let kept = self
                 .houses
-                .keys()
-                .copied()
-                .filter(|&house| self.owner_is_human(house))
+                .iter()
+                .filter(|&(&house, state)| self.owner_is_human(house) || state.fair_ai())
+                .map(|(&house, _)| house)
                 .chain([current])
                 .collect();
             self.fog.defer_plane_writes(kept);

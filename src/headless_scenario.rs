@@ -1565,6 +1565,26 @@ mod retail_construction_tests {
         eprintln!("Anytown final bound ART owner: {terrain_anims} live terrain Anims");
     }
 
+    /// Fair AI houses scan and place through their own maps during the
+    /// object pass; before those maps were kept current there, this match
+    /// panicked on a waiting sight write between frames 2500 and 3000.
+    #[test]
+    #[ignore = "slow; a 3000-frame retail skirmish of fair AI houses"]
+    fn fair_ai_houses_read_settled_maps_in_the_object_pass() {
+        use crate::skirmish_launch::{AiDifficulty, LaunchCountry};
+        let (mut scenario, _) = retail_battle(
+            |_| {},
+            &[
+                (LaunchCountry::Russia, AiDifficulty::Claude),
+                (LaunchCountry::Yuri, AiDifficulty::OpenAi),
+                (LaunchCountry::France, AiDifficulty::Claude),
+            ],
+        );
+        for _ in 0..3000 {
+            scenario.tick();
+        }
+    }
+
     /// XMP03T4 with the local house idle and three computer houses: Russia
     /// (Hard), Yuri (Normal) and France (Easy). Returns the computer houses.
     fn retail_skirmish() -> (HeadlessScenario, Vec<crate::sim::intern::InternedId>) {
