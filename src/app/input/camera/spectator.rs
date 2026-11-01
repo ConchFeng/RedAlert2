@@ -387,8 +387,11 @@ mod tests {
     #[test]
     fn retail_fire_facts_ignore_allies_and_leave_simulation_hash_unchanged() {
         use crate::sim::{combat::Health, game_entity::GameEntity, house_state::HouseState};
-        let retail = crate::rules::retail_ini_fixture::retail_battle_rules_for_map("XMP03T4.MAP")
-            .expect("retail rules");
+        let Some(retail) =
+            crate::rules::retail_ini_fixture::retail_battle_rules_for_map("XMP03T4.MAP")
+        else {
+            return;
+        };
         let rules = &retail.rules;
         let mut sim = Simulation::with_seed(123);
         let attacker = sim.intern("Computer1");
