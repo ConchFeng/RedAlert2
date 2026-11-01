@@ -11,17 +11,54 @@
 **Red Alert 2: Yuri's Revenge rebuilt in Rust, with local skirmishes for up to 30 players.**
 
 ConchFeng's edition of [VERA20K](https://github.com/YuriPlanet/vera20k) expands the
-original eight-player setup to **one human and 29 computer opponents**, adds
-**Huge and Giant random maps**, and keeps the original game's assets and atmosphere.
-The current downloadable packages target **macOS on Apple Silicon**.
+original eight-player setup to **30 local player slots**: fight **29 AI opponents**
+yourself, or watch **29 AIs battle from a full-map Observer view**. **Huge and Giant
+random maps** provide room for larger battles while keeping the original game's
+assets and atmosphere. The current downloadable packages target **macOS on Apple Silicon**.
 
-[Download 1.0.1](#download-and-play) · [30-player walkthrough](docs/30-player-showcase.md) ·
+[Download 1.0.1](#download-and-play) · [30-player battles and AI spectating](#30-player-battles-and-ai-spectating) ·
+[30-player walkthrough](docs/30-player-showcase.md) ·
 [Architecture](#architecture) · [Developer documentation](docs/index.md)
 
 <img src="docs/images/30-player-random-map-settings.jpg" alt="Current macOS random-map screen with Giant selected and Players set to 30" width="100%">
 
 *Giant is the largest random-map option. These are actual application captures
 using the supplied Chinese game localization.*
+
+## 30-player battles and AI spectating
+
+**Play against 29 AIs, or let the AIs fight while you watch.** Local Skirmish
+supports 30 setup slots with two ways to enjoy a large battle:
+
+| Mode | Setup | Your role |
+| --- | --- | --- |
+| Play the battle | 1 human player + up to 29 AI opponents | Build your base, command your army, and fight the computers. |
+| Watch the AIs | 1 Observer + up to 29 AI players | Follow the AI battle with full-map visibility and no army of your own. |
+
+A fresh offline Skirmish defaults to **Observer + 29 Normal AIs in Free For All**.
+The AIs develop their bases, gather resources, and fight each other while you
+watch. Your explicit role and settings choices are remembered; choose Player
+in Skirmish setup when you want to join the fighting. The Observer does not occupy
+a map starting position.
+
+<img src="docs/images/ai-battle-spectator.jpg" alt="Live AI spectator view showing an AI base, infantry, vehicles, a multicolor minimap, and the WATCHING THE REMAINING AIS status message" width="100%">
+
+*Actual gameplay capture: an AI base and its units during an ongoing spectator
+session. The top-left message, “WATCHING THE REMAINING AIS — ESC: OPTIONS,”
+identifies the spectator view; the minimap shows the different player colors.*
+
+To set up a large match, open **Single Player → Skirmish**, choose Observer or
+Player, and check the AI rows with **Previous** and **Next**. Use a map with enough
+starting positions. If the selected map is too small, the game opens the
+**30-player Giant random-map setup**: **Generate Map → Use Map → Start Game**.
+AI difficulty remains adjustable.
+
+If you play and are eliminated, the offline match continues while
+hostile AI survivors remain, so you can watch the remaining computers fight.
+Press **Esc** for options. At the end, the results screen stays open:
+**View Battlefield** shows the paused final battlefield, **Esc** returns to the
+results, **Play Again** starts the same setup with a new seed, and **Return to
+Menu** leaves the match.
 
 ## What's new in Conch Edit
 
@@ -91,9 +128,10 @@ provides two ZIP downloads for **Apple Silicon Macs (M1 or newer), macOS 11.0 or
    its `assets/` folder or the parent folder containing it.
 3. Open **Single Player → Skirmish → Choose Map → Create Random Map**, select
    **Giant** and **30 players**, generate the map, and choose **Use Map**.
-4. Enable the computer opponents on every page. See the
-   [walkthrough and current limitations](docs/30-player-showcase.md) before
-   attempting the largest setup.
+4. Choose **Observer** to watch the AIs, or **Player** to fight them. Check up to
+   **29 AI opponents** across the setup pages, then choose **Start Game**. See
+   [30-player battles and AI spectating](#30-player-battles-and-ai-spectating)
+   and the [map walkthrough](docs/30-player-showcase.md) for details.
 
 The ZIPs contain native ARM64 macOS executables; Intel Mac, Windows, and Linux
 binaries are not included. The source remains cross-platform. The release/app
