@@ -25,6 +25,8 @@ A Rust reimplementation of *Command & Conquer: Red Alert 2 — Yuri’s Revenge*
 | 最新发行版 / Latest release | **[1.1.0](https://github.com/ConchFeng/RedAlert2/releases/tag/v1.1.0)** |
 | 发行平台 / Release platform | macOS 11+ · Apple Silicon (M1 or newer / M1 及更新芯片) |
 | 引擎版本 / Engine version | **1.1.0** |
+| 下载 / Downloads | [仅程序 / App only](https://github.com/ConchFeng/RedAlert2/releases/download/v1.1.0/VERA20k-Conch-Edit-1.1.0-macos-arm64.zip) · [完整包 / Full](https://github.com/ConchFeng/RedAlert2/releases/download/v1.1.0/VERA20k-Conch-Edit-1.1.0-macos-arm64-Full.zip) |
+| 文件校验 / Checksums | [App only SHA-256](https://github.com/ConchFeng/RedAlert2/releases/download/v1.1.0/SHA256SUMS.txt) · [Full SHA-256](https://github.com/ConchFeng/RedAlert2/releases/download/v1.1.0/SHA256SUMS-Full.txt) |
 | 本页功能 / Features on this page | **[`main`](https://github.com/ConchFeng/RedAlert2/tree/main)** — current source / 当前源码 |
 
 **版本说明：** 1.1.0 统一客户端、引擎与 App 的版本号，包含下方展示的 30 人大战、AI 指挥官、自动观战、实时排行、AI 联赛、双战场视图，以及回放书签、时间跳转与单位跟踪。
