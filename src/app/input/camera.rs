@@ -1930,6 +1930,7 @@ pub(crate) fn update_follow_camera(
         return;
     };
     if outputs.contains(&crate::sim::world::LifecycleOutput::FollowReleased { stable_id: id }) {
+        crate::app::replay_navigation::target_released(state, id);
         state.match_state.input.follow_target = None;
         return;
     }
@@ -1941,10 +1942,19 @@ pub(crate) fn update_follow_camera(
         .and_then(|sim| {
             sim.entities()
                 .get(id)
-                .filter(|entity| entity.lifecycle.object_alive() && entity.selection.is_selected())
+                .filter(|entity| {
+                    entity.lifecycle.object_alive()
+                        && (entity.selection.is_selected()
+                            || (state.match_state.match_diagnostics.is_replay_playback()
+                                && state.match_state.match_diagnostics.replay_selected_unit()
+                                    == Some(id)
+                                && entity.is_active()
+                                && !entity.in_limbo()))
+                })
                 .map(|entity| entity_lepton_coord(sim, entity))
         });
     let Some((x, y, z)) = coord else {
+        crate::app::replay_navigation::target_released(state, id);
         state.match_state.input.follow_target = None;
         return;
     };

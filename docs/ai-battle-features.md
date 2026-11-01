@@ -7,10 +7,10 @@ title: AI battle and spectator feature design
 
 This specification preserves the eight original ideas in delivery order. The
 current implementation scope is features **1–6**; the maintainer deferred
-features **7 and 8**. The automatic battle camera, live AI standings, and AI
-series are implemented in current source. Commander selection and the second battlefield view are implemented;
-feature 6 remains planned. Features
-7–8 are design references outside the current implementation scope. These
+features **7 and 8**. All six features are implemented in current source,
+including commander selection, the second battlefield view, and replay highlights
+with temporal seeking and unit tracking. Features 7–8 are design references
+outside the current implementation scope. These
 extensions are not included in the 1.0.1 release.
 Each numbered feature must finish its production path and validation before the
 next implementation starts. Prerequisites discovered below belong to that feature.
@@ -30,8 +30,9 @@ result action. Network and campaign behavior retain their current owners.
 The existing [commander personality system](ini-commander-personalities.md) has
 strategy hooks and feedback, but no setup selector. Existing unit Follow and four
 camera-position bookmarks are not a replay timeline. Standalone replay capture
-currently admits Battle on authored loose/MIX maps; default Free For All and
-generated Giant-map startup need support before promising their replay seeking.
+admits fresh Battle and Free For All matches on authored loose/MIX maps and
+accepted generated maps. Campaigns and restored mid-match segments remain
+outside standalone replay startup.
 
 ## Shared interface contract
 
@@ -454,6 +455,48 @@ Accept a generated Giant/FFA recording through production startup and playback,
 backward/forward jumps to matching hashes, canceled seeks, dead unit tracking,
 and mismatched resources. Exported recordings need the required map identity and
 bytes, not personal configuration or original retail assets.
+
+### Current implementation
+
+Fresh Battle and Free For All matches retain reconstructible startup data,
+including all 29 AI participants, resolved setup choices, native-ID and terrain
+selector prefixes, rules identity, and the simulation seed. Generated recordings
+carry the consumed SED bytes and accepted start staging; playback does not reread
+a subsequently edited seed file. App and headless loading share generation and
+scenario population owners.
+
+Open a recording with `vera20k --replay <recording.json> --ra2-dir <game-folder>`.
+Playback validates the initial state and the recorded final hash before enabling
+the timeline controls. This full-recording pass can take time; its progress and
+Cancel remain visible. Pause/Resume and 1x/2x/4x speed control the existing frame
+runner. Highlights provides optional labels, Add Bookmark, paged selection, and
+Go To. A jump reconstructs an independent candidate and installs it only at the
+validated destination. Cancel retains the original world and playback position;
+intermediate reconstruction produces no game audio or transient presentation.
+
+Click a visible unit and choose Follow Unit for read-only tracking through the
+existing camera target. Detach or removal releases that target and reports its
+unavailability. Finished recordings retain their final battlefield for inspection.
+Escape cancels an active seek, closes Highlights, or opens Recordings. The browser
+lists JSON recordings in the configured settings directory's `replays` folder
+and the working directory's `replays` folder. Missing maps, incompatible rules,
+and validation failures return to that browser with a readable error.
+
+Bookmarks are local presentation metadata under `replay-highlights` in the
+settings directory, keyed by the recording's SHA-256 identity. They retain tick,
+camera center/zoom, label, and optional stable tracked-object ID without entering
+simulation commands, hashes, or RNG. A short viewport shows a larger-window notice
+and keeps Close or Cancel reachable.
+
+The `skirmish-replay-highlights` production capture records a generated Giant
+Free For All with 29 AIs, checks its initial and final hashes, selects and follows
+a naturally deploying MCV, seeks backward and forward to recorded boundaries,
+cancels a seek, and checks frozen final inspection. It also exercises mismatched
+rules, a missing map, browser recovery, and persistent highlights. A retail-backed
+core regression reconstructs both warm terrain-selector startup and all 29 AI
+slots. Runtime capture has been exercised on macOS; Linux and Windows captures
+remain unmeasured. Smooth reverse playback remains outside version one. These
+features are absent from the published 1.0.1 packages.
 
 ## 7. Survival battles with an escalating enemy
 

@@ -67,6 +67,9 @@ pub(crate) fn handle_mouse_input(
     button: MouseButton,
     btn_state: ElementState,
 ) {
+    if crate::app::presentation::replay_tools::mouse(state, button, btn_state.is_pressed()) {
+        return;
+    }
     // The window path routes these pages in its own handler from the same
     // decision (`input::precedence`); captures enter here directly.
     if modal_page(state) == Some(ModalPage::NetworkFailure) {

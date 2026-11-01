@@ -1607,6 +1607,20 @@ impl MapLoadInitial {
         Ok(())
     }
 
+    pub(crate) fn retain_generated_start_waypoints(
+        &mut self,
+        starts: &[crate::map::waypoints::Waypoint],
+    ) {
+        if let LoadedMapSource::Generated {
+            seed_source: Some(seed),
+            ..
+        } = &mut self.map_source
+            && let Some(recipe) = &mut seed.replay_recipe
+        {
+            recipe.start_waypoints = starts.to_vec();
+        }
+    }
+
     pub(crate) fn map_source(&self) -> &LoadedMapSource {
         &self.map_source
     }
@@ -2423,96 +2437,20 @@ pub(crate) fn load_map_initial_with_assets(
         .map(str::to_string)
         .or(quickplay_seed);
     if let Some(seed_name) = seed_selection.as_deref() {
-        let mut options = crate::map::rmg::RmgOptions::default();
-        let seed_path = ra2_dir.join(seed_name);
-        let mut seed_source = None;
-        let seed_bytes = match frozen_seed_bytes {
-            Some(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
-            None => crate::util::file_system::read(&seed_path).map(std::borrow::Cow::Owned),
-        };
-        match seed_bytes {
-            Ok(bytes) => {
-                seed_source = Some(
-                    crate::map::source::GeneratedSeedSource::from_consumed_bytes(seed_path, &bytes),
-                );
-                match crate::rules::ini_parser::IniFile::from_bytes(&bytes) {
-                    Ok(ini) => options.apply_sed(&ini),
-                    Err(err) => {
-                        log::warn!(
-                            "random map: {seed_name} is not valid INI ({err}); using defaults"
-                        )
-                    }
-                }
-            }
-            // Missing seed file is not fatal: the original's options object
-            // keeps its constructor defaults when a key (or the file) is absent.
-            Err(err) => log::warn!("random map: cannot read {seed_name} ({err}); using defaults"),
-        }
-        options.normalize();
-
-        let settings = crate::map::rmg::RmgSettings::load(asset_manager);
-        let theater_name = crate::map::rmg::emit::theater_name(options.theater);
-        let theater = crate::map::theater::load_theater(asset_manager, theater_name)
-            .ok_or_else(|| anyhow::anyhow!("random map: theater {theater_name} unavailable"))?;
-
-        // Terrain rules feed the zone classifier's wheel-impassable table. The
-        // table is observably inert during generation (the classifier runs at
-        // start-placement time, before any rock/rough/cliff terrain exists), but
-        // it is resolved faithfully from `rulesmd.ini` when present; a missing
-        // file falls back to the passable defaults.
-        let terrain_rules = native_rules
-            .map(|owner| {
-                crate::rules::terrain_rules::TerrainRules::from_ini(owner.selected_rules_root())
-            })
-            .unwrap_or_default();
-        let resolved =
-            crate::map::rmg::build::ResolvedTheaterInputs::from_theater(&theater, &terrain_rules);
-
-        // Tile-block layouts (sub-cell height/terrain grids) from the theater's
-        // real TMP data — the shore tiler and zone classifier read these.
-        let blocks =
-            crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
-                asset_manager.get(name)
-            });
-
-        // `[AI] NeutralTechBuildings` plus each type's `Foundation=`. The phase
-        // runs for every map type except 0, so an empty list here would both
-        // strip the buildings and skip the draws the original consumes.
-        let tech_types = crate::app::loading::init_helpers::load_neutral_tech_types(native_rules);
-        let mut generated = crate::map::rmg::build::generate_map(
-            &options,
-            &settings,
-            &resolved,
-            &blocks,
-            &tech_types,
-        );
-        log::info!(
-            "Random map generated: theater={}, {}x{}, seed={}, players={}",
-            generated.map_file.header.theater,
-            generated.map_file.header.width,
-            generated.map_file.header.height,
-            options.seed,
-            options.num_players
-        );
-        if generated.unfilled_start_slots > 0 {
-            log::warn!(
-                "Random map is short of spawns: {} start slot(s) could not be \
-                 filled (seed={}, players={}); those players have no start position",
-                generated.unfilled_start_slots,
-                options.seed,
-                options.num_players
-            );
-        }
-
+        let loaded = crate::map::rmg::load::load(
+            &ra2_dir,
+            seed_name,
+            frozen_seed_bytes,
+            asset_manager,
+            native_rules,
+        )?;
+        let mut generated = loaded.generated;
         progress.milestone(8)?;
         let mapgen_rng_continuation = generated.take_mapgen_continuation();
         let generated_construction_trace = generated.construction_trace;
         return Ok(MapLoadInitial {
             map_data: generated.map_file,
-            map_source: LoadedMapSource::Generated {
-                seed_name: seed_name.to_string(),
-                seed_source,
-            },
+            map_source: loaded.source,
             mapgen_rng_continuation: Some(mapgen_rng_continuation),
             retained_process_mapgen: None,
             retained_campaign_special_flags: None,
@@ -2590,23 +2528,8 @@ pub(crate) fn load_map_initial_with_assets(
 /// before painting its source5A2C4C; materialization must retain that later
 /// write. Generate598960 then Recalc's59937D, builds queues59939B/5993A0,
 /// and germinates59944C. Original instructions; no second Unlimbo here.
-fn generated_overlay_grid(
-    map_data: &MapFile,
-    resolved_terrain: &mut ResolvedTerrainGrid,
-    overlay_registry: &OverlayTypeRegistry,
-) -> anyhow::Result<crate::sim::overlay_grid::OverlayGrid> {
-    let data = map_data
-        .overlay_data_pack()
-        .map_err(|_| anyhow::anyhow!("generated overlay packs were already consumed"))?;
-    Ok(
-        crate::sim::overlay_grid::OverlayGrid::from_generated_overlays(
-            &map_data.overlays,
-            data,
-            resolved_terrain,
-            overlay_registry,
-        ),
-    )
-}
+#[cfg(test)]
+use crate::sim::runtime::generated_overlay_grid;
 
 #[cfg(test)]
 mod generated_overlay_grid_tests {
@@ -3416,89 +3339,22 @@ fn load_map_first_step(
                                             let resolved_terrain = resolved_terrain.as_mut().expect(
                                         "generated materialization retained its eager terrain",
                                     );
-                                            let mut overlay_grid = generated_overlay_grid(
+                                            crate::sim::runtime::finalize_and_populate_staged_generated_scenario(
+                                                &mut staged_simulation,
                                                 &map_data,
                                                 resolved_terrain,
+                                                &rules,
                                                 &overlay_registry,
-                                            )?;
-                                            crate::app::loading::init_helpers::populate_staged_app_scenario(
-                &mut staged_simulation,
-                &map_data,
-                resolved_terrain,
-                &map_data.header.theater,
-                &rules,
-                Some(&overlay_registry),
-                Some(&overlay_grid),
-                bridge_destroyability_mode,
-                &scenario_descriptor,
-                generated_techno_inits.as_ref(),
-                |sim| {
-                    let ruleset = &rules;
-                    let launch = match_launch_descriptor
-                        .as_ref()
-                        .expect("generated fresh family has an offline launch");
-                    initialize_skirmish_launch_houses(sim, &house_roster, ruleset, launch);
-                },
-            )?;
-                                            // Keep the live constructor mutations when running the final ore
-                                            // pass. The pre-population materialization copy has no Foot history.
-                                            overlay_grid = staged_simulation
-                                                .take_overlay_grid_for_load()
-                                                .expect("populated generated CellClass grid");
-                                            // `RandomMapGenerator::Generate @ 0x00598960` tail (`0x00599370..
-                                            // 0x0059945B`): after the generator constructors and its final
-                                            // whole-map Recalc (`0x0059937D`), `TiberiumClass::InitGrowthQueues_All
-                                            // @ 0x00722D00` then `InitSpreadQueues_All @ 0x00722240` scan the
-                                            // then-current painted densities; only afterwards does
-                                            // `MapClass::InitCellAttributes(1)` (`push 1` at `0x0059943F`, call
-                                            // at `0x0059944C`) rewrite every ore cell's density from its
-                                            // same-class neighbours. The post-map tail must not rebuild those
-                                            // queues from the germinated state.
-                                            let ruleset = &rules;
-                                            let queue_stats =
-                                        crate::sim::runtime::initialize_native_tiberium_queues(
-                                            &mut staged_simulation,
-                                            &map_data.basic,
-                                            &map_data.special_flags,
-                                            ruleset,
-                                            &overlay_registry,
-                                            Some(&overlay_grid),
-                                            (
-                                                map_data.header.width as u16,
-                                                map_data.header.height as u16,
-                                            ),
-                                        );
-                                            if let Some(stats) = queue_stats {
-                                                log::info!(
-                                                    "Initialized generated native tiberium queues before germination: {} growth, {} spread",
-                                                    stats.growth_entries,
-                                                    stats.spread_entries,
-                                                );
-                                            }
-                                            let germination = crate::sim::tiberium_germinate::run_generated_final_cell_attributes(
-                &*resolved_terrain,
-                &mut overlay_grid,
-                &ruleset.tiberium_types,
-                &overlay_registry,
-                map_data.header.width as u16,
-                map_data.header.height as u16,
-            );
-                                            log::info!(
-                                                "Generated final InitCellAttributes(1): {} of {} real cells germinated (value total {})",
-                                                germination.germinated_cells,
-                                                germination.real_cells,
-                                                germination.tiberium_value_total,
-                                            );
-                                            if germination.unallocated_cells != 0 {
-                                                log::error!(
-                                                    "Generated final InitCellAttributes(1) reached {} unallocated iterator cells",
-                                                    germination.unallocated_cells,
-                                                );
-                                            }
-                                            staged_simulation.install_overlay_grid_for_load(
-                                                overlay_grid.clone(),
-                                            );
-                                            overlay_grid
+                                                bridge_destroyability_mode,
+                                                &scenario_descriptor,
+                                                generated_techno_inits.as_ref().expect("generated constructor bindings"),
+                                                |sim| {
+                                                    initialize_skirmish_launch_houses(
+                                                        sim, &house_roster, &rules,
+                                                        match_launch_descriptor.as_ref().expect("generated offline launch"),
+                                                    );
+                                                },
+                                            )?
                                         }
                                     };
                                     let resolved_terrain = resolved_terrain.expect(
@@ -4405,7 +4261,8 @@ mod random_map_retail_tests {
         let dir = std::env::temp_dir().join(format!("vera20k-rmg-retail-{tag}"));
         crate::util::file_system::create_dir_all(&dir).expect("scratch dir");
         let name = format!("{tag}.sed");
-        crate::util::file_system::write(dir.join(&name), options.to_sed_bytes()).expect("write .SED");
+        crate::util::file_system::write(dir.join(&name), options.to_sed_bytes())
+            .expect("write .SED");
         (dir, name)
     }
 

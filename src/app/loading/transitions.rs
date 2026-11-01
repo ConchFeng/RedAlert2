@@ -128,25 +128,7 @@ pub(crate) struct MapPresentationInputs {
 /// route-specific input, sidebar order, waterlines and timers stay outside it.
 /// Missing map-owned surfaces replace the old ones with absence, so a different
 /// map can never inherit the outgoing geometry or shroud dimensions.
-pub(crate) fn install_world_presentation(
-    state: &mut AppState,
-    map: MapPresentationInputs,
-    assets: init::PresentationLoadAssets,
-) {
-    if let Some(names) = map.campaign_names {
-        state.match_state.campaign_names = names;
-    }
-    state.match_state.map_basic = map.basic;
-    state.match_state.map_ranking = map.ranking;
-    state.match_state.loaded_map_source = Some(map.source);
-    state.match_state.loaded_map_hash = map.map_hash;
-    state.match_state.match_presentation.terrain_grid = map.terrain_grid;
-    state.frontend.shell_preview_overlay_registry = state
-        .match_state
-        .sim_runtime
-        .as_ref()
-        .map(|runtime| runtime.resources.overlay_registry.clone());
-
+pub(crate) fn reset_world_view_history(state: &mut AppState) {
     state.match_state.input.spectator_camera = Default::default();
     state.match_state.match_presentation.spectator_tools.reset();
     state.match_state.match_presentation.second_view = Default::default();
@@ -208,11 +190,45 @@ pub(crate) fn install_world_presentation(
         .reset();
     sync_in_game_options_speed_from_sim(state);
 
+    state.match_state.match_presentation.replay_tools = Default::default();
+    state
+        .match_state
+        .match_presentation
+        .radiation_beams
+        .clear_on_load();
+    state
+        .match_state
+        .match_presentation
+        .sinking_waterlines
+        .borrow_mut()
+        .clear();
+    *state.renderer.vxl_pose_frame_cache.borrow_mut() = Default::default();
+}
+
+pub(crate) fn install_world_presentation(
+    state: &mut AppState,
+    map: MapPresentationInputs,
+    assets: init::PresentationLoadAssets,
+) {
+    if let Some(names) = map.campaign_names {
+        state.match_state.campaign_names = names;
+    }
+    state.match_state.map_basic = map.basic;
+    state.match_state.map_ranking = map.ranking;
+    state.match_state.loaded_map_source = Some(map.source);
+    state.match_state.loaded_map_hash = map.map_hash;
+    state.match_state.match_presentation.terrain_grid = map.terrain_grid;
+    state.frontend.shell_preview_overlay_registry = state
+        .match_state
+        .sim_runtime
+        .as_ref()
+        .map(|runtime| runtime.resources.overlay_registry.clone());
+
+    reset_world_view_history(state);
+
     state.match_state.match_presentation.tile_atlas = assets.tile_atlas;
     state.match_state.match_presentation.building_zshape = assets.building_zshape;
     state.match_state.match_presentation.unit_atlas = assets.unit_atlas;
-    // Both voxel caches resolve model images through the replaced RuleSet.
-    *state.renderer.vxl_pose_frame_cache.borrow_mut() = Default::default();
     state.match_state.match_presentation.palette_set = assets.palette_set;
     state.match_state.match_presentation.sprite_atlas = assets.sprite_atlas;
     state.match_state.match_presentation.overlay_atlas = assets.overlay_atlas;
@@ -491,6 +507,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
     state.audio.cancel_scenario_theme_request();
     crate::app::reset_scenario_exit_runtime(state);
     let startup = result.scenario.startup;
+    let replay_launch = startup.launch_session().cloned();
     let returns_scenario_rng_to_multiplayer_shell = startup.launch_session().is_some();
     // A loaded world is not timed until the launch handoff reaches InGame.
     state.match_state.scenario_elapsed_clock.reset();
@@ -775,6 +792,24 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
         }
     }
     crate::app::presentation::sidebar_render::refresh_sidebar_projection(state);
+    if !state.match_state.match_diagnostics.is_replay_playback()
+        && state.frontend.screen == GameScreen::InGame
+        && let Some(runtime) = state.match_state.sim_runtime.as_ref()
+    {
+        let diagnostics = &mut state.match_state.match_diagnostics;
+        diagnostics.get_or_begin_replay(runtime);
+        diagnostics.retain_replay_startup(
+            runtime,
+            replay_launch.as_ref(),
+            state.match_state.loaded_map_source.as_ref(),
+            state.match_state.loaded_map_hash,
+            state
+                .match_state
+                .live_network
+                .as_ref()
+                .is_some_and(|live| live.dispatches_every_frame()),
+        );
+    }
 }
 
 /// Build overlay classification data for the minimap from map overlay entries.

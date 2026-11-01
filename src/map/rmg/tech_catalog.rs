@@ -27,6 +27,30 @@ pub fn resolve(names: &[String], art: &IniFile) -> Vec<TechType> {
         .collect()
 }
 
+pub fn load(
+    owner: Option<&crate::rules::process_owner::NativeRulesProcessOwner>,
+) -> Vec<crate::map::rmg::phases::tech_buildings::TechType> {
+    let Some(owner) = owner else {
+        log::warn!("random map: startup rules/art unavailable; placing no neutral tech buildings");
+        return Vec::new();
+    };
+    let Ok(processed) = owner.startup_compatibility_projection() else {
+        log::warn!(
+            "random map: startup rules projection failed; placing no neutral tech buildings"
+        );
+        return Vec::new();
+    };
+    let types = crate::map::rmg::tech_catalog::resolve(
+        processed.neutral_tech_buildings(),
+        owner.fixed_art(),
+    );
+    log::info!(
+        "random map: resolved {} neutral tech building type(s)",
+        types.len()
+    );
+    types
+}
+
 /// The NW-anchor-relative foundation cells of `name`.
 ///
 /// Row-major order: the placement gate requires *every* cell to pass and

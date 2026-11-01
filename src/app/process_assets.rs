@@ -485,6 +485,18 @@ impl ProcessAssets {
         }
     }
 
+    /// A recording starts its own timeline with its captured cold or warm terrain selector.
+    /// Ordinary fresh/save loads retain the existing process table; canceled seeks never reach this handoff.
+    pub(crate) fn install_replay_selector_prefix(
+        &mut self,
+        prefix: Option<&[u8]>,
+    ) -> Result<(), String> {
+        self.tile_variant_selector_cache =
+            crate::map::tile_variant_selector::TileVariantSelectorCache::from_replay_prefix(prefix)
+                .map_err(str::to_owned)?;
+        Ok(())
+    }
+
     /// Split the process-resident authorities used by a synchronous
     /// scenario load. The leased MIX manager lives in `LoadingJob`; the native
     /// Rules registry remains here so every `?` after its destructive reset

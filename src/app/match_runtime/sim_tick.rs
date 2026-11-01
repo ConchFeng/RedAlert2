@@ -41,6 +41,7 @@ const REPLAYS_DIR: &str = "replays";
 /// `_n` suffix instead of replacing a segment already published under the
 /// same `(tick, unix second)`.
 pub(crate) fn flush_replay_log(state: &mut AppState) {
+    seal_replay_final_hash(state);
     let (session_tick, now) = replay_flush_facts(state);
     match state
         .match_state
@@ -61,6 +62,7 @@ pub(crate) fn flush_replay_log(state: &mut AppState) {
 /// failure discards the segment instead of retaining it, so the next
 /// timeline can never append under the previous timeline's header.
 pub(crate) fn close_replay_segment_for_new_timeline(state: &mut AppState) {
+    seal_replay_final_hash(state);
     let (session_tick, now) = replay_flush_facts(state);
     match state
         .match_state
@@ -76,6 +78,18 @@ pub(crate) fn close_replay_segment_for_new_timeline(state: &mut AppState) {
         Err(e) => {
             log::error!("Diagnostic-log close failed at timeline boundary; segment discarded: {e}")
         }
+    }
+}
+
+fn seal_replay_final_hash(state: &mut AppState) {
+    if let (Some(runtime), Some(log)) = (
+        state.match_state.sim_runtime.as_ref(),
+        state.match_state.match_diagnostics.replay_log.as_mut(),
+    ) && log.startup.is_some()
+        && let Some(last) = log.ticks.last_mut()
+        && last.tick == runtime.simulation.session().tick()
+    {
+        last.state_hash = Some(runtime.simulation.state_hash());
     }
 }
 
@@ -1014,6 +1028,15 @@ fn advance_in_game_runtime_mode(
         }
         let mut frame_committed =
             advance_one_simulation_frame(state, tick_lane, mouse_scroll, resume);
+        if replaying && !frame_stepping {
+            for _ in 1..crate::app::replay_navigation::speed(state) {
+                if !state.match_state.match_diagnostics.playback_can_advance() {
+                    break;
+                }
+                frame_committed |=
+                    advance_one_simulation_frame(state, tick_lane, None, FrameResume::None);
+            }
+        }
         // Debug speed runs further frames in this paced pass, each through
         // the same frame transaction; the pacer interval is unchanged.
         if !frame_stepping && !replaying && debug_speed_allowed(state) {

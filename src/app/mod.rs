@@ -68,6 +68,7 @@ pub(crate) mod loading;
 pub(crate) mod match_audio;
 pub mod match_bootstrap;
 pub(crate) mod match_diagnostics;
+pub(crate) mod replay_navigation;
 pub(crate) mod match_runtime;
 pub(crate) mod movie_playback;
 pub(crate) mod movie_subtitles;

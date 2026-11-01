@@ -1135,6 +1135,26 @@ pub(super) fn dispatch_draw_passes(
         "spectator_text",
     );
 
+    draw_pooled_ui_passthrough(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        state
+            .match_state
+            .match_presentation
+            .selection_overlay
+            .as_ref()
+            .map(|overlay| overlay.white_texture()),
+        "replay_fill",
+    );
+    draw_pooled_ui_passthrough(
+        &mut pass,
+        &state.renderer.batch_renderer,
+        pool,
+        Some(state.renderer.bit_font.atlas()),
+        "replay_text",
+    );
+
     if let Some(second) = state.renderer.second_view.as_ref() {
         super::second_view::draw_overlay(state, second, &mut pass);
     }

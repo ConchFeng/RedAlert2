@@ -320,6 +320,16 @@ impl AcceptedRmgStartStaging {
         }
     }
 
+    pub(crate) fn from_replay_waypoints(starts: &[crate::map::waypoints::Waypoint]) -> Self {
+        Self {
+            starts: starts.to_vec(),
+        }
+    }
+
+    pub(crate) fn replay_waypoints(&self) -> &[crate::map::waypoints::Waypoint] {
+        &self.starts
+    }
+
     pub(crate) fn into_waypoint_table(
         self,
     ) -> std::collections::HashMap<u32, crate::map::waypoints::Waypoint> {
@@ -693,7 +703,7 @@ pub(super) fn prepare_random_map_generation(
         crate::map::rmg::theater_blocks::TheaterTileBlocks::build(&theater.lookup, |name| {
             asset_manager.get(name)
         });
-    let tech_types = crate::app::loading::init_helpers::load_neutral_tech_types(native_rules);
+    let tech_types = crate::map::rmg::tech_catalog::load(native_rules);
     let preview_rules = native_rules.and_then(|owner| {
         RandomMapPreviewRules::from_process(
             owner,

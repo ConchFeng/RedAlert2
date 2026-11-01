@@ -48,3 +48,4 @@ pub(crate) mod wol_verify;
 pub(crate) mod ai_series;
 pub(crate) mod ai_commanders;
 pub(crate) mod second_view;
+pub(crate) mod replay_tools;

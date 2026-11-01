@@ -95,6 +95,7 @@ pub struct HeadlessScenario {
     pub map: MapFile,
     /// Identity of the exact map payload consumed by this construction.
     pub source: crate::map::source::LoadedMapSource,
+    pub variant_selector_cache: TileVariantSelectorCache,
 }
 
 impl HeadlessScenario {
@@ -200,6 +201,33 @@ pub fn load_with_launch_and_ini(
     accepted_native_id_prefix: Option<u32>,
     process_rules: Option<&mut crate::rules::process_owner::NativeRulesProcessOwner>,
 ) -> Result<HeadlessScenario, String> {
+    load_with_launch_recipe_and_ini(
+        retail_dir,
+        map_file_name,
+        seed,
+        launch,
+        ini,
+        game_mode,
+        accepted_native_id_prefix,
+        process_rules,
+        None,
+        None,
+    )
+}
+
+/// Reconstruct accepted generated input through the same reader and construction owners as the client.
+pub fn load_with_launch_recipe_and_ini(
+    retail_dir: &Path,
+    map_file_name: &str,
+    seed: u32,
+    launch: crate::sim::scenario_bootstrap::MatchLaunchDescriptor,
+    ini: &crate::util::ini_roots::IniRootConfig,
+    game_mode: crate::sim::scenario_session::ScenarioGameMode,
+    accepted_native_id_prefix: Option<u32>,
+    process_rules: Option<&mut crate::rules::process_owner::NativeRulesProcessOwner>,
+    generated_recipe: Option<&crate::map::source::GeneratedMapRecipe>,
+    selector_prefix: Option<&[u8]>,
+) -> Result<HeadlessScenario, String> {
     let mut assets = AssetManager::new(retail_dir, MediaArchiveMode::STOCK_DIGITAL)
         .and_then(|assets| assets.with_ini_roots(ini))
         .map_err(|error| {
@@ -217,6 +245,8 @@ pub fn load_with_launch_and_ini(
         game_mode,
         accepted_native_id_prefix,
         process_rules,
+        generated_recipe,
+        selector_prefix,
     )
 }
 
@@ -239,6 +269,8 @@ pub(crate) fn load_with_registered_scenario_assets(
         crate::sim::scenario_session::ScenarioGameMode::Skirmish,
         None,
         None,
+        None,
+        None,
     )
 }
 
@@ -251,12 +283,21 @@ fn load_with_assets(
     game_mode: crate::sim::scenario_session::ScenarioGameMode,
     accepted_native_id_prefix: Option<u32>,
     process_rules: Option<&mut crate::rules::process_owner::NativeRulesProcessOwner>,
+    generated_recipe: Option<&crate::map::source::GeneratedMapRecipe>,
+    selector_prefix: Option<&[u8]>,
 ) -> Result<HeadlessScenario, String> {
-    let loaded_map =
-        crate::map::source::load_map_by_name_or_path_with_assets(retail_dir, map_file_name, assets)
-            .map_err(|error| format!("load map {map_file_name}: {error}"))?;
-    let source = loaded_map.source;
-    let mut map = loaded_map.map;
+    let authored = if generated_recipe.is_none() {
+        Some(
+            crate::map::source::load_map_by_name_or_path_with_assets(
+                retail_dir,
+                map_file_name,
+                assets,
+            )
+            .map_err(|error| format!("load map {map_file_name}: {error}"))?,
+        )
+    } else {
+        None
+    };
     // Preserve the process-owned cold Rules registry before theater archive
     // priority changes. The same owner then performs the active noncampaign
     // reset/rebuild and transfers its move-only native-ID receipt.
@@ -275,16 +316,49 @@ fn load_with_assets(
         cold_rules_owner = owner;
         &mut cold_rules_owner
     };
+    let (mut map, mut source, mut generated_transport) = if let Some(recipe) = generated_recipe {
+        recipe.validate().map_err(|error| error.to_string())?;
+        let loaded = crate::map::rmg::load::load(
+            retail_dir,
+            map_file_name,
+            Some(&recipe.seed_bytes),
+            assets,
+            Some(native_rules_owner),
+        )
+        .map_err(|error| format!("generate replay map: {error}"))?;
+        let mut generated = loaded.generated;
+        let continuation = generated.take_mapgen_continuation();
+        (
+            generated.map_file,
+            loaded.source,
+            Some((continuation, generated.construction_trace)),
+        )
+    } else {
+        let loaded = authored.expect("authored source loaded before rules");
+        (loaded.map, loaded.source, None)
+    };
+    if let (
+        Some(recipe),
+        crate::map::source::LoadedMapSource::Generated {
+            seed_source: Some(seed),
+            ..
+        },
+    ) = (generated_recipe, &mut source)
+    {
+        seed.replay_recipe = Some(recipe.clone());
+    }
     // ThemeClass::ReadINI720590 is process data even without an output device.
     // Keep the existing headless archive stack: THEMEMD.MIX and the preserved
     // RA2 THEME.MIX extension were mounted at startup; this route has no shell
     // neutral-archive activation. Resolve before scenario Rules/theater changes.
     let themes = crate::rules::theme_ini::ThemeCatalog::select(&assets);
+    let generated_waypoints =
+        generated_recipe.map(crate::map::source::GeneratedMapRecipe::waypoint_table);
     let scenario_prefix_plan =
         crate::sim::scenario_bootstrap::prepare_stock_offline_scenario_prefix_plan(
             &launch,
             &map,
-            &map.waypoints,
+            generated_waypoints.as_ref().unwrap_or(&map.waypoints),
             seed,
         )
         .map_err(|error| format!("prepare stock-offline scenario prefix: {error}"))?;
@@ -297,9 +371,15 @@ fn load_with_assets(
     // cannot admit Full_Init's mode-5 TMCJ4F route.
     let (mut rules, _, art_ini, native_rules_receipt) = native_rules_owner
         .load_scenario(
-            crate::rules::process_owner::NativeScenarioRulesPrefix::NonCampaign(
-                mode_override.as_ref(),
-            ),
+            if generated_recipe.is_some() {
+                crate::rules::process_owner::NativeScenarioRulesPrefix::RandomMap(
+                    mode_override.as_ref(),
+                )
+            } else {
+                crate::rules::process_owner::NativeScenarioRulesPrefix::NonCampaign(
+                    mode_override.as_ref(),
+                )
+            },
             &map.ini,
         )
         .map_err(|error| format!("load native noncampaign rules: {error}"))?
@@ -364,7 +444,11 @@ fn load_with_assets(
         pixel_conversion_bounds: Default::default(),
         lighting: crate::sim::scenario_session::ScenarioLightingState::from_map(&lighting_profiles),
     };
-    let bootstrap_rng = ScenarioBootstrapRng::new(seed);
+    let mut bootstrap_rng = ScenarioBootstrapRng::new(seed);
+    let generated_trace = generated_transport.take().map(|(continuation, trace)| {
+        bootstrap_rng.install_process_mapgen_continuation(continuation);
+        trace
+    });
     let (mut sim, scenario_prefix_projection) = bootstrap_rng
         .into_stock_offline_staged_simulation(&descriptor, bound_scenario_prefix)
         .map_err(|error| format!("stage stock-offline Simulation: {error}"))?;
@@ -391,28 +475,56 @@ fn load_with_assets(
     let mut scenario_fill_ranged =
         |low, high| scenario_fill_rng.next_range_u32_inclusive(low, high);
     let mut variant_draw = move || variant_main_rng.next_u32();
-    let mut variant_selector_cache = TileVariantSelectorCache::default();
+    let mut variant_selector_cache =
+        TileVariantSelectorCache::from_replay_prefix(selector_prefix).map_err(str::to_owned)?;
     let mut variant_selector = variant_selector_cache.begin_load(&mut variant_draw);
-    let terrain_fill =
-        ResolvedTerrainGrid::build_pending_authored_with_variant_selector_and_shared_dummy(
+    let mut generated_terrain = generated_recipe.map(|_| {
+        ResolvedTerrainGrid::build_with_variant_selector_and_shared_dummy(
             &map,
             Some(&theater),
             Some(&assets),
             Some(&rules.terrain_rules),
             Some(&overlay_registry),
+            Some(&rules.terrain_object_types),
             true,
             rules.general.cliff_back_impassability,
             &mut scenario_fill_ranged,
             &mut variant_selector,
-            shared_cell_dummy,
-        );
+            shared_cell_dummy.clone(),
+            crate::map::resolved_terrain::OverlayLoadSource::GeneratedMaterialized,
+            descriptor.pixel_conversion_bounds,
+        )
+    });
+    let terrain_fill = if generated_recipe.is_none() {
+        Some(
+            ResolvedTerrainGrid::build_pending_authored_with_variant_selector_and_shared_dummy(
+                &map,
+                Some(&theater),
+                Some(&assets),
+                Some(&rules.terrain_rules),
+                Some(&overlay_registry),
+                true,
+                rules.general.cliff_back_impassability,
+                &mut scenario_fill_ranged,
+                &mut variant_selector,
+                shared_cell_dummy,
+            ),
+        )
+    } else {
+        None
+    };
     drop(variant_draw);
 
     // Pending authored Fill has no eager Tile##Anim list. Bind damage-fire
     // roots now and let the authored host bind each actually reached map Anim
     // synchronously before its native constructor spends an ID.
-    let scheduler_roots =
-        crate::map::resolved_terrain::scheduler_anim_roots(&rules, &overlay_registry, &[]);
+    let scheduler_roots = crate::map::resolved_terrain::scheduler_anim_roots(
+        &rules,
+        &overlay_registry,
+        generated_terrain
+            .as_ref()
+            .map_or(&[], |terrain| terrain.tile_animations()),
+    );
     rules
         .bind_scheduler_anim_assets(
             &scheduler_roots,
@@ -467,39 +579,68 @@ fn load_with_assets(
     sim.construct_native_map_tubes(&map.ini)
         .map_err(|error| format!("construct native [Tubes]: {error}"))?;
     let bridge_mode = crate::map::basic::BridgeDestroyabilityMode::SkirmishOrMultiplayer {
-        bridge_destruction: true,
+        bridge_destruction: launch.session().options.bridges_destroyable,
     };
     let signed_new_ini_format = map.basic.new_ini_format.unwrap_or(0);
     let cliff_back_impassability = rules.general.cliff_back_impassability;
-    let output = crate::sim::runtime::finalize_and_populate_staged_authored_scenario(
-        &mut sim,
-        &mut map,
-        terrain_fill,
-        &theater,
-        &assets,
-        &mut rules,
-        native_rules_owner,
-        &overlay_registry,
-        &overlay_shp_ids,
-        signed_new_ini_format,
-        true,
-        cliff_back_impassability,
-        theater.extension,
-        &descriptor.theater,
-        bridge_mode,
-        &descriptor,
-        |sim, rules| {
-            crate::sim::scenario_bootstrap::initialize_skirmish_launch_houses(
-                sim,
-                &house_roster,
-                rules,
-                &launch,
-            );
-        },
-    )
-    .map_err(|error| format!("finalize authored headless load: {error}"))?;
-    let resolved_terrain = output.resolved_terrain;
-    let overlay_grid = output.overlay_grid;
+    let (resolved_terrain, overlay_grid) = if let Some(trace) = generated_trace {
+        sim.construct_post_load_particle_system_id(&rules);
+        let inits = sim
+            .replay_staged_generated_construction_trace(&trace)
+            .map_err(|error| format!("replay generated constructors: {error}"))?;
+        let mut terrain = generated_terrain
+            .take()
+            .expect("generated materialized terrain");
+        let overlays = crate::sim::runtime::finalize_and_populate_staged_generated_scenario(
+            &mut sim,
+            &map,
+            &mut terrain,
+            &rules,
+            &overlay_registry,
+            bridge_mode,
+            &descriptor,
+            &inits,
+            |sim| {
+                crate::sim::scenario_bootstrap::initialize_skirmish_launch_houses(
+                    sim,
+                    &house_roster,
+                    &rules,
+                    &launch,
+                )
+            },
+        )
+        .map_err(|error| format!("finalize generated headless load: {error}"))?;
+        (terrain, overlays)
+    } else {
+        let output = crate::sim::runtime::finalize_and_populate_staged_authored_scenario(
+            &mut sim,
+            &mut map,
+            terrain_fill.expect("authored pending terrain"),
+            &theater,
+            &assets,
+            &mut rules,
+            native_rules_owner,
+            &overlay_registry,
+            &overlay_shp_ids,
+            signed_new_ini_format,
+            true,
+            cliff_back_impassability,
+            theater.extension,
+            &descriptor.theater,
+            bridge_mode,
+            &descriptor,
+            |sim, rules| {
+                crate::sim::scenario_bootstrap::initialize_skirmish_launch_houses(
+                    sim,
+                    &house_roster,
+                    rules,
+                    &launch,
+                );
+            },
+        )
+        .map_err(|error| format!("finalize authored headless load: {error}"))?;
+        (output.resolved_terrain, output.overlay_grid)
+    };
     // Match the ordinary app's pre-launch binding: production options need
     // identities for unspawned types too, and snapshots carry this interner.
     sim.intern_rule_type_ids(&rules);
@@ -538,12 +679,13 @@ fn load_with_assets(
             simulation: sim,
             resources: crate::sim::runtime::SimResources {
                 overlay_registry,
-                terrain_template: None,
+                terrain_template: Some(resolved_terrain),
                 rules,
             },
         },
         map,
         source,
+        variant_selector_cache,
     })
 }
 

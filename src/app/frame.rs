@@ -260,6 +260,7 @@ impl App {
         // Drive that gate before deciding whether another sim frame is legal.
         let scenario_now_ms = crate::app::match_runtime::frame_pacer::wall_clock_ms();
         if state.match_state.match_diagnostics.is_replay_playback() {
+            crate::app::replay_navigation::service(state);
             // Playback never services lobby/relay or routes recorded EXIT and
             // outcomes into live teardown. Keep the final battlefield visible.
             crate::app::match_runtime::sim_tick::pump_audio_service(state, scenario_now_ms);

@@ -105,6 +105,29 @@ impl TileVariantSelector {
 }
 
 impl TileVariantSelectorCache {
+    pub fn replay_prefix(&self) -> Option<Vec<u8>> {
+        self.selector
+            .initialized_table()
+            .map(|table| table.to_vec())
+    }
+
+    pub fn from_replay_prefix(prefix: Option<&[u8]>) -> Result<Self, &'static str> {
+        let table = prefix
+            .map(|values| {
+                let table: [u8; TABLE_LEN] = values
+                    .try_into()
+                    .map_err(|_| "invalid replay terrain selector length")?;
+                if table.iter().any(|value| *value > 7) {
+                    return Err("invalid replay terrain selector value");
+                }
+                Ok(table)
+            })
+            .transpose()?;
+        Ok(Self {
+            selector: TileVariantSelector::from_table(table),
+        })
+    }
+
     /// Prepare a saved-load candidate without changing the live process
     /// table. Its matching Main cursor is committed with this candidate.
     pub fn detached(&self) -> Self {
@@ -335,6 +358,14 @@ pub(crate) fn select_from_initialized_table(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn replay_prefix_rejects_malformed_tables_without_initializing_the_live_cache() {
+        let cache = super::TileVariantSelectorCache::default();
+        assert!(super::TileVariantSelectorCache::from_replay_prefix(Some(&[0; 63])).is_err());
+        assert!(super::TileVariantSelectorCache::from_replay_prefix(Some(&[8; 64])).is_err());
+        assert_eq!(cache.replay_prefix(), None);
+    }
+
     use super::*;
     use crate::sim::rng::SimRng;
 

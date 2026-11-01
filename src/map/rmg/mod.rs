@@ -8,6 +8,7 @@ pub mod build;
 mod description;
 pub mod emit;
 pub mod grid;
+pub mod load;
 pub mod options;
 pub mod phases;
 pub mod pipeline;

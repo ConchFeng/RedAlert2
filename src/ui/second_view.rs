@@ -11,7 +11,7 @@ const BUTTON_HEIGHT: i32 = 28;
 const MIN_WIDTH: i32 = 280;
 const MIN_HEIGHT: i32 = 208;
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CameraView {
     pub center: [f32; 2],
     pub zoom: f32,

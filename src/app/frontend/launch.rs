@@ -150,7 +150,11 @@ pub struct ReplayLaunchRequest {
     pub(crate) map_beside: Option<String>,
 }
 
-fn map_beside_replay(replay: &Path, map_name: &str, map_sha256: &str) -> Result<Option<String>> {
+pub(crate) fn map_beside_replay(
+    replay: &Path,
+    map_name: &str,
+    map_sha256: &str,
+) -> Result<Option<String>> {
     Ok(replay
         .canonicalize()?
         .parent()

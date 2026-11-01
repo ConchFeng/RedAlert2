@@ -871,6 +871,7 @@ fn upload_to_gpu(
         crate::app::presentation::build_text::build_instances(state);
     let (spectator_fill, spectator_text) =
         crate::app::presentation::spectator_tools::build_instances(state);
+    let (replay_fill, replay_text) = crate::app::presentation::replay_tools::build_instances(state);
 
     #[cfg(feature = "ares")]
     let bounty_text = {
@@ -909,6 +910,8 @@ fn upload_to_gpu(
     pool.upload(&state.renderer.gpu, "build_text_text", &build_text_text);
     pool.upload(&state.renderer.gpu, "spectator_fill", &spectator_fill);
     pool.upload(&state.renderer.gpu, "spectator_text", &spectator_text);
+    pool.upload(&state.renderer.gpu, "replay_fill", &replay_fill);
+    pool.upload(&state.renderer.gpu, "replay_text", &replay_text);
     #[cfg(feature = "ares")]
     pool.upload(&state.renderer.gpu, "bounty_text", &bounty_text);
 

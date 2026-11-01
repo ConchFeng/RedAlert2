@@ -300,6 +300,7 @@ pub(crate) struct LoadingRequest {
     /// owner stamps it from the rules it just loaded; the constructors leave it
     /// unset, which resolves to the vanilla priority table.
     skirmish_colors: Option<SkirmishColorMode>,
+    replay_selector_prefix: Option<Vec<u8>>,
 }
 
 impl LoadingRequest {
@@ -324,10 +325,17 @@ impl LoadingRequest {
                     seed_authority_certifying: false,
                 },
             },
-            accepted_rmg_start_staging: None,
+            accepted_rmg_start_staging: startup.generated_map().map(|recipe| {
+                crate::app::shell_random_map::AcceptedRmgStartStaging::from_replay_waypoints(
+                    &recipe.start_waypoints,
+                )
+            }),
             random_map_preview: None,
-            frozen_seed_bytes: None,
+            frozen_seed_bytes: startup
+                .generated_map()
+                .map(|recipe| std::sync::Arc::from(recipe.seed_bytes.as_slice())),
             skirmish_colors: None,
+            replay_selector_prefix: startup.selector_prefix().map(<[u8]>::to_vec),
         }
     }
 
@@ -338,6 +346,7 @@ impl LoadingRequest {
             random_map_preview: None,
             frozen_seed_bytes: None,
             skirmish_colors: None,
+            replay_selector_prefix: None,
         }
     }
 
@@ -352,6 +361,7 @@ impl LoadingRequest {
             random_map_preview: None,
             frozen_seed_bytes: None,
             skirmish_colors: None,
+            replay_selector_prefix: None,
         }
     }
 
@@ -362,6 +372,7 @@ impl LoadingRequest {
             random_map_preview: None,
             frozen_seed_bytes: None,
             skirmish_colors: None,
+            replay_selector_prefix: None,
         }
     }
 
@@ -378,6 +389,7 @@ impl LoadingRequest {
             random_map_preview: None,
             frozen_seed_bytes: None,
             skirmish_colors: None,
+            replay_selector_prefix: None,
         }
     }
 
@@ -391,6 +403,7 @@ impl LoadingRequest {
             random_map_preview: None,
             frozen_seed_bytes: None,
             skirmish_colors: None,
+            replay_selector_prefix: None,
         }
     }
 
@@ -573,7 +586,13 @@ impl LoadingRequest {
             .into_random_map_launch_snapshot(assets, prepared.context))
     }
 
-    fn prepare_initial(mut self, initial: MapLoadInitial) -> anyhow::Result<PreparedScenarioLoad> {
+    fn prepare_initial(
+        mut self,
+        mut initial: MapLoadInitial,
+    ) -> anyhow::Result<PreparedScenarioLoad> {
+        if let Some(staging) = self.accepted_rmg_start_staging.as_ref() {
+            initial.retain_generated_start_waypoints(staging.replay_waypoints());
+        }
         let context = self.admit_context(&initial)?;
         Ok(PreparedScenarioLoad {
             request: self,
@@ -1346,6 +1365,23 @@ fn prepare_session_for_loading(
 }
 
 pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
+    if matches!(request.startup(), LoadingStartup::Replay { .. })
+        && let Err(error) = state
+            .process_assets
+            .install_replay_selector_prefix(request.replay_selector_prefix.as_deref())
+    {
+        state.frontend.external_launch_error =
+            Some(format!("Replay terrain startup failed: {error}"));
+        return;
+    }
+    let selector_prefix = state
+        .process_assets
+        .tile_variant_selector_cache
+        .replay_prefix();
+    state
+        .match_state
+        .match_diagnostics
+        .set_replay_selector_prefix(selector_prefix);
     crate::app::ai_series::external_world_replacement(state);
     state
         .frontend
@@ -3267,6 +3303,10 @@ fn fail_loading(state: &mut AppState, policy: LoadingFailurePolicy, err: anyhow:
         policy,
     );
     reset_loading_presentation(state);
+    if state.match_state.match_diagnostics.is_replay_playback() {
+        crate::app::replay_navigation::loading_failed(state, &format!("{err:#}"));
+        return;
+    }
     if crate::app::ai_series::loading_failed(state, &format!("{err:#}")) {
         return;
     }

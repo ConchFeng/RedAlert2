@@ -1563,3 +1563,83 @@ fn finalization_keeps_live_neighbor_counts_instead_of_the_loader_copy() {
         expected
     );
 }
+
+/// Generated materialization preserves the CellClass bytes painted after constructor Unlimbo.
+/// Source: RandomMapGenerator::Generate @ 0x00598960, original instructions at 0x005A2C4C.
+pub fn generated_overlay_grid(
+    map_data: &crate::map::map_file::MapFile,
+    resolved_terrain: &mut crate::map::resolved_terrain::ResolvedTerrainGrid,
+    overlay_registry: &crate::rules::overlay_types::OverlayTypeRegistry,
+) -> anyhow::Result<crate::sim::overlay_grid::OverlayGrid> {
+    let data = map_data
+        .overlay_data_pack()
+        .map_err(|_| anyhow::anyhow!("generated overlay packs were already consumed"))?;
+    Ok(
+        crate::sim::overlay_grid::OverlayGrid::from_generated_overlays(
+            &map_data.overlays,
+            data,
+            resolved_terrain,
+            overlay_registry,
+        ),
+    )
+}
+
+/// Source: RandomMapGenerator::Generate @ 0x00598960, original instructions 0x00599370..0x0059945B.
+/// InitGrowthQueues_All722D00 and InitSpreadQueues_All722240 precede final InitCellAttributes(1)59944C.
+pub fn finalize_and_populate_staged_generated_scenario<F>(
+    sim: &mut Simulation,
+    map: &crate::map::map_file::MapFile,
+    terrain: &mut crate::map::resolved_terrain::ResolvedTerrainGrid,
+    rules: &RuleSet,
+    overlay_registry: &crate::rules::overlay_types::OverlayTypeRegistry,
+    bridge_mode: crate::map::basic::BridgeDestroyabilityMode,
+    descriptor: &crate::sim::scenario_session::ScenarioDescriptor,
+    generated_inits: &crate::sim::world::GeneratedTechnoInitTable,
+    initialize_houses: F,
+) -> anyhow::Result<crate::sim::overlay_grid::OverlayGrid>
+where
+    F: FnOnce(&mut Simulation),
+{
+    let overlay_grid = generated_overlay_grid(map, terrain, overlay_registry)?;
+    populate_staged_scenario_with_generated_inits(
+        sim,
+        map,
+        terrain,
+        &map.header.theater,
+        rules,
+        Some(overlay_registry),
+        Some(&overlay_grid),
+        bridge_mode,
+        descriptor,
+        Some(generated_inits),
+        initialize_houses,
+    )?;
+    let mut overlay_grid = sim
+        .take_overlay_grid_for_load()
+        .expect("populated generated CellClass grid");
+    initialize_native_tiberium_queues(
+        sim,
+        &map.basic,
+        &map.special_flags,
+        rules,
+        overlay_registry,
+        Some(&overlay_grid),
+        (map.header.width as u16, map.header.height as u16),
+    );
+    let germination = crate::sim::tiberium_germinate::run_generated_final_cell_attributes(
+        terrain,
+        &mut overlay_grid,
+        &rules.tiberium_types,
+        overlay_registry,
+        map.header.width as u16,
+        map.header.height as u16,
+    );
+    if germination.unallocated_cells != 0 {
+        log::error!(
+            "Generated final cell attributes reached {} unallocated cells",
+            germination.unallocated_cells
+        );
+    }
+    sim.install_overlay_grid_for_load(overlay_grid.clone());
+    Ok(overlay_grid)
+}

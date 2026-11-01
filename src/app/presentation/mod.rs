@@ -29,6 +29,7 @@ pub(crate) mod radiation_beams;
 pub(crate) mod render;
 pub(crate) mod screen_shake;
 pub(crate) mod second_view;
+pub(crate) mod replay_tools;
 pub(crate) mod second_view_ui;
 pub(crate) mod selection_brackets;
 pub(crate) mod sidebar_build;

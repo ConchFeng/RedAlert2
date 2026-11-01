@@ -882,6 +882,7 @@ impl App {
                 match_presentation: crate::app::presentation::state::MatchPresentationState {
                     second_view: Default::default(),
                     second_view_runtime: Default::default(),
+                    replay_tools: Default::default(),
                     spectator_tools: Default::default(),
                     interpolation:
                         crate::app::presentation::interpolation::RenderInterpolation::new(

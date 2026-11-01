@@ -37,6 +37,8 @@ pub(crate) struct MatchDiagnosticsState {
     replay_playback: Option<ReplayPlaybackState>,
     replay_capture_output: Option<PathBuf>,
     replay_artifact_sha256: Option<String>,
+    pub(super) navigation: super::replay_navigation::ReplayNavigation,
+    replay_selector_prefix: Option<Vec<u8>>,
 }
 
 enum ReplayPlaybackState {
@@ -292,6 +294,7 @@ impl MatchDiagnosticsState {
         capture_output: Option<PathBuf>,
         replay_sha256: String,
     ) {
+        self.navigation = Default::default();
         self.replay_playback = Some(ReplayPlaybackState::Loading(replay));
         self.replay_capture_output = capture_output;
         self.replay_artifact_sha256 = Some(replay_sha256);
@@ -323,19 +326,56 @@ impl MatchDiagnosticsState {
     }
 
     pub(crate) fn playback_can_advance(&self) -> bool {
-        matches!(&self.replay_playback, Some(ReplayPlaybackState::Playing(playback)) if playback.can_advance())
+        self.navigation.can_advance()
+            && matches!(&self.replay_playback, Some(ReplayPlaybackState::Playing(playback)) if playback.can_advance())
+    }
+
+    pub(crate) fn replay_cursor(&self) -> Option<&crate::sim::replay::ReplayPlayback> {
+        match &self.replay_playback {
+            Some(ReplayPlaybackState::Playing(cursor)) => Some(cursor),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn replay_log_arc(&self) -> Option<std::sync::Arc<ReplayLog>> {
+        match &self.replay_playback {
+            Some(ReplayPlaybackState::Loading(log)) => Some(log.clone()),
+            Some(ReplayPlaybackState::Playing(cursor)) => Some(cursor.replay().clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn replay_identity(&self) -> Option<&str> {
+        self.replay_artifact_sha256.as_deref()
+    }
+    pub(crate) fn replace_replay_cursor(&mut self, cursor: crate::sim::replay::ReplayPlayback) {
+        self.replay_playback = Some(ReplayPlaybackState::Playing(cursor));
+    }
+    pub(crate) fn replay_selected_unit(&self) -> Option<u64> {
+        self.navigation.selected_unit()
+    }
+    pub(crate) fn clear_replay_playback(&mut self) {
+        self.navigation = Default::default();
+        self.replay_playback = None;
+        self.replay_capture_output = None;
+        self.replay_artifact_sha256 = None;
+    }
+    pub(crate) fn set_replay_selector_prefix(&mut self, prefix: Option<Vec<u8>>) {
+        self.replay_selector_prefix = prefix;
     }
 
     pub(crate) fn playback_status(&self) -> Option<String> {
         Some(match self.replay_playback.as_ref()? {
             ReplayPlaybackState::Loading(_) => "Loading replay".to_owned(),
-            ReplayPlaybackState::Failed(error) => format!("Replay failed: {error} — Esc to exit"),
+            ReplayPlaybackState::Failed(error) => {
+                format!("Replay failed: {error} — Esc: Recordings")
+            }
             ReplayPlaybackState::Playing(playback) => match playback.failure() {
-                Some(error) => format!("Replay failed: {error} — Esc to exit"),
+                Some(error) => format!("Replay failed: {error} — Esc: Recordings"),
                 None if playback.is_finished() => {
-                    "Replay ended — camera controls available; Esc to exit".to_owned()
+                    "Replay finished — camera controls available".to_owned()
                 }
-                None => "Replay — camera controls available; Esc to exit".to_owned(),
+                None => "Replay — camera controls available".to_owned(),
             },
         })
     }
@@ -542,7 +582,9 @@ impl MatchDiagnosticsState {
             map_hash,
             crate::app::types::SIM_TICK_MS,
             every_frame_network,
-        ) {
+        )
+        .and_then(|startup| startup.with_selector_prefix(self.replay_selector_prefix.clone()))
+        {
             Ok(startup) => {
                 log.header.version = crate::sim::replay::REPLAY_VERSION;
                 log.startup = Some(Box::new(startup));

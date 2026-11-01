@@ -387,7 +387,7 @@ fn activate(state: &mut AppState, control: SpectatorToolAction, now: u64) {
 }
 
 pub(crate) fn owns_pointer(state: &AppState) -> bool {
-    if super::second_view::owns_pointer(state) {
+    if super::replay_tools::owns_pointer(state) || super::second_view::owns_pointer(state) {
         return true;
     }
     let Some(content) = content(state, wall_clock_ms()) else {

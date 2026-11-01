@@ -737,7 +737,7 @@ pub struct ReplayTick {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReplayLog {
     pub header: ReplayHeader,
-    /// Present only for a self-contained, freshly constructed authored match.
+    /// Present only for a self-contained, freshly constructed match.
     /// Old diagnostic segments remain readable but cannot claim standalone replay.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub startup: Option<Box<ReplayStartup>>,
@@ -760,6 +760,10 @@ pub struct ReplayStartup {
     map_hash: u64,
     map_payload_len: usize,
     map_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    generated_map: Option<crate::map::source::GeneratedMapRecipe>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    selector_prefix: Option<Vec<u8>>,
     launch: crate::skirmish_launch::SkirmishLaunchSession,
     session: crate::sim::scenario_session::ScenarioSession,
     scenario_rng: crate::sim::rng::SimRng,
@@ -772,6 +776,31 @@ pub struct ReplayStartup {
 impl ReplayStartup {
     pub fn map_sha256(&self) -> &str {
         &self.map_sha256
+    }
+
+    pub fn generated_map(&self) -> Option<&crate::map::source::GeneratedMapRecipe> {
+        self.generated_map.as_ref()
+    }
+
+    pub fn selector_prefix(&self) -> Option<&[u8]> {
+        self.selector_prefix.as_deref()
+    }
+
+    pub fn with_selector_prefix(mut self, prefix: Option<Vec<u8>>) -> Result<Self> {
+        crate::map::tile_variant_selector::TileVariantSelectorCache::from_replay_prefix(
+            prefix.as_deref(),
+        )
+        .map_err(anyhow::Error::msg)?;
+        self.selector_prefix = prefix;
+        Ok(self)
+    }
+
+    pub fn tick_ms(&self) -> u32 {
+        self.tick_ms
+    }
+
+    pub fn initial_hash(&self) -> u64 {
+        self.initial_hash
     }
 
     pub fn launch_session(&self) -> &crate::skirmish_launch::SkirmishLaunchSession {
@@ -811,8 +840,12 @@ impl ReplayStartup {
             "standalone replay requires the normal App's batched paths"
         );
         anyhow::ensure!(
-            launch.mode.class == crate::skirmish_modes::MpModeClass::Battle,
-            "standalone replay currently supports authored Battle launches"
+            matches!(
+                launch.mode.class,
+                crate::skirmish_modes::MpModeClass::Battle
+                    | crate::skirmish_modes::MpModeClass::FreeForAll
+            ),
+            "standalone replay supports Battle and Free For All launches"
         );
         let map_name = launch
             .selected_map_file
@@ -824,14 +857,29 @@ impl ReplayStartup {
             map_name == sim.session().map_name(),
             "replay launch map differs from its world"
         );
-        anyhow::ensure!(
-            matches!(
-                source,
-                crate::map::source::LoadedMapSource::Loose { .. }
-                    | crate::map::source::LoadedMapSource::Mix { .. }
-            ),
-            "generated/legacy maps lack authored replay startup"
-        );
+        let generated_map = match source {
+            crate::map::source::LoadedMapSource::Loose { .. }
+            | crate::map::source::LoadedMapSource::Mix { .. } => None,
+            crate::map::source::LoadedMapSource::Generated {
+                seed_name,
+                seed_source: Some(seed),
+            } => {
+                anyhow::ensure!(seed_name == map_name, "replay generated map name differs");
+                let recipe = seed
+                    .replay_recipe
+                    .as_ref()
+                    .context("replay lacks consumed random-map input")?;
+                recipe.validate()?;
+                anyhow::ensure!(
+                    recipe.seed_bytes.len() == seed.payload_len
+                        && crate::util::sha256::sha256_hex(&recipe.seed_bytes)
+                            == seed.source_sha256,
+                    "replay random-map input differs from consumed bytes"
+                );
+                Some(recipe.clone())
+            }
+            _ => anyhow::bail!("legacy or missing-source maps lack standalone replay startup"),
+        };
         let (map_payload_len, map_sha256) = source
             .physical_identity()
             .context("replay physical map identity")?;
@@ -857,6 +905,8 @@ impl ReplayStartup {
             map_hash,
             map_payload_len,
             map_sha256: map_sha256.to_owned(),
+            generated_map,
+            selector_prefix: None,
             launch,
             session: sim.session().clone(),
             scenario_rng: sim.scenario_rng().clone(),
@@ -873,6 +923,10 @@ impl ReplayStartup {
             "unsupported standalone replay version; startup version 2 with native-ID prefix is required"
         );
         self.native_id_prefix()?;
+        crate::map::tile_variant_selector::TileVariantSelectorCache::from_replay_prefix(
+            self.selector_prefix(),
+        )
+        .map_err(anyhow::Error::msg)?;
         anyhow::ensure!(
             self.tick_ms != 0
                 && self.tick_ms <= 1000
@@ -891,13 +945,30 @@ impl ReplayStartup {
         );
         crate::map::source::validate_network_map_name(&header.map_name)?;
         anyhow::ensure!(
-            self.launch.mode.class == crate::skirmish_modes::MpModeClass::Battle,
+            matches!(
+                self.launch.mode.class,
+                crate::skirmish_modes::MpModeClass::Battle
+                    | crate::skirmish_modes::MpModeClass::FreeForAll
+            ),
             "unsupported replay launch mode"
         );
         anyhow::ensure!(
-            self.map_payload_len > 0 && crate::map::source::valid_source_sha256(&self.map_sha256),
+            (self.map_payload_len > 0 || self.generated_map.is_some())
+                && crate::map::source::valid_source_sha256(&self.map_sha256),
             "invalid replay map identity"
         );
+        anyhow::ensure!(
+            crate::map::rmg::is_seed_selection(&header.map_name) == self.generated_map.is_some(),
+            "replay generated-map recipe and selection disagree"
+        );
+        if let Some(recipe) = &self.generated_map {
+            recipe.validate()?;
+            anyhow::ensure!(
+                recipe.seed_bytes.len() == self.map_payload_len
+                    && crate::util::sha256::sha256_hex(&recipe.seed_bytes) == self.map_sha256,
+                "replay random-map bytes differ from recorded identity"
+            );
+        }
         anyhow::ensure!(
             self.session.tick() == 0 && self.session.binary_frame() == 0,
             "replay startup is not frame zero"
@@ -915,7 +986,7 @@ impl ReplayLog {
     /// assets. Diagnostic-only segments cannot silently become new matches.
     pub fn standalone_startup(&self) -> Result<&ReplayStartup> {
         let startup = self.startup.as_deref().context(
-            "diagnostic log has no standalone startup; record a fresh authored Battle match",
+            "diagnostic log has no standalone startup; record a fresh Battle or Free For All match",
         )?;
         startup.validate_header(&self.header)?;
         anyhow::ensure!(
@@ -1152,6 +1223,22 @@ impl ReplayPlayback {
         })
     }
 
+    pub fn position(&self) -> usize {
+        self.index
+    }
+    pub fn len(&self) -> usize {
+        self.replay.ticks.len()
+    }
+    pub fn is_empty(&self) -> bool {
+        self.replay.ticks.is_empty()
+    }
+    pub fn next_tick(&self) -> Option<u64> {
+        self.replay.ticks.get(self.index).map(|entry| entry.tick)
+    }
+    pub fn replay(&self) -> &std::sync::Arc<ReplayLog> {
+        &self.replay
+    }
+
     pub fn is_finished(&self) -> bool {
         self.index == self.replay.ticks.len()
     }
@@ -1262,19 +1349,24 @@ impl ReplayPlayback {
 }
 
 impl ReplayRunner {
-    /// Reconstruct with the same authored loader and playback cursor as the client.
-    pub fn verify(
+    /// Reconstruct a detached candidate through the production source and frame owners.
+    /// The running client can cancel seeking by dropping this candidate before adoption.
+    pub fn reconstruct(
         retail_dir: &Path,
-        replay: &ReplayLog,
+        replay: std::sync::Arc<ReplayLog>,
         map_beside: Option<&str>,
-    ) -> Result<ReplayVerification> {
+    ) -> Result<(crate::headless_scenario::HeadlessScenario, ReplayPlayback)> {
         let startup = replay.standalone_startup()?;
-        let map_file = map_beside.unwrap_or(&replay.header.map_name);
+        let map_file = if startup.generated_map().is_some() {
+            replay.header.map_name.as_str()
+        } else {
+            map_beside.unwrap_or(&replay.header.map_name)
+        };
         let mut session = startup.launch.clone();
         session.selected_map_file = Some(map_file.to_owned());
         let launch = crate::sim::scenario_bootstrap::MatchLaunchDescriptor::from_resolved(session)
             .map_err(|error| anyhow::anyhow!("{error}"))?;
-        let mut loaded = crate::headless_scenario::load_with_launch_and_ini(
+        let mut loaded = crate::headless_scenario::load_with_launch_recipe_and_ini(
             retail_dir,
             map_file,
             startup.seed(),
@@ -1283,17 +1375,27 @@ impl ReplayRunner {
             startup.game_mode(),
             Some(startup.native_id_prefix()?),
             None,
+            startup.generated_map(),
+            startup.selector_prefix(),
         )
         .map_err(anyhow::Error::msg)?;
-        // The ordinary App handoff enables the path-search owner before
-        // recording frame zero. It changes movement timing and is hashed.
         loaded.runtime.simulation.batch_path_searches();
-        let mut playback = ReplayPlayback::prepare(
+        let playback = ReplayPlayback::prepare(
             &mut loaded.runtime,
-            std::sync::Arc::new(replay.clone()),
+            replay,
             &loaded.source,
             loaded.map.ini.content_hash(),
         )?;
+        Ok((loaded, playback))
+    }
+
+    pub fn verify(
+        retail_dir: &Path,
+        replay: &ReplayLog,
+        map_beside: Option<&str>,
+    ) -> Result<ReplayVerification> {
+        let (mut loaded, mut playback) =
+            Self::reconstruct(retail_dir, std::sync::Arc::new(replay.clone()), map_beside)?;
         while playback.can_advance() {
             playback.advance(
                 &mut loaded.runtime,
@@ -1674,10 +1776,7 @@ mod tests {
         std::fs::write(&map, assets.get("XMP03T4.MAP").unwrap()).unwrap();
         let verified = ReplayRunner::verify(&root, &decoded, map.to_str());
         std::fs::remove_dir_all(&beside).unwrap();
-        assert_eq!(
-            verified.unwrap().final_state_hash,
-            scene.sim().state_hash()
-        );
+        assert_eq!(verified.unwrap().final_state_hash, scene.sim().state_hash());
         let mut corrupted = decoded;
         corrupted.ticks[10].state_hash = Some(1);
         assert!(
@@ -2466,3 +2565,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "replay_generated_tests.rs"]
+mod generated_tests;

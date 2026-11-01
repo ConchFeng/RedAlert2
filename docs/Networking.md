@@ -109,14 +109,20 @@ match on the same relay, or the match's final frame after 24 hours of play ends
 membership. The relay
 remains required for progress.
 
-Authored Battle matches record reconstructible JSON replays in `replays/`.
+Fresh Battle and Free For All matches record reconstructible JSON replays in
+`replays/`, including accepted generated maps with up to 29 AIs. Generated
+recordings retain their consumed SED bytes and start staging.
 `vera20k --replay <replay.json> --ra2-dir <retail-directory>` opens read-only
-playback with camera controls and Escape to close.
+playback. After initial/final hash validation, Pause/Resume, forward speed,
+Highlights bookmarks, real temporal jumps, and Follow Unit are available.
+Escape cancels a seek, closes Highlights, or opens the recording browser.
 `vera20k --replay-verify <replay.json> --ra2-dir <retail-directory>` reconstructs the
 accepted launch and replays the production frame transaction without connecting
 to the lobby. Startup version, rules, map bytes, seed and initial state must match;
-recorded state hashes are checked during playback. Generated maps, campaigns and
-restored mid-match segments currently lack standalone replay startup.
+recorded state hashes are checked during playback. Campaigns and restored
+mid-match segments remain outside standalone replay startup. See the
+[replay feature guide](ai-battle-features.md#6-replay-bookmarks-and-unit-tracking)
+for controls, metadata storage, validation, and platform limits.
 
 | Responsibility | Authoritative owner |
 |---|---|

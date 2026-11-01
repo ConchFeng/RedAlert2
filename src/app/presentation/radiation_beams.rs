@@ -58,6 +58,10 @@ pub(crate) struct RadiationBeams {
 }
 
 impl RadiationBeams {
+    pub(crate) fn clear_on_load(&mut self) {
+        *self = Self::default();
+    }
+
     /// `house_rgb` resolves Phobos `Beam.IsHouseColor` to the firing House's
     /// laser color before the copied birth is stored.
     pub(crate) fn create(

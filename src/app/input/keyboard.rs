@@ -30,6 +30,9 @@ pub(crate) fn in_game_key_edge(
     edge: InGameKeyEdge<'_>,
     paused_at_event: bool,
 ) {
+    if crate::app::presentation::replay_tools::key(state, &edge) {
+        return;
+    }
     if crate::app::match_runtime::post_match::viewing_battlefield(state)
         && matches!(edge.logical, Key::Named(NamedKey::Escape))
     {

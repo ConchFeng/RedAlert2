@@ -122,6 +122,49 @@ pub struct GeneratedSeedSource {
     pub path: PathBuf,
     pub payload_len: usize,
     pub source_sha256: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub replay_recipe: Option<GeneratedMapRecipe>,
+}
+
+/// Exact generated-map inputs accepted before the match. Paths and retail assets stay outside replay files.
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GeneratedMapRecipe {
+    pub seed_bytes: Vec<u8>,
+    pub start_waypoints: Vec<crate::map::waypoints::Waypoint>,
+}
+
+impl GeneratedMapRecipe {
+    pub fn validate(&self) -> Result<()> {
+        anyhow::ensure!(
+            self.seed_bytes.len() <= MAX_TRANSFER_MAP_BYTES,
+            "invalid replay random-map seed bytes"
+        );
+        anyhow::ensure!(
+            !self.start_waypoints.is_empty()
+                && self.start_waypoints.len() <= crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT,
+            "invalid replay random-map start count"
+        );
+        let mut slots = std::collections::HashSet::new();
+        anyhow::ensure!(
+            self.start_waypoints.iter().all(|waypoint| {
+                (waypoint.index as usize) < crate::skirmish_launch::NETWORK_PLAYER_SLOT_COUNT
+                    && slots.insert(waypoint.index)
+            }),
+            "invalid replay random-map start slots"
+        );
+        Ok(())
+    }
+
+    pub fn waypoint_table(
+        &self,
+    ) -> std::collections::HashMap<u32, crate::map::waypoints::Waypoint> {
+        self.start_waypoints
+            .iter()
+            .copied()
+            .map(|waypoint| (waypoint.index, waypoint))
+            .collect()
+    }
 }
 
 impl GeneratedSeedSource {
@@ -130,6 +173,10 @@ impl GeneratedSeedSource {
             path,
             payload_len: bytes.len(),
             source_sha256: sha256_hex(bytes),
+            replay_recipe: Some(GeneratedMapRecipe {
+                seed_bytes: bytes.to_vec(),
+                start_waypoints: Vec::new(),
+            }),
         }
     }
 }

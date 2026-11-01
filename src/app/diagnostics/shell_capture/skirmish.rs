@@ -5,6 +5,7 @@ use crate::app::App;
 use serde_json::{Value, json};
 
 mod commanders;
+mod replay;
 mod second_view;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -242,6 +243,7 @@ pub(super) struct SkirmishCapture {
     observer_camera_step: Option<ObserverCameraStep>,
     observer_standings: bool,
     observer_second_view: Option<second_view::SecondViewCapture>,
+    replay_highlights: Option<replay::ReplayCapture>,
     ai_commanders: Option<commanders::CommanderCapture>,
     ai_series_target: Option<AiSeriesTarget>,
     ai_series_setup_presented: bool,
@@ -476,6 +478,13 @@ impl SkirmishCapture {
     pub(super) fn observer_standings() -> Self {
         Self {
             observer_standings: true,
+            ..Self::observer_generated_battlefield()
+        }
+    }
+
+    pub(super) fn replay_highlights() -> Self {
+        Self {
+            replay_highlights: Some(Default::default()),
             ..Self::observer_generated_battlefield()
         }
     }
@@ -2734,6 +2743,15 @@ impl SkirmishCapture {
                     self.observe_ai_series_results(state, frame)?;
                 } else if self.ai_series_target == Some(AiSeriesTarget::Start) {
                     self.observe_ai_series_started(state, frame)?;
+                } else if self.replay_highlights.is_some() {
+                    if self.observer_initial_entities.is_none() || !self.observer_focused {
+                        self.observe_generated_battlefield(state, frame)?;
+                    }
+                    self.observer_battlefield_ready = self
+                        .replay_highlights
+                        .as_mut()
+                        .expect("replay capture route")
+                        .advance(state, frame, &mut self.route)?;
                 } else if self.observer_second_view.is_some() {
                     if self.observer_initial_entities.is_none() || !self.observer_focused {
                         self.observe_generated_battlefield(state, frame)?;

@@ -104,6 +104,7 @@ impl App {
     /// routed to the region that captured it (the release that would free it
     /// was lost).
     pub(crate) fn release_in_game_pointer_state(state: &mut AppState) {
+        state.match_state.match_presentation.replay_tools.suspend();
         state.match_state.match_presentation.second_view.suspend();
         state.match_state.input.tactical_mouse.reset_on_focus_loss();
         state.match_state.input.selection_state.cancel_drag();
@@ -580,36 +581,29 @@ impl ApplicationHandler for App {
 
         let Some(state) = &mut self.state else { return };
         state.sync_cursor_space();
-        // Playback has presentation-only input. Exit is local and never
-        // schedules EventClass EXIT or changes the recorded simulation.
-        if state.match_state.match_diagnostics.is_replay_playback() {
+        if crate::app::presentation::replay_tools::available(state) {
             match &event {
                 WindowEvent::CloseRequested => {
                     event_loop.exit();
                     return;
                 }
                 WindowEvent::KeyboardInput { event, .. } => {
-                    if let PhysicalKey::Code(code) = event.physical_key {
-                        if code == KeyCode::Escape && event.state.is_pressed() {
-                            event_loop.exit();
-                        } else if matches!(
-                            code,
-                            KeyCode::ArrowLeft
-                                | KeyCode::ArrowRight
-                                | KeyCode::ArrowUp
-                                | KeyCode::ArrowDown
-                        ) {
-                            if event.state.is_pressed() {
-                                state.match_state.input.keys_held.insert(code);
-                            } else {
-                                state.match_state.input.keys_held.remove(&code);
-                            }
-                        }
-                    }
+                    crate::app::presentation::replay_tools::key_event(state, event);
+                    state.platform.window.request_redraw();
+                    return;
+                }
+                WindowEvent::MouseInput {
+                    button,
+                    state: button_state,
+                    ..
+                } => {
+                    crate::app::input::dispatch::handle_mouse_input(state, *button, *button_state);
+                    state.platform.window.request_redraw();
                     return;
                 }
                 WindowEvent::CursorMoved { position, .. } => {
                     state.set_cursor_from_window(position.x as f32, position.y as f32);
+                    crate::app::presentation::replay_tools::pointer_moved(state);
                     return;
                 }
                 WindowEvent::MouseWheel { delta, .. } => {
@@ -619,7 +613,17 @@ impl ApplicationHandler for App {
                             (position.y as f32 / 30.0).clamp(-3.0, 3.0)
                         }
                     };
-                    crate::app::input::camera::apply_zoom(state, lines);
+                    if !crate::app::presentation::replay_tools::wheel(state, lines) {
+                        crate::app::input::camera::apply_zoom(state, lines);
+                    }
+                    return;
+                }
+                WindowEvent::Ime(winit::event::Ime::Commit(text)) => {
+                    crate::app::presentation::replay_tools::text_input(state, text);
+                    return;
+                }
+                WindowEvent::ModifiersChanged(modifiers) => {
+                    state.match_state.input.hotkey_modifiers = modifiers.state();
                     return;
                 }
                 WindowEvent::Resized(_)
