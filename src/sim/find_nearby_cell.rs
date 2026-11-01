@@ -768,6 +768,17 @@ impl crate::sim::world::Simulation {
         origin: crate::sim::combat::TargetKind,
         viewer: crate::sim::intern::InternedId,
     ) -> Option<crate::sim::components::NavTargetRef> {
+        self.nearby_exploration_cell(origin, viewer, None)
+    }
+
+    /// Fair AI exploration uses the same search with the scout's movement
+    /// domain and current sight. Explored fog remains a patrol destination.
+    pub(crate) fn nearby_exploration_cell(
+        &mut self,
+        origin: crate::sim::combat::TargetKind,
+        viewer: crate::sim::intern::InternedId,
+        passability: Option<PassabilityArgs>,
+    ) -> Option<crate::sim::components::NavTargetRef> {
         let (width, height) = self.map_size_diamond()?;
         let terrain = self.resolved_terrain.as_ref()?;
         let cells = crate::map::resolved_terrain::NativeCellQuery::canonical(terrain);
@@ -799,7 +810,35 @@ impl crate::sim::world::Simulation {
                 // then reads the selected Cell's floor, without a deck rise.
                 point.z =
                     crate::sim::movement::ground_pose::query_ground_height(&cells, point).ok()?;
-                if crate::sim::vision::point_is_shrouded(&self.fog, &cells, viewer, point) {
+                let unseen = if passability.is_some() {
+                    !self
+                        .fog
+                        .is_cell_visible(viewer, cell.0 as u16, cell.1 as u16)
+                } else {
+                    crate::sim::vision::point_is_shrouded(&self.fog, &cells, viewer, point)
+                };
+                if unseen {
+                    if let Some(args) = passability
+                        && !check_passability_rect_with_raw_occupation(
+                            CellRectPassabilityContext {
+                                native_cells: Some(&cells),
+                                rect: CellRect::new(x, y, 1, 1),
+                                speed_type: args.speed_type,
+                                required_zone_id: args.required_zone_id,
+                                movement_zone: args.movement_zone,
+                                required_height_or_level: None,
+                                bridge_aware_zone: args.bridge_aware_zone,
+                                reject_any_overlay: false,
+                                resolved_terrain: Some(terrain),
+                                overlay_grid: self.overlay_grid.as_ref(),
+                                occupancy: Some(&self.substrate.occupancy),
+                                zone_grid: self.zone_grid.as_ref(),
+                            },
+                            Some(&self.substrate.raw_cell_occupation),
+                        )
+                    {
+                        continue;
+                    }
                     pool.push(cell);
                     if pool.len() == MAX_CANDIDATES {
                         break 'rings;
@@ -808,6 +847,9 @@ impl crate::sim::world::Simulation {
             }
         }
         let selected = if pool.is_empty() {
+            if passability.is_some() {
+                return None;
+            }
             center
         } else {
             pool[self

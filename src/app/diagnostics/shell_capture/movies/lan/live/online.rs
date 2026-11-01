@@ -873,7 +873,8 @@ impl LiveRoundFlow {
                     crate::skirmish_launch::AiDifficulty::Easy => 4,
                     crate::skirmish_launch::AiDifficulty::Normal => 5,
                     crate::skirmish_launch::AiDifficulty::Hard
-                    | crate::skirmish_launch::AiDifficulty::Claude => 6,
+                    | crate::skirmish_launch::AiDifficulty::Claude
+                    | crate::skirmish_launch::AiDifficulty::OpenAi => 6,
                 };
                 let view = setup::view(state).context("AI Player dropdown view")?;
                 let row = view

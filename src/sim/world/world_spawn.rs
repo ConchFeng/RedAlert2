@@ -2877,7 +2877,7 @@ impl Simulation {
                 .get_mut(&owner_id)
                 .expect("qualifying deploy owner remains registered");
             if house.base_plan().nodes().is_empty() {
-                let claude_ai = house.claude_ai();
+                let claude_ai = house.fair_ai();
                 recalc_base_plan(
                     house.base_plan_mut(),
                     rules,

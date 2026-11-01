@@ -137,7 +137,7 @@ fn computer_paranoid_needs_allies_allowed_and_no_computer_team() {
         source_human_index: None,
         handle: None,
         difficulty: crate::sim::house_state::HouseDifficulty::Normal,
-        claude_ai: false,
+        ai_strategy: crate::sim::house_state::AiStrategy::Native,
         commander: None,
     };
     for (human_team, computer_team, paranoid_runs) in [

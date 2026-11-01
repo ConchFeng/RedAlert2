@@ -101,6 +101,8 @@ pub(crate) trait SiteWorld {
 pub(crate) enum SiteKey<'a> {
     /// `0x00505F80`, the building exit's.
     Ordinary,
+    /// Product extension: approach visible ore through the ordinary legal-site walk.
+    Resource { target: (i16, i16) },
     /// `0x00505FD0` with its argument, the base defense choice's
     /// ([`CoverageGrid::key`]); the grid is the one the choice leaves at
     /// `HouseClass+0x16060` for the search.
@@ -114,6 +116,14 @@ impl SiteKey<'_> {
     fn key(self, index: i32, cell: (i16, i16), center: (i16, i16)) -> i32 {
         match self {
             Self::Ordinary => ordinary_key(index, cell, center),
+            Self::Resource { target } => {
+                let ore_distance = cell_distance(cell, target);
+                let base_distance = cell_distance(cell, center);
+                ore_distance
+                    .saturating_mul(4096)
+                    .saturating_add(base_distance.saturating_mul(16))
+                    .saturating_add(index.min(15))
+            }
             Self::Defense { grid, argument } => grid.key(index, cell, center, argument),
         }
     }
@@ -152,11 +162,27 @@ pub(crate) fn find_base_building_site(
     registry: Option<&OverlayTypeRegistry>,
 ) -> (i16, i16) {
     if ty.naval {
-        return crate::sim::naval_base_placement::find_naval_base_placement(sim, rules, owner)
+        let site = crate::sim::naval_base_placement::find_naval_base_placement(sim, rules, owner)
             .map_or((0, 0), |(x, y)| (x as i16, y as i16));
+        if fair_building_site_allowed(sim, rules, owner, ty, site) {
+            return site;
+        }
     }
     let Some(house) = sim.houses.get(&owner) else {
         return (0, 0);
+    };
+    let key = if house.fair_ai()
+        && matches!(key, SiteKey::Ordinary)
+        && rules
+            .build_refinery_types
+            .iter()
+            .any(|id| id.eq_ignore_ascii_case(&ty.id))
+    {
+        known_resource_expansion_target(sim, rules, owner, registry)
+            .or_else(|| known_resource_target(sim, rules, owner, registry, false))
+            .map_or(key, |target| SiteKey::Resource { target })
+    } else {
+        key
     };
     let mut world = SimSiteWorld::new(sim, rules, owner, ty, registry);
     let perimeter: Vec<(i16, i16)> = house
@@ -180,6 +206,122 @@ pub(crate) fn find_base_building_site(
             key,
         },
     )
+}
+
+/// Fair tiers reuse the player's proximity and declared-foundation knowledge
+/// owners at candidate selection and again when a completed building exits.
+pub(crate) fn fair_building_site_allowed(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: InternedId,
+    ty: &ObjectType,
+    site: (i16, i16),
+) -> bool {
+    if sim.houses.get(&owner).is_none_or(|house| !house.fair_ai()) {
+        return true;
+    }
+    let (Ok(rx), Ok(ry)) = (u16::try_from(site.0), u16::try_from(site.1)) else {
+        return false;
+    };
+    let Some(terrain) = sim.resolved_terrain.as_ref() else {
+        return false;
+    };
+    crate::sim::production::is_within_build_area(
+        sim,
+        rules,
+        sim.interner.resolve(owner),
+        ty,
+        rx,
+        ry,
+    ) && (crate::sim::build_site::resolved_to_tile(terrain, ty)
+        || crate::sim::production::foundation_is_unshrouded(
+            sim,
+            ty,
+            owner,
+            (rx, ry),
+            &crate::map::resolved_terrain::NativeCellQuery::canonical(terrain),
+        ))
+}
+
+/// A nearby ore field that current sight shows and no live refinery serves.
+/// The ordinary placement owner still enforces reservations, terrain and spacing.
+pub(crate) fn known_resource_expansion_target(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: InternedId,
+    registry: Option<&OverlayTypeRegistry>,
+) -> Option<(i16, i16)> {
+    known_resource_target(sim, rules, owner, registry, true)
+}
+
+fn known_resource_target(
+    sim: &Simulation,
+    rules: &RuleSet,
+    owner: InternedId,
+    registry: Option<&OverlayTypeRegistry>,
+    expansion: bool,
+) -> Option<(i16, i16)> {
+    let grid = sim.overlay_grid.as_ref()?;
+    let registry = registry?;
+    let house = sim.houses.get(&owner)?;
+    let center = signed(house.base_origin());
+    let refineries: Vec<_> = house
+        .base_projection()
+        .buildings()
+        .iter()
+        .filter_map(|&id| {
+            let entity = sim.substrate.entities.get(id)?;
+            let ty = sim.entity_object_type(entity, rules)?;
+            (entity.is_alive()
+                && !entity.lifecycle.in_limbo()
+                && rules
+                    .build_refinery_types
+                    .iter()
+                    .any(|id| id.eq_ignore_ascii_case(&ty.id)))
+            .then_some((entity.position.rx() as i16, entity.position.ry() as i16))
+        })
+        .collect();
+    let mut best = None;
+    for y in (i32::from(center.1) - 24).max(0)
+        ..=(i32::from(center.1) + 24).min(i32::from(grid.height()) - 1)
+    {
+        for x in (i32::from(center.0) - 24).max(0)
+            ..=(i32::from(center.0) + 24).min(i32::from(grid.width()) - 1)
+        {
+            let cell = (x as u16, y as u16);
+            if !sim.fog.is_cell_visible(owner, cell.0, cell.1) {
+                continue;
+            }
+            let overlay = grid.cell(cell.0, cell.1);
+            if !overlay
+                .overlay_id
+                .and_then(|id| registry.flags(id))
+                .is_some_and(|flags| flags.tiberium)
+            {
+                continue;
+            }
+            let target = (x as i16, y as i16);
+            if expansion
+                && refineries
+                    .iter()
+                    .any(|&refinery| cell_distance(target, refinery) <= 10)
+            {
+                continue;
+            }
+            let distance = cell_distance(target, center);
+            let score = (distance, y, x);
+            if best.is_none_or(|(previous, _)| score < previous) {
+                best = Some((score, target));
+            }
+        }
+    }
+    best.map(|(_, target)| target)
+}
+
+fn cell_distance(a: (i16, i16), b: (i16, i16)) -> i32 {
+    (i32::from(a.0) - i32::from(b.0))
+        .abs()
+        .max((i32::from(a.1) - i32::from(b.1)).abs())
 }
 
 /// `HouseClass @ 0x0050B760`: in a campaign always; otherwise whether a base
@@ -427,6 +569,9 @@ impl SiteWorld for SimSiteWorld<'_> {
     }
 
     fn can_place(&mut self, site: (i16, i16)) -> bool {
+        if !fair_building_site_allowed(self.sim, self.rules, self.owner, self.ty, site) {
+            return false;
+        }
         crate::sim::build_site::can_place_building_at(
             self.sim,
             self.rules,

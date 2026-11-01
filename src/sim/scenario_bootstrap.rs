@@ -1144,8 +1144,8 @@ pub struct NormalizedSkirmishSlot {
     /// A human node's handle, CreateHouses' source for House+0x1602A.
     pub handle: Option<String>,
     pub(crate) difficulty: HouseDifficulty,
-    /// The computer slot plays the Claude AI tier ([`crate::sim::claude_ai`]).
-    pub(crate) claude_ai: bool,
+    /// Product strategy retained separately from native difficulty.
+    pub(crate) ai_strategy: crate::sim::house_state::AiStrategy,
     /// The commander this house must get, if any.
     ///
     /// Setup stores a compatible definition name, `Standard`, or `Random`.
@@ -1745,7 +1745,7 @@ pub fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<Normalize
             source_human_index: Some(index),
             handle: Some(human.name.clone()),
             difficulty: HouseDifficulty::Normal,
-            claude_ai: false,
+            ai_strategy: crate::sim::house_state::AiStrategy::Native,
             commander: None,
         });
     }
@@ -1762,7 +1762,7 @@ pub fn normalized_launch_slots(session: &SkirmishLaunchSession) -> Vec<Normalize
             handle: None,
             difficulty: HouseDifficulty::from_native(opponent.difficulty.as_i32())
                 .expect("native AI difficulty"),
-            claude_ai: opponent.difficulty.is_claude(),
+            ai_strategy: opponent.difficulty.ai_strategy(),
             commander: opponent.commander.clone(),
         });
     }
@@ -1885,9 +1885,9 @@ pub fn populate_launch_houses(
         // CreateHouses688293..6882B9 counts every human node, including
         // observers, before applying Rules[AI].CompEasyBonus to positive AI
         // difficulty values. The unchanged House owner applies its biases.
-        // A Claude house takes no handicap either way.
+        // Fair strategy tiers take no computer handicap.
         let difficulty = if !slot.is_human
-            && !slot.claude_ai
+            && !slot.ai_strategy.fair()
             && human_count > 1
             && rules.general.comp_easy_bonus
         {
@@ -1896,7 +1896,11 @@ pub fn populate_launch_houses(
         } else {
             slot.difficulty
         };
-        house.set_claude_ai(!slot.is_human && slot.claude_ai);
+        house.set_ai_strategy(if slot.is_human {
+            crate::sim::house_state::AiStrategy::Native
+        } else {
+            slot.ai_strategy
+        });
         house.set_difficulty(
             difficulty,
             &rules.general,
@@ -2004,8 +2008,8 @@ pub(crate) fn native_ai_opening_grant(coefficient: i32, money: i32) -> i32 {
 /// and integer cost subtraction, no x87 involvement).
 pub fn apply_skirmish_ai_opening_credits(houses: &mut crate::sim::houses::Houses, rules: &RuleSet) {
     for house in houses.values_mut() {
-        // A Claude house starts with the credits a human gets.
-        if house.is_human() || house.multiplay_passive() || house.claude_ai() {
+        // Fair strategy tiers start with the credits a human gets.
+        if house.is_human() || house.multiplay_passive() || house.fair_ai() {
             continue;
         }
         let coefficient = rules
@@ -5318,7 +5322,7 @@ mod tests {
             source_human_index: Some(0),
             handle: None,
             difficulty: HouseDifficulty::Normal,
-            claude_ai: false,
+            ai_strategy: crate::sim::house_state::AiStrategy::Native,
             commander: None,
         }];
         let mut expected = SimRng::new(seed);

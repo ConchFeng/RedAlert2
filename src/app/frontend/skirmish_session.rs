@@ -611,8 +611,8 @@ impl MultiplayerShellRuntime {
                     row_type: match ai.difficulty {
                         AiDifficulty::Easy => 4,
                         AiDifficulty::Normal => 5,
-                        // Network setup never admits the offline-only Claude tier.
-                        AiDifficulty::Hard | AiDifficulty::Claude => 6,
+                        // Network setup never admits the offline-only strategy tiers.
+                        AiDifficulty::Hard | AiDifficulty::Claude | AiDifficulty::OpenAi => 6,
                     },
                     country: if ai.country_random {
                         RANDOM_ITEM_DATA
@@ -1858,12 +1858,14 @@ fn ai_row_type_from_persisted(value: i32) -> SkirmishAiRowType {
         5 => SkirmishAiRowType::Normal,
         6 => SkirmishAiRowType::Easy,
         CLAUDE_AI_PERSISTED_ROW => SkirmishAiRowType::Claude,
+        OPEN_AI_PERSISTED_ROW => SkirmishAiRowType::OpenAi,
         _ => SkirmishAiRowType::None,
     }
 }
 
 /// VERA's own slot code for the Claude AI tier, past the native 1..6 codes.
 const CLAUDE_AI_PERSISTED_ROW: i32 = 7;
+const OPEN_AI_PERSISTED_ROW: i32 = 8;
 
 fn persisted_row_type(value: SkirmishAiRowType) -> i32 {
     match value {
@@ -1872,6 +1874,7 @@ fn persisted_row_type(value: SkirmishAiRowType) -> i32 {
         SkirmishAiRowType::Normal => 5,
         SkirmishAiRowType::Easy => 6,
         SkirmishAiRowType::Claude => CLAUDE_AI_PERSISTED_ROW,
+        SkirmishAiRowType::OpenAi => OPEN_AI_PERSISTED_ROW,
     }
 }
 
@@ -1931,6 +1934,30 @@ mod tests {
         AiDifficulty, LaunchStartPosition, LaunchTeam, SkirmishAiSlot, SkirmishLaunchMode,
         SkirmishLaunchOptions, SkirmishLocalSlot,
     };
+
+    #[test]
+    fn open_ai_selection_survives_offline_setup_persistence() {
+        let saved = b"[Skirmish]\nGameMode=2\n";
+        let snapshot = read_setup_snapshot(saved, defaults(), SetupProfile::Skirmish).unwrap();
+        let mut owner = runtime(snapshot, 5);
+        let maps = [map()];
+        let modes = crate::skirmish_modes::stock_skirmish_modes();
+        let mut shell = SkirmishShellState::default();
+        owner.hydrate_shell(&mut shell, &maps, &modes);
+        shell.opponents[0].row_type = SkirmishAiRowType::OpenAi;
+        let launch =
+            crate::ui::skirmish_shell::launch_session(&shell, &maps, &modes, false).unwrap();
+        assert_eq!(launch.opponents[0].difficulty, AiDifficulty::OpenAi);
+        assert_eq!(SkirmishAiRowType::OpenAi.label().1, "Open AI");
+        owner.pack_durable_state(&shell, &maps, &modes);
+        let saved = owner.update_persistence_bytes(saved);
+        let reopened = runtime(
+            read_setup_snapshot(&saved, defaults(), SetupProfile::Skirmish).unwrap(),
+            5,
+        );
+        reopened.hydrate_shell(&mut shell, &maps, &modes);
+        assert_eq!(shell.opponents[0].row_type, SkirmishAiRowType::OpenAi);
+    }
 
     #[test]
     fn offline_observer_preference_reaches_launch_and_close_transaction() {

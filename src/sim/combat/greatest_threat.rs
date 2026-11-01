@@ -64,6 +64,8 @@
 //! acquire an enemy standing in unexplored ground, and fires on it: no fire
 //! path reads shroud either (GetFireError `0x006FC0B0` has no shroud code, and
 //! `IsFogged @ 0x005865E0` is a constant false).
+//! Product extension: fair strategy tiers require current sight in the shared
+//! candidate evaluator, including Hunt's global walk.
 //!
 //! ## Other residuals
 //!
@@ -1983,6 +1985,19 @@ fn evaluate_candidate(
     walk: WalkArgs,
     candidate: &GameEntity,
 ) -> Option<i32> {
+    // Fair strategy tiers cannot inspect live enemy state beyond current sight.
+    if ctx.standing.house.is_some_and(|house| house.fair_ai())
+        && !ctx.is_ally(candidate)
+        && !ctx.fog.is_some_and(|fog| {
+            fog.is_cell_visible(
+                ctx.attacker.owner,
+                candidate.position.rx(),
+                candidate.position.ry(),
+            )
+        })
+    {
+        return None;
+    }
     // G1/G2/G4 — select the weapon this attacker would use against this
     // candidate, then refuse the candidate when that weapon's Verses against
     // its armor is at or below the `0.02f` floor. Resolve the native selection

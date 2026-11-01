@@ -363,7 +363,7 @@ impl Simulation {
             let (side, difficulty, claude_ai, tech_level) = (
                 house.side_index(),
                 house.difficulty(),
-                house.claude_ai(),
+                house.fair_ai(),
                 house.tech_level(),
             );
             if crate::sim::base_plan_generation::preflight_recalc(rules, &country, side, difficulty)

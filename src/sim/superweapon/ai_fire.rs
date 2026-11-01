@@ -719,7 +719,8 @@ fn rally_entry(
             && entity.is_object_alive()
             && !entity.lifecycle.in_limbo();
         let candidate = standing
-            || (house.difficulty() == HouseDifficulty::Hard
+            || (!house.fair_ai()
+                && house.difficulty() == HouseDifficulty::Hard
                 && sim.production.factories().is_building(id));
         let ty = sim.interner.object_type(entity.type_ref(), rules);
         (candidate, rally_value(entity.category(), ty, rules, house))
@@ -732,15 +733,10 @@ fn rally_entry(
         lepton_to_cell_packed(coords.x),
         lepton_to_cell_packed(coords.y),
     );
-    // Product extension: a Claude house aims only at what it has seen.
+    // Fair strategy tiers inspect only currently visible, physically placed targets.
     let candidate = candidate
-        && (!house.claude_ai()
-            || crate::sim::claude_ai::target_cell_known(
-                &sim.fog,
-                house.name(),
-                cell,
-                entity.category() == EntityCategory::Structure,
-            ));
+        && (!house.fair_ai()
+            || crate::sim::claude_ai::target_cell_known(&sim.fog, house.name(), cell));
     RallyEntry {
         candidate,
         value,

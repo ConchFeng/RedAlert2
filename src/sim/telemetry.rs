@@ -728,6 +728,7 @@ impl Simulation {
         for (index, (owner, house)) in self.houses.iter().take(TELEMETRY_MAX_HOUSES).enumerate() {
             owner_index.insert(*owner, index);
             let difficulty = match house.difficulty() {
+                _ if house.open_ai() => "open-ai",
                 _ if house.claude_ai() => "claude",
                 crate::sim::house_state::HouseDifficulty::Hard => "hard",
                 crate::sim::house_state::HouseDifficulty::Normal => "normal",

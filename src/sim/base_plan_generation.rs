@@ -72,7 +72,7 @@ pub(crate) fn recalc_base_plan(
     country_name: &str,
     side_index: i32,
     difficulty: HouseDifficulty,
-    claude_ai: bool,
+    fair_ai: bool,
     tech_level: i32,
     super_weapons: bool,
     scenario_rng: &mut SimRng,
@@ -219,11 +219,11 @@ pub(crate) fn recalc_base_plan(
         priority.len() >= 3,
         "active Recalc priority contains its three native seed entries"
     );
-    // Product extension: a Claude house reorders the tail behind the
-    // ConYard, power, barracks and war factory seeds. The defense
-    // placeholders below draw on the plan's length only, which is unchanged.
-    if claude_ai {
-        crate::sim::claude_ai::pull_tech_forward(&mut priority, 4, rules);
+    // Product extension: fund the economy before combat factories and tech.
+    // Keep the Construction Yard and first power plant in front; prerequisite
+    // ordering still comes from the shared planner, without additional draws.
+    if fair_ai {
+        crate::sim::claude_ai::pull_tech_forward(&mut priority, 2, rules);
     }
     let mut final_values = Vec::with_capacity(priority.len());
     final_values.extend(

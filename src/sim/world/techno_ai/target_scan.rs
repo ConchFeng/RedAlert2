@@ -974,6 +974,36 @@ mod tests {
     use super::*;
     use serde_json::Value;
 
+    #[test]
+    fn fair_hunt_scans_require_current_enemy_sight() {
+        let Some(fixture) = crate::rules::retail_ini_fixture::retail_battle_rules() else {
+            return;
+        };
+        let rules = &fixture.rules;
+        let mut sim = crate::sim::arena_fixture::rival_arena(rules, 626);
+        let scanner = sim
+            .spawn_object("E1", "Americans", 12, 12, 0, rules)
+            .unwrap();
+        let victim = sim
+            .spawn_object("E1", "Russians", 15, 12, 0, rules)
+            .unwrap();
+        let owner = sim.substrate.entities.get(scanner).unwrap().owner();
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .set_ai_strategy(crate::sim::house_state::AiStrategy::OpenAi);
+        sim.fog.reveal_all_for_owner(owner);
+        assert_eq!(
+            direct_greatest_threat(&mut sim, rules, None, scanner, ScanMission::Hunt),
+            None
+        );
+        sim.fog.mark_visible_for_owner(owner, 15, 12);
+        assert_eq!(
+            direct_greatest_threat(&mut sim, rules, None, scanner, ScanMission::Hunt),
+            Some(victim)
+        );
+    }
+
     /// Original7098DA pushes1 before GetFireError(vt+3C0): a held passive
     /// target must pass the same wall-aware InRange as ordinary fire. The
     /// existing171-row scanner corpus consumes that argument/order with

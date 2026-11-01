@@ -220,8 +220,8 @@ pub(crate) fn view(state: &AppState) -> Option<SetupView> {
             match ai {
                 AiDifficulty::Easy => 4,
                 AiDifficulty::Normal => 5,
-                // Network setup never admits the offline-only Claude tier.
-                AiDifficulty::Hard | AiDifficulty::Claude => 6,
+                // Network setup never admits the offline-only strategy tiers.
+                AiDifficulty::Hard | AiDifficulty::Claude | AiDifficulty::OpenAi => 6,
             }
         } else {
             match vacancy.unwrap_or(NetworkVacancy::Closed) {

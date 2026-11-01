@@ -79,6 +79,9 @@ use crate::sim::world::ObjectSubstrate;
 #[path = "scout_tests.rs"]
 mod scout_tests;
 
+#[path = "fair_scout.rs"]
+mod fair_scout;
+
 #[cfg(test)]
 #[path = "result_tests.rs"]
 mod result_tests;
@@ -366,7 +369,18 @@ impl Simulation {
                         team.zone
                             .or_else(|| team.members().next().map(TeamTarget::Object))
                     });
-                    let Some(viewer) = self.session.current_house() else {
+                    let Some(viewer) = self
+                        .team_script_vm
+                        .teams
+                        .get(&team_id)
+                        .and_then(|team| {
+                            self.houses
+                                .get(&team.owner())
+                                .filter(|house| house.fair_ai())
+                                .map(|_| team.owner())
+                        })
+                        .or_else(|| self.session.current_house())
+                    else {
                         return;
                     };
                     let target = origin
@@ -1799,9 +1813,13 @@ impl Simulation {
             // 6EFAAE/6EFAF7: preserve the shared Map/Dummy query order.
             let [own_x, own_y, _] = self.house_base_coordinate(owner, cells.as_ref());
             let own = [own_x, own_y];
-            let enemy = enemy.map(|enemy| {
-                let [x, y, _] = self.house_base_coordinate(enemy, cells.as_ref());
-                [x, y]
+            let enemy = enemy.and_then(|enemy| {
+                let [x, y, _] = if self.houses.get(&owner).is_some_and(|house| house.fair_ai()) {
+                    self.team_visible_enemy_base_coordinate(owner, enemy)?
+                } else {
+                    self.house_base_coordinate(enemy, cells.as_ref())
+                };
+                Some([x, y])
             });
             let seed = regroup_seed_cell(own, enemy, rules.general.ai_safe_distance, || {
                 self.scenario_rng.next_range_i32_inclusive(0, 255)
@@ -1842,7 +1860,11 @@ impl Simulation {
                 .map(crate::map::resolved_terrain::NativeCellQuery::canonical);
             // 6EF7C0 precedes 6EF812; an empty enemy base returns before
             // querying the own base, including its Map/Dummy side effects.
-            let enemy = self.house_base_coordinate(enemy, cells.as_ref());
+            let enemy = if self.houses.get(&owner).is_some_and(|house| house.fair_ai()) {
+                self.team_visible_enemy_base_coordinate(owner, enemy)?
+            } else {
+                self.house_base_coordinate(enemy, cells.as_ref())
+            };
             if enemy == [0, 0, 0] {
                 return None;
             }
@@ -1866,6 +1888,35 @@ impl Simulation {
         };
         self.team_assign_gather_cell(team_id, seed, speed_type, rules, registry, frame_effects);
         self.team_coordinate_move(team_id, rules, registry, frame_effects);
+    }
+
+    fn team_visible_enemy_base_coordinate(
+        &self,
+        owner: InternedId,
+        enemy: InternedId,
+    ) -> Option<[i32; 3]> {
+        self.substrate
+            .entities
+            .iter_sorted()
+            .find_map(|(_, building)| {
+                if building.owner() != enemy
+                    || building.category() != EntityCategory::Structure
+                    || !building.is_object_alive()
+                    || building.lifecycle.in_limbo()
+                {
+                    return None;
+                }
+                let location = location_xyz(building, self.resolved_terrain.as_ref());
+                crate::sim::claude_ai::target_cell_known(
+                    &self.fog,
+                    owner,
+                    (
+                        crate::util::lepton::lepton_to_cell_packed(location[0]),
+                        crate::util::lepton::lepton_to_cell_packed(location[1]),
+                    ),
+                )
+                .then_some(location)
+            })
     }
 
     /// Actions 53 and 54's mission target (`0x006EF947..0x006EF9AB`,
@@ -2648,6 +2699,9 @@ impl Simulation {
         registry: Option<&OverlayTypeRegistry>,
         frame_effects: FrameEffects<'_>,
     ) {
+        if self.team_fair_attack_or_scout(team_id, quarry, rules, registry, frame_effects) {
+            return;
+        }
         let Some(team) = self.team_script_vm.teams.get(&team_id) else {
             return;
         };
@@ -2818,10 +2872,7 @@ impl Simulation {
             .and_then(|house| house.enemy_house());
         let asker = self.interner.resolve(owner);
         let terrain = self.resolved_terrain.as_ref();
-        let claude_ai = self
-            .houses
-            .get(&owner)
-            .is_some_and(|house| house.claude_ai());
+        let fair_ai = self.houses.get(&owner).is_some_and(|house| house.fair_ai());
         let buildings: Vec<TargetBuilding> = self
             .substrate
             .entities
@@ -2830,9 +2881,9 @@ impl Simulation {
                 building.category() == EntityCategory::Structure
                     && building.type_facts.base_plan_type_index() == index
             })
-            // Product extension: a Claude house targets only what it has seen.
+            // Fair strategy tiers inspect only currently visible buildings.
             .filter(|(_, building)| {
-                !claude_ai || {
+                !fair_ai || {
                     let [x, y, _] = location_xyz(building, terrain);
                     crate::sim::claude_ai::target_cell_known(
                         &self.fog,
@@ -2841,7 +2892,6 @@ impl Simulation {
                             crate::util::lepton::lepton_to_cell_packed(x),
                             crate::util::lepton::lepton_to_cell_packed(y),
                         ),
-                        true,
                     )
                 }
             })

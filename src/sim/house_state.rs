@@ -59,6 +59,70 @@ impl HouseDifficulty {
     }
 }
 
+/// Product strategy identity, independent of native difficulty tables.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub(crate) enum AiStrategy {
+    #[default]
+    Native,
+    Claude,
+    OpenAi,
+}
+
+impl AiStrategy {
+    pub(crate) const fn fair(self) -> bool {
+        !matches!(self, Self::Native)
+    }
+}
+
+impl serde::Serialize for AiStrategy {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.serialize_u8(match self {
+            Self::Native => 0,
+            Self::Claude => 1,
+            Self::OpenAi => 2,
+        })
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for AiStrategy {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct StrategyVisitor;
+        impl<'de> serde::de::Visitor<'de> for StrategyVisitor {
+            type Value = AiStrategy;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
+                formatter.write_str("an AI strategy code or a legacy Claude flag")
+            }
+
+            fn visit_bool<E: serde::de::Error>(self, value: bool) -> Result<Self::Value, E> {
+                Ok(if value {
+                    AiStrategy::Claude
+                } else {
+                    AiStrategy::Native
+                })
+            }
+
+            fn visit_u8<E: serde::de::Error>(self, value: u8) -> Result<Self::Value, E> {
+                self.visit_u64(u64::from(value))
+            }
+
+            fn visit_u64<E: serde::de::Error>(self, value: u64) -> Result<Self::Value, E> {
+                match value {
+                    0 => Ok(AiStrategy::Native),
+                    1 => Ok(AiStrategy::Claude),
+                    2 => Ok(AiStrategy::OpenAi),
+                    _ => Err(E::custom("unknown AI strategy code")),
+                }
+            }
+        }
+        if deserializer.is_human_readable() {
+            deserializer.deserialize_any(StrategyVisitor)
+        } else {
+            deserializer.deserialize_u8(StrategyVisitor)
+        }
+    }
+}
+
 /// House4F54A0's seven scalar doubles (+188..+1B8) and two delays
 /// (+1C0/+1C8). SetDifficulty4F6EC0 is their one subsequent writer.
 /// Only Firepower, ROF and RepairDelay have reached live scalar readers;
@@ -574,10 +638,9 @@ pub struct HouseState {
     /// Product extension identity; names survive catalog reordering in saves.
     #[serde(default)]
     personality_name: Option<String>,
-    /// Product extension: the house plays the Claude AI tier
-    /// ([`crate::sim::claude_ai`]). Stamped once at skirmish launch.
+    /// Stamped once at skirmish launch; legacy saves stored a Claude bool here.
     #[serde(default)]
-    claude_ai: bool,
+    ai_strategy: AiStrategy,
     /// Original House scalar difficulty fields. All seven biases begin at1.0
     /// and both delays at0.0; the shared SetDifficulty owner replaces them.
     #[serde(default)]
@@ -1473,21 +1536,37 @@ impl HouseState {
             std::hash::Hash::hash(b"house-commander-name-v1", hasher);
             std::hash::Hash::hash(name, hasher);
         }
-        // Only a Claude house hashes the flag, so every other hash is unchanged.
-        if self.claude_ai {
-            std::hash::Hash::hash(b"house-claude-ai-v1", hasher);
+        match self.ai_strategy {
+            AiStrategy::Native => {}
+            AiStrategy::Claude => std::hash::Hash::hash(b"house-claude-ai-v1", hasher),
+            AiStrategy::OpenAi => std::hash::Hash::hash(b"house-open-ai-v1", hasher),
         }
     }
 
     /// Whether this computer house plays the Claude AI tier.
     pub const fn claude_ai(&self) -> bool {
-        self.claude_ai
+        matches!(self.ai_strategy, AiStrategy::Claude)
     }
 
-    /// Installed by the skirmish launch before [`Self::set_difficulty`], which
-    /// reads it.
+    pub const fn open_ai(&self) -> bool {
+        matches!(self.ai_strategy, AiStrategy::OpenAi)
+    }
+
+    pub const fn fair_ai(&self) -> bool {
+        self.ai_strategy.fair()
+    }
+
+    pub(crate) fn set_ai_strategy(&mut self, strategy: AiStrategy) {
+        self.ai_strategy = strategy;
+    }
+
+    #[cfg(any(test, feature = "test-support"))]
     pub(crate) fn set_claude_ai(&mut self, value: bool) {
-        self.claude_ai = value;
+        self.set_ai_strategy(if value {
+            AiStrategy::Claude
+        } else {
+            AiStrategy::Native
+        });
     }
 
     /// The strategy half of a commander, applied once right after
@@ -2339,9 +2418,9 @@ impl HouseState {
     ) {
         use crate::util::native_x87::MaskedX87Chop53 as X;
         self.difficulty = difficulty;
-        // A Claude house keeps its AI tables at `difficulty` but plays with
+        // Fair strategy tiers keep their AI tables at `difficulty` but play with
         // the neutral Normal stat row, as a human does.
-        let row_difficulty = if self.claude_ai {
+        let row_difficulty = if self.fair_ai() {
             HouseDifficulty::Normal
         } else {
             difficulty
@@ -2713,7 +2792,7 @@ impl HouseState {
             difficulty_biases: HouseDifficultyBiases::default(),
             personality: None,
             personality_name: None,
-            claude_ai: false,
+            ai_strategy: AiStrategy::Native,
             multiplay_passive: false,
             country_cost_mults: CountryCostMults::default(),
             country_speed_mults: CountrySpeedMults::default(),
@@ -3581,5 +3660,42 @@ mod signed_country_side_tests {
         let bytes = crate::util::save_codec::serialize(&house).unwrap();
         let restored: HouseState = crate::util::save_codec::deserialize(&bytes).unwrap();
         assert_eq!(restored.side_index, -1);
+    }
+}
+
+#[cfg(test)]
+mod ai_strategy_tests {
+    use super::{AiStrategy, HouseState};
+    use crate::util::save_codec;
+
+    #[test]
+    fn strategy_identity_has_a_traceable_snapshot_layout() {
+        let layout = save_codec::layout::describe::<HouseState>().expect("house snapshot layout");
+        assert!(layout.contains("ai_strategy:u8"), "{layout}");
+    }
+
+    #[test]
+    fn strategy_round_trip_preserves_identity_and_legacy_claude_bytes() {
+        assert_eq!(
+            save_codec::deserialize::<AiStrategy>(&[0]).unwrap(),
+            AiStrategy::Native
+        );
+        assert_eq!(
+            save_codec::deserialize::<AiStrategy>(&[1]).unwrap(),
+            AiStrategy::Claude
+        );
+        assert_eq!(
+            serde_json::from_str::<AiStrategy>("true").unwrap(),
+            AiStrategy::Claude
+        );
+        for strategy in [AiStrategy::Native, AiStrategy::Claude, AiStrategy::OpenAi] {
+            let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
+            house.set_ai_strategy(strategy);
+            let bytes = save_codec::serialize(&house).unwrap();
+            let restored: HouseState = save_codec::deserialize(&bytes).unwrap();
+            assert_eq!(restored.ai_strategy, strategy);
+            assert_eq!(restored.open_ai(), strategy == AiStrategy::OpenAi);
+            assert_eq!(restored.fair_ai(), strategy != AiStrategy::Native);
+        }
     }
 }

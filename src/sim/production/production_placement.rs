@@ -63,18 +63,9 @@ pub fn placement_preview_for_owner_with_overlays(
     //4A9070 is a separate rectangle visibility query using declared width
     //and height. It cannot reuse just the sparse active marker cells.
     let all_unshrouded = sim.session.current_house().is_none_or(|viewer| {
-        native_cells.as_ref().is_none_or(|query| {
-            (0..width).all(|dx| {
-                (0..height).all(|dy| {
-                    !crate::sim::vision::cell_is_shrouded(
-                        &sim.fog,
-                        query,
-                        viewer,
-                        (rx.wrapping_add(dx), ry.wrapping_add(dy)),
-                    )
-                })
-            })
-        })
+        native_cells
+            .as_ref()
+            .is_none_or(|query| foundation_is_unshrouded(sim, obj, viewer, (rx, ry), query))
     });
     if let Some(query) = native_cells.as_ref() {
         for (dx, dy) in obj.foundation.cell_offsets() {
@@ -769,6 +760,28 @@ fn evaluate_resolved_building_placement(
         reason,
         in_build_area,
     }
+}
+
+/// Original gamemd `Display4A9070 @ 0x004A9070`: the declared-foundation shroud
+/// query shared by player preview and fair AI placement, using the caller's cells.
+pub(crate) fn foundation_is_unshrouded(
+    sim: &Simulation,
+    obj: &ObjectType,
+    viewer: InternedId,
+    (rx, ry): (u16, u16),
+    cells: &crate::map::resolved_terrain::NativeCellQuery<'_>,
+) -> bool {
+    let (width, height) = obj.foundation.dimensions();
+    (0..width).all(|dx| {
+        (0..height).all(|dy| {
+            !crate::sim::vision::cell_is_shrouded(
+                &sim.fog,
+                cells,
+                viewer,
+                (rx.wrapping_add(dx), ry.wrapping_add(dy)),
+            )
+        })
+    })
 }
 
 /// Read-only Display4A8EB0 proximity query, shared by preview and the fresh

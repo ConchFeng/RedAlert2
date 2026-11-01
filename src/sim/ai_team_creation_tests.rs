@@ -410,3 +410,159 @@ fn ares_trigger_side_tokens_admit_any_registered_side() {
     assert!(!super::side_admits(1, 3));
     assert!(super::side_admits(3, 2));
 }
+
+fn open_ai_fixture() -> (Simulation, RuleSet, InternedId, InternedId, [InternedId; 3]) {
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[InfantryTypes]\n0=E1\n[E1]\nStrength=100\nTechLevel=1\n\
+         [VehicleTypes]\n0=SHIP\n[SHIP]\nStrength=100\nNaval=yes\nTechLevel=1\n\
+         [AircraftTypes]\n0=JET\n[JET]\nStrength=100\nTechLevel=1\n",
+    ))
+    .unwrap();
+    let registry = crate::rules::team_ai_ini::TeamAiIniRegistry::from_sources(
+        &IniFile::from_str(
+            "[TeamTypes]\n0=GROUND\n1=SEA\n2=AIR\n\
+             [GROUND]\nScript=S\nTaskForce=FG\n[SEA]\nScript=S\nTaskForce=FS\n[AIR]\nScript=S\nTaskForce=FA\n\
+             [ScriptTypes]\n0=S\n[S]\n0=5,1\n[TaskForces]\n0=FG\n1=FS\n2=FA\n\
+             [FG]\n0=1,E1\n[FS]\n0=1,SHIP\n[FA]\n0=1,JET\n",
+        ),
+        &IniFile::from_str(""),
+        true,
+    );
+    let mut sim = Simulation::new();
+    crate::sim::arena_fixture::flat_ground(&mut sim, &rules);
+    sim.fog = crate::sim::vision::FogState::new(32, 32);
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    sim.install_team_ai_registry(&registry, &rules).unwrap();
+    let owner = sim.interner.intern("Computer");
+    let enemy = sim.interner.intern("Enemy");
+    for id in [owner, enemy] {
+        sim.houses
+            .register(HouseState::new(id, 0, None, false, 0, 10));
+    }
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .set_ai_strategy(crate::sim::house_state::AiStrategy::OpenAi);
+    let team_types = ["GROUND", "SEA", "AIR"].map(|name| sim.interner.get(name).unwrap());
+    for (index, &team_type) in team_types.iter().enumerate() {
+        let id = sim.interner.intern(&format!("DOMAIN{index}"));
+        sim.team_script_vm.register_ai_trigger(ai_trigger(
+            id,
+            team_type,
+            None,
+            NativeF64Bits::from_bits(100.0_f64.to_bits()),
+        ));
+    }
+    (sim, rules, owner, enemy, team_types)
+}
+
+#[test]
+fn open_ai_prefers_domains_not_already_fielded() {
+    let (mut sim, rules, owner, enemy, teams) = open_ai_fixture();
+    sim.team_script_vm
+        .create_team_from_type(owner, teams[0], &[], 0);
+    let selected = draw_ai_trigger(
+        &mut sim,
+        &rules,
+        owner,
+        Some(enemy),
+        false,
+        |_, _, _, _| true,
+        |_, low, high| {
+            assert_eq!((low, high), (1, 1000));
+            201
+        },
+    );
+    assert_eq!(selected, [teams[1]]);
+}
+
+#[test]
+fn open_ai_does_not_spend_a_selection_on_an_already_forming_team() {
+    let (mut sim, rules, owner, enemy, teams) = open_ai_fixture();
+    sim.team_script_vm
+        .construct_team(teams[0], owner, true, 0, false, None)
+        .unwrap();
+    let selected = draw_ai_trigger(
+        &mut sim,
+        &rules,
+        owner,
+        Some(enemy),
+        false,
+        |_, _, _, _| true,
+        |_, low, high| {
+            assert_eq!((low, high), (1, 800));
+            1
+        },
+    );
+    assert_eq!(selected, [teams[1]]);
+}
+
+#[test]
+fn fair_ai_conditions_use_observations_and_reject_private_enemy_economy() {
+    let (mut sim, rules, owner, enemy, teams) = open_ai_fixture();
+    let unit = sim.spawn_object("E1", "Enemy", 12, 12, 0, &rules).unwrap();
+    let mut trigger = ai_trigger(
+        sim.interner.intern("OBSERVED"),
+        teams[0],
+        None,
+        NativeF64Bits::ONE,
+    );
+    trigger.condition = 0;
+    trigger.object_type = Some(crate::sim::team_script_vm::member_type_identity(
+        sim.substrate.entities.get(unit).unwrap(),
+    ));
+    trigger.comparison_mask[..4].copy_from_slice(&1_i32.to_le_bytes());
+    trigger.comparison_mask[4..8].copy_from_slice(&3_i32.to_le_bytes());
+    assert!(!condition_holds(&sim, &rules, &trigger, owner, Some(enemy)));
+    sim.fog.mark_visible_for_owner(owner, 12, 12);
+    assert!(condition_holds(&sim, &rules, &trigger, owner, Some(enemy)));
+    sim.substrate.entities.get_mut(unit).unwrap().cloak =
+        Some(crate::sim::cloak_disguise::CloakRuntime::new(0));
+    sim.substrate
+        .entities
+        .get_mut(unit)
+        .unwrap()
+        .cloak
+        .as_mut()
+        .unwrap()
+        .set_state_for_test(2);
+    assert!(!condition_holds(&sim, &rules, &trigger, owner, Some(enemy)));
+    trigger.condition = 4;
+    trigger.comparison_mask[..4].copy_from_slice(&0_i32.to_le_bytes());
+    assert!(!condition_holds(&sim, &rules, &trigger, owner, Some(enemy)));
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .set_ai_strategy(crate::sim::house_state::AiStrategy::Native);
+    assert!(condition_holds(&sim, &rules, &trigger, owner, Some(enemy)));
+}
+
+#[test]
+fn combined_arms_counts_retail_jumpjet_units_as_air_forces() {
+    let Some(rules) = crate::rules::retail_ini_fixture::retail_rulesmd_rules() else {
+        return;
+    };
+    let registry = crate::rules::team_ai_ini::TeamAiIniRegistry::from_sources(
+        &IniFile::from_str(
+            "[TeamTypes]\n0=KIROVS\n1=ROCKETEERS\n2=JETS\n\
+             [KIROVS]\nScript=S\nTaskForce=FK\n[ROCKETEERS]\nScript=S\nTaskForce=FR\n[JETS]\nScript=S\nTaskForce=FJ\n\
+             [ScriptTypes]\n0=S\n[S]\n0=0,1\n[TaskForces]\n0=FK\n1=FR\n2=FJ\n\
+             [FK]\n0=1,ZEP\n[FR]\n0=1,JUMPJET\n[FJ]\n0=1,ORCA\n",
+        ),
+        &IniFile::from_str(""),
+        true,
+    );
+    let mut sim = Simulation::new();
+    sim.intern_rule_type_ids(&rules);
+    sim.resolve_type_handles(&rules);
+    sim.install_team_ai_registry(&registry, &rules).unwrap();
+    for name in ["KIROVS", "ROCKETEERS", "JETS"] {
+        let id = sim.interner.get(name).unwrap();
+        assert_eq!(
+            team_domains(&sim, &rules, id),
+            [false, false, true],
+            "{name}"
+        );
+    }
+}

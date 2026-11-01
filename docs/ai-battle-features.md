@@ -34,6 +34,59 @@ admits fresh Battle and Free For All matches on authored loose/MIX maps and
 accepted generated maps. Campaigns and restored mid-match segments remain
 outside standalone replay startup.
 
+## Offline AI strategy tiers
+
+The offline Skirmish AI selector includes **Claude AI** and **Open AI**. These
+are local, deterministic game strategies; choosing either does not call an
+external model service. Their strategy identity is independent of the native
+Hard difficulty tables and survives setup persistence and saved games. The new
+strategy field changes the automatic snapshot layout; save envelopes from earlier
+layouts are rejected by the normal compatibility check, so upgrading requires a
+fresh match.
+
+Both tiers use the player's neutral stat row, starting funds, prerequisite
+checks and build limits. They receive no computer opening-credit multiplier,
+virtual ore-purifier income or multiplayer computer handicap. Enemy observation
+uses the house's own sight, including allied vision; private enemy money and
+power values do not drive their trigger conditions.
+
+Their [base planner](../src/sim/base_plan_generation.rs) puts income behind the
+Construction Yard and power, then moves prerequisites and technology forward.
+The [building chooser](../src/sim/ai_base_building.rs) recovers a missing refinery
+before other pending construction and retains 1,500 credits beyond a technology
+building's cost. At a bank of at least 6,000, an unserved visible ore field within
+24 cells can admit another refinery, with at least 3,000 credits beyond its cost,
+a maximum of five live refineries and no duplicate pending refinery order.
+The [site search](../src/sim/ai_base_site.rs) favors ore-facing perimeter cells
+while preserving ordinary terrain, foundation, reservation and spacing checks.
+Fair tiers also use the player's build-area adjacency and foundation-shroud
+checks, including cached sites at final placement. A naval candidate outside
+those rules falls back to the ordinary legal-site search. All construction still
+consumes money through the production owner.
+
+[Open AI team selection](../src/sim/ai_team_creation.rs) favors operational
+domains that are underrepresented among its existing teams: ground, naval and
+air, including jumpjet Kirovs and Rocketeers. At 5,000 credits it increases the relative weight of offensive teams.
+Unavailable task-force types and already-forming Open AI team types do not waste
+a selection. Both tiers shorten their next team-creation delay as their bank
+grows. Retail trigger priorities, team caps, factories, weapons and movement
+continue to apply; a landlocked map does not promise naval combat. When an
+attack team has no observed target, it explores with its own house's fog through
+the existing team movement owner and a movement-domain-qualified exploration search, including explored fog.
+
+Residual: a rich house can expand by ordinary nearby refinery placement, but it
+does not produce and relocate an MCV to establish a distant base. Distant ore
+therefore remains unavailable when base construction cannot approach it; this
+can limit income on depleted or disconnected starting areas. Economic planning
+adds no RNG draws, timer writes or detach calls. Team selection retains the
+existing Scenario RNG draws, team timer restart and lifecycle detach owners.
+A new scouting destination consumes the existing shroud search's Scenario
+RandomRanged(0, candidate_count - 1), from at most 24 qualified cells; retaining
+the current unseen destination consumes no new draw. Scouting adds no new
+timer or detach owner.
+Strategy changes alone do not establish a win-rate or an unbeatable opponent;
+those require representative played matches.
+
 ## Shared interface contract
 
 - Reuse the game's shell, font, button feedback, colors, and Options behavior.

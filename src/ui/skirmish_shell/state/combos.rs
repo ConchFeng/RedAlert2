@@ -286,6 +286,7 @@ pub fn combo_items(
             SkirmishAiRowType::Normal,
             SkirmishAiRowType::Hard,
             SkirmishAiRowType::Claude,
+            SkirmishAiRowType::OpenAi,
         ]
         .into_iter()
         .map(SkirmishComboItem::AiType)

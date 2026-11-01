@@ -966,6 +966,27 @@ fn retail_walk_reads_each_object() {
     };
     set(&mut sim, 5, false, 0);
     assert_eq!(fact(&sim, built), (true, 2, false));
+    let cell = entry(&sim, built).cell;
+    sim.fog
+        .mark_visible_for_owner(americans, cell.0 as u16, cell.1 as u16);
+    for strategy in [
+        crate::sim::house_state::AiStrategy::Claude,
+        crate::sim::house_state::AiStrategy::OpenAi,
+    ] {
+        sim.houses
+            .get_mut(&americans)
+            .unwrap()
+            .set_ai_strategy(strategy);
+        assert_eq!(
+            fact(&sim, built),
+            (false, 2, false),
+            "fair AI cannot inspect factory products"
+        );
+    }
+    sim.houses
+        .get_mut(&americans)
+        .unwrap()
+        .set_ai_strategy(crate::sim::house_state::AiStrategy::Native);
     sim.houses
         .get_mut(&americans)
         .unwrap()

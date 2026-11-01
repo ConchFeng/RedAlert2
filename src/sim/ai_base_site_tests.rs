@@ -327,3 +327,133 @@ fn defense_key_searches_repeat_the_native_transcripts() {
         searches.len()
     );
 }
+
+#[test]
+fn economic_sites_use_current_sight_and_stop_expanding_into_served_ore() {
+    use crate::rules::retail_ini_fixture::{retail_ini, retail_rulesmd_rules};
+    use crate::sim::house_state::HouseState;
+    use crate::sim::overlay_grid::OverlayGrid;
+    let Some(rules) = retail_rulesmd_rules() else {
+        return;
+    };
+    let Some(ini) = retail_ini("rulesmd.ini") else {
+        return;
+    };
+    let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+    let ore = overlays.id_for_name("TIB01").expect("retail ore");
+    let mut sim = Simulation::new();
+    crate::sim::arena_fixture::flat_ground(&mut sim, &rules);
+    let owner = sim.interner.intern("Americans");
+    let mut house = HouseState::new(owner, 0, Some(owner), false, 10_000, 10);
+    house.set_alternate_base_center_for_test((10, 20));
+    sim.houses.register(house);
+    sim.fog = crate::sim::vision::FogState::new(32, 32);
+    sim.overlay_grid = Some(OverlayGrid::new(32, 32));
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_overlay(25, 20, ore, 11);
+    assert_eq!(
+        known_resource_expansion_target(&sim, &rules, owner, Some(&overlays)),
+        None
+    );
+    sim.fog.mark_visible_for_owner(owner, 25, 20);
+    assert_eq!(
+        known_resource_expansion_target(&sim, &rules, owner, Some(&overlays)),
+        Some((25, 20))
+    );
+    sim.spawn_object_at_height("GAREFN", "Americans", 20, 20, 0, 0, &rules)
+        .expect("retail refinery");
+    assert_eq!(
+        known_resource_expansion_target(&sim, &rules, owner, Some(&overlays)),
+        None
+    );
+    assert_eq!(
+        known_resource_target(&sim, &rules, owner, Some(&overlays), false),
+        Some((25, 20))
+    );
+}
+
+#[test]
+fn resource_site_ranking_uses_the_ordinary_spacing_and_placement_checks() {
+    struct Base {
+        block_east: bool,
+    }
+    impl SiteWorld for Base {
+        fn reserved(&mut self, (x, y): (i16, i16)) -> bool {
+            (10..=12).contains(&x) && (10..=12).contains(&y)
+        }
+        fn level(&mut self, _: (i16, i16)) -> i32 {
+            0
+        }
+        fn clear(&mut self, rect: CellRect) -> bool {
+            rect.x > 12 || rect.y > 12 || rect.x + rect.width <= 10 || rect.y + rect.height <= 10
+        }
+        fn can_place(&mut self, (x, _): (i16, i16)) -> bool {
+            !self.block_east || x < 13
+        }
+    }
+    let perimeter = [(9, 11), (11, 9), (11, 13), (13, 11)];
+    let search = SiteSearch {
+        center: (11, 11),
+        origin: (11, 11),
+        perimeter: &perimeter,
+        spacing: 1,
+        width: 2,
+        height: 2,
+        extra_border: false,
+        game_mode_nonzero: true,
+        key: SiteKey::Resource { target: (30, 11) },
+    };
+    let east = ordinary_site(&mut Base { block_east: false }, &search);
+    assert!(
+        east.0 > 12,
+        "refinery approaches the visible field: {east:?}"
+    );
+    let fallback = ordinary_site(&mut Base { block_east: true }, &search);
+    assert_ne!(fallback, (0, 0), "a blocked ore-facing site keeps looking");
+    assert!(
+        fallback.0 < 13,
+        "ordinary placement rejection stays authoritative"
+    );
+}
+
+#[test]
+fn fair_building_sites_obey_player_proximity_and_foundation_knowledge() {
+    let Some(rules) = crate::rules::retail_ini_fixture::retail_rulesmd_rules() else {
+        return;
+    };
+    let mut sim = crate::sim::arena_fixture::rival_arena(&rules, 626);
+    let yard = sim
+        .spawn_object("GACNST", "Americans", 10, 10, 0, &rules)
+        .unwrap();
+    let owner = sim.entities().get(yard).unwrap().owner();
+    let ty = rules.object("GAPOWR").unwrap();
+    let near = (
+        10 + rules.object("GACNST").unwrap().foundation.dimensions().0 as i16 + 1,
+        10,
+    );
+    assert!(SimSiteWorld::new(&sim, &rules, owner, ty, None).can_place((28, 28)));
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .set_ai_strategy(crate::sim::house_state::AiStrategy::OpenAi);
+    sim.fog.reveal_all_for_owner(owner);
+    assert!(
+        !SimSiteWorld::new(&sim, &rules, owner, ty, None).can_place((28, 28)),
+        "exploration cannot extend the build area"
+    );
+    sim.fog = crate::sim::vision::FogState::new(32, 32);
+    assert!(
+        !SimSiteWorld::new(&sim, &rules, owner, ty, None).can_place(near),
+        "adjacent unknown foundations are not buildable"
+    );
+    let (width, height) = ty.foundation.dimensions();
+    for x in 0..width {
+        for y in 0..height {
+            sim.fog
+                .mark_visible_for_owner(owner, near.0 as u16 + x, near.1 as u16 + y);
+        }
+    }
+    assert!(SimSiteWorld::new(&sim, &rules, owner, ty, None).can_place(near));
+}

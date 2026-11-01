@@ -218,6 +218,7 @@ pub enum SkirmishAiRowType {
     Hard,
     /// Product extension: the Claude AI tier ([`AiDifficulty::Claude`]).
     Claude,
+    OpenAi,
 }
 
 impl SkirmishAiRowType {
@@ -228,11 +229,15 @@ impl SkirmishAiRowType {
             Self::Normal => 1,
             Self::Hard => 0,
             Self::Claude => 3,
+            Self::OpenAi => 4,
         }
     }
 
     pub const fn is_active(self) -> bool {
-        matches!(self, Self::Easy | Self::Normal | Self::Hard | Self::Claude)
+        matches!(
+            self,
+            Self::Easy | Self::Normal | Self::Hard | Self::Claude | Self::OpenAi
+        )
     }
 
     pub const fn difficulty(self) -> Option<AiDifficulty> {
@@ -242,6 +247,7 @@ impl SkirmishAiRowType {
             Self::Normal => Some(AiDifficulty::Normal),
             Self::Hard => Some(AiDifficulty::Hard),
             Self::Claude => Some(AiDifficulty::Claude),
+            Self::OpenAi => Some(AiDifficulty::OpenAi),
         }
     }
 
@@ -253,6 +259,7 @@ impl SkirmishAiRowType {
             Self::Hard => ("GUI:AIHard", "Hard"),
             // No retail CSF entry; the fallback is the label.
             Self::Claude => ("GUI:AIClaude", "Claude AI"),
+            Self::OpenAi => ("GUI:AIOpenAi", "Open AI"),
         }
     }
 }

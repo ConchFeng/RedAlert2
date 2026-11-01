@@ -42,7 +42,7 @@ use std::hash::{Hash, Hasher};
 use serde::{Deserialize, Serialize};
 
 use crate::map::entities::EntityCategory;
-use crate::rules::locomotor_type::MovementZone;
+use crate::rules::locomotor_type::{LocomotorKind, MovementZone};
 use crate::rules::ruleset::RuleSet;
 use crate::rules::superweapon_type::SuperWeaponKind;
 use crate::rules::team_ai_ini::TeamAiDefinitionSource;
@@ -158,7 +158,7 @@ pub(crate) fn update_team_creation(
             .map_or(delay, |definition| {
                 crate::rules::personality::scale_team_delay(delay, definition.team_delay_percent)
             });
-        let delay = if house.claude_ai() {
+        let delay = if house.fair_ai() {
             crate::sim::claude_ai::team_delay(delay, house.economy().available_money())
         } else {
             delay
@@ -316,11 +316,20 @@ fn draw_ai_trigger(
         .get(&owner)
         .and_then(|house| house.personality())
         .and_then(|index| rules.personalities().get(index));
+    let open_ai = sim.houses.get(&owner).is_some_and(|house| house.open_ai());
+    let domain_counts = open_ai.then(|| active_team_domains(sim, rules, owner));
+    let rich = sim
+        .houses
+        .get(&owner)
+        .is_some_and(|house| house.economy().available_money() >= 5_000);
     let mut entries: Vec<(Option<InternedId>, Option<InternedId>, i32)> = Vec::new();
     let mut priority = false;
     let mut total: i32 = 0;
     for (trigger, record) in sim.team_script_vm.ai_triggers_in_order() {
         if !eligible(sim, trigger, enemy, defense_full) {
+            continue;
+        }
+        if open_ai && trigger_has_forming_team(sim, trigger, owner) {
             continue;
         }
         let native = X87Chop53::ftol_i32_low_masked(
@@ -340,6 +349,9 @@ fn draw_ai_trigger(
             }
             None => native,
         };
+        let weight = domain_counts.map_or(weight, |counts| {
+            combined_arms_weight(sim, rules, trigger, counts, rich, weight)
+        });
         if weight == PRIORITY_WEIGHT {
             if !priority {
                 priority = true;
@@ -368,6 +380,143 @@ fn draw_ai_trigger(
         }
     }
     Vec::new()
+}
+
+/// Product strategy: prefer underrepresented operating domains without changing
+/// the trigger's factories, task forces, scripts or native priority tier.
+fn combined_arms_weight(
+    sim: &Simulation,
+    rules: &RuleSet,
+    trigger: &TeamAiTriggerDefinition,
+    counts: [u32; 3],
+    rich: bool,
+    weight: i32,
+) -> i32 {
+    if weight <= 0 || weight == PRIORITY_WEIGHT {
+        return weight;
+    }
+    let mut domains = [false; 3];
+    let mut defense = false;
+    for id in trigger
+        .primary_team_type
+        .into_iter()
+        .chain(trigger.secondary_team_type)
+    {
+        if let Some(team_type) = sim.team_script_vm.team_type_definition(id) {
+            defense |= team_type.is_base_defense;
+        }
+        for (present, candidate) in domains.iter_mut().zip(team_domains(sim, rules, id)) {
+            *present |= candidate;
+        }
+    }
+    let saturation = domains
+        .iter()
+        .zip(counts)
+        .filter_map(|(&present, count)| present.then_some(count))
+        .min()
+        .unwrap_or(0);
+    let pressure = if rich && !defense { 2 } else { 1 };
+    (i64::from(weight) * 4 * pressure / (i64::from(saturation) + 1))
+        .clamp(1, i64::from(PRIORITY_WEIGHT - 1)) as i32
+}
+
+fn team_domains(sim: &Simulation, rules: &RuleSet, team_type: InternedId) -> [bool; 3] {
+    let mut domains = [false; 3];
+    if let Some(force) = sim.team_script_vm.task_force_of(team_type) {
+        for entry in force.entries.iter().filter(|entry| entry.count > 0) {
+            if let Some(ty) = rules.object_in_category(
+                entry.member_type.category,
+                sim.interner.resolve(entry.member_type.id),
+            ) {
+                let domain = if ty.category == crate::rules::object_type::ObjectCategory::Aircraft
+                    || matches!(ty.locomotor, LocomotorKind::Fly | LocomotorKind::Jumpjet)
+                {
+                    2
+                } else if ty.naval {
+                    1
+                } else {
+                    0
+                };
+                domains[domain] = true;
+            }
+        }
+    }
+    domains
+}
+
+fn active_team_domains(sim: &Simulation, rules: &RuleSet, owner: InternedId) -> [u32; 3] {
+    let mut counts = [0_u32; 3];
+    for id in sim
+        .team_script_vm
+        .teams_in_order()
+        .filter(|team| team.owner() == owner)
+        .filter_map(|team| team.team_type_id())
+    {
+        for (count, present) in counts.iter_mut().zip(team_domains(sim, rules, id)) {
+            *count = count.saturating_add(u32::from(present));
+        }
+    }
+    counts
+}
+
+fn trigger_has_forming_team(
+    sim: &Simulation,
+    trigger: &TeamAiTriggerDefinition,
+    owner: InternedId,
+) -> bool {
+    sim.team_script_vm.teams_in_order().any(|team| {
+        team.owner() == owner
+            && team.is_forming()
+            && team.team_type_id().is_some_and(|id| {
+                Some(id) == trigger.primary_team_type || Some(id) == trigger.secondary_team_type
+            })
+    })
+}
+
+fn observed_entity(
+    sim: &Simulation,
+    owner: InternedId,
+    entity: &crate::sim::game_entity::GameEntity,
+) -> bool {
+    let (x, y) = (entity.position.rx(), entity.position.ry());
+    entity.is_alive()
+        && !entity.lifecycle.in_limbo()
+        && sim.fog.is_cell_visible(owner, x, y)
+        && !crate::sim::cloak_disguise::cloak_rejects_candidate(
+            entity
+                .cloak
+                .as_ref()
+                .is_some_and(|cloak| cloak.is_fully_cloaked()),
+            sim.fog.has_sensor_for_house(owner, x, y),
+            entity.owner() == owner,
+        )
+        && !entity.is_disguised_to(
+            owner,
+            Some(&sim.fog),
+            Some(sim.house_alliances.as_map()),
+            &sim.interner,
+        )
+}
+
+fn observed_count_holds(
+    sim: &Simulation,
+    trigger: &TeamAiTriggerDefinition,
+    observer: InternedId,
+    subject: InternedId,
+) -> bool {
+    let count = trigger.object_type.map_or(0, |identity| {
+        sim.substrate
+            .entities
+            .values()
+            .filter(|entity| {
+                entity.owner() == subject
+                    && crate::sim::team_script_vm::member_type_identity(entity) == identity
+                    && observed_entity(sim, observer, entity)
+            })
+            .count()
+            .min(i32::MAX as usize) as i32
+    });
+    compare(&trigger.comparison_mask, count)
 }
 
 /// `AITriggerTypeClass::Is_Eligible`-like test `0x0041E720` of `trigger`
@@ -477,6 +626,28 @@ fn is_eligible(
     if !side_admits(trigger.side, house.side_index()) || house.tech_level() < trigger.threshold {
         return false;
     }
+    if house.fair_ai()
+        && !std::iter::once(primary).chain(secondary).all(|team_type| {
+            sim.team_script_vm
+                .task_force_of(team_type.id)
+                .is_some_and(|force| {
+                    force.entries.iter().all(|entry| {
+                        rules
+                            .object_in_category(
+                                entry.member_type.category,
+                                sim.interner.resolve(entry.member_type.id),
+                            )
+                            .is_some_and(|ty| {
+                                crate::sim::production::can_build(
+                                    sim, rules, owner, ty, false, true,
+                                ) == crate::sim::production::CanBuild::Yes
+                            })
+                    })
+                })
+        })
+    {
+        return false;
+    }
     if !condition_holds(sim, rules, trigger, owner, enemy) {
         return false;
     }
@@ -539,6 +710,19 @@ fn condition_holds(
             _ => false,
         };
     };
+    let fair = sim.houses.get(&owner).is_some_and(|house| house.fair_ai());
+    if fair {
+        match trigger.condition {
+            0 => return observed_count_holds(sim, trigger, owner, enemy),
+            2..=4 => return false,
+            7 => {
+                return sim
+                    .civilian_side_house(rules)
+                    .is_some_and(|other| observed_count_holds(sim, trigger, owner, other));
+            }
+            _ => {}
+        }
+    }
     let power = || {
         sim.power_states
             .get(&enemy)
@@ -648,7 +832,31 @@ fn zones_admit(
             .map_or((0, 0), |house| house.base_origin());
         (i32::from(x), i32::from(y))
     };
-    let (own, theirs) = (base_cell(owner), base_cell(enemy));
+    let own = base_cell(owner);
+    let theirs = if sim.houses.get(&owner).is_some_and(|house| house.fair_ai()) {
+        let Some(cell) = sim
+            .substrate
+            .entities
+            .iter_sorted()
+            .map(|(_, entity)| entity)
+            .find(|entity| {
+                entity.owner() == enemy
+                    && entity.category() == EntityCategory::Structure
+                    && observed_entity(sim, owner, entity)
+            })
+            .map(|entity| {
+                (
+                    i32::from(entity.position.rx()),
+                    i32::from(entity.position.ry()),
+                )
+            })
+        else {
+            return true;
+        };
+        cell
+    } else {
+        base_cell(enemy)
+    };
     let zone = |cell: (i32, i32), movement_zone: MovementZone| {
         sim.zone_grid
             .as_ref()

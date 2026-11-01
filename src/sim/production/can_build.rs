@@ -102,7 +102,9 @@ pub(crate) fn can_build(
     let Some(house) = sim.houses.get(&owner) else {
         return CanBuild::No;
     };
-    let controlled_by_human = house.is_controlled_by_human(sim.session.game_mode_nonzero());
+    // Fair strategy tiers use the same prerequisite and capacity checks as a player.
+    let controlled_by_human =
+        house.is_controlled_by_human(sim.session.game_mode_nonzero()) || house.fair_ai();
     let override_on_map = obj.prerequisite_override.iter().any(|&entry| {
         if crate::rules::ARES_ENABLED {
             // Ares3.0 qualification10021FF0 calls
@@ -442,6 +444,7 @@ fn build_limit(
     #[cfg(feature = "ares")]
     if sim.houses.get(&owner).is_some_and(|house| {
         !house.is_controlled_by_human(sim.session.game_mode_nonzero())
+            && !house.fair_ai()
             && rules.ares_ai_bypasses_build_limit(house.difficulty().table_index())
     }) {
         //10021BD2..10021BE9 consult the retained RulesExt difficulty slot,

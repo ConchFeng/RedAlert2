@@ -42,7 +42,9 @@ pub use self::factory_lifecycle::{
 pub use self::factory_lifecycle::{
     ProductionCancellation, cancel_production_for_owner, enqueue_by_type,
 };
-pub(crate) use self::production_placement::place_production_with_overlays;
+pub(crate) use self::production_placement::{
+    foundation_is_unshrouded, place_production_with_overlays,
+};
 pub use self::production_placement::{
     cycle_active_producer_for_owner_category, is_within_build_area,
     placement_preview_for_owner_with_overlays,

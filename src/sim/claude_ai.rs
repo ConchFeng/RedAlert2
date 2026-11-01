@@ -1,32 +1,23 @@
-//! The Claude AI skirmish tier: a product extension, not a gamemd behavior.
+//! Fair skirmish strategy extensions: Claude AI and Open AI.
 //!
-//! A Claude house is an ordinary computer house — the native trigger draw,
-//! teams, scripts, base plan and production all still drive it — that plays
-//! by a human's rules and decides its macro game better:
+//! Both keep Hard's AI tables and ordinary production, teams and scripts,
+//! while using the player's Normal stat row, opening credits, prerequisite
+//! checks and build limits. Neither receives MultiplayerAICM, virtual
+//! purifiers or CompEasyBonus advantages. Live enemy targeting requires
+//! current sight through [`target_cell_known`] and the shared Greatest_Threat
+//! candidate evaluator; explored terrain alone conveys no current object state.
 //!
-//! - **No advantages.** It keeps the per-difficulty AI tables of a Hard
-//!   house (planned refineries and defenses, every Hard trigger) but plays
-//!   with the neutral `[Normal]` stat row instead of `[Easy]`'s ROF and repair
-//!   bonuses (`HouseState::set_difficulty`), gets no `MultiplayerAICM=` opening
-//!   grant (`apply_skirmish_ai_opening_credits`), no `AIVirtualPurifiers=`
-//!   harvest bonus (`effective_purifier_count`) and no `CompEasyBonus=`
-//!   handicap.
-//! - **No map hack.** The house-level target pickers that a native computer
-//!   runs over the whole map — a team's enemy-building target and a
-//!   superweapon's rally target — only see what [`target_cell_known`] admits
-//!   from the house's own fog. Unit auto-acquisition is range-bound for every
-//!   house and stays native.
-//! - **Tech first.** Its base plan pulls the first refinery and then the
-//!   `[AI] BuildTech=` building, prerequisites first, right behind the four
-//!   native seeds ([`pull_tech_forward`]): the Battle Lab arrives early and
-//!   unlocks the elite units the trigger draw then fields.
-//! - **Money means attack.** Its team timer restarts sooner the larger its
-//!   bank ([`team_delay`]), so a rich Claude house sends teams out instead
-//!   of sitting on credits.
+//! The shared macro owners fund the first refinery before combat factories,
+//! then bring Battle Lab prerequisites forward (`base_plan_generation`).
+//! `ai_base_building` inserts affordable extra refineries toward known nearby
+//! resources while retaining a cash reserve; `ai_base_site` ranks legal sites
+//! toward those resources. [`team_delay`] increases attack opportunities as
+//! available credits grow. Open AI additionally favors underrepresented land,
+//! naval and air task forces through `ai_team_creation`, without bypassing
+//! normal factory, prerequisite, cost or terrain admission.
 //!
-//! Residuals (later chains): refineries are still placed by the native
-//! perimeter walk with no ore-proximity term, there is no MCV expansion, and
-//! naval and air forces are still fielded only through the AI trigger draw.
+//! Expansion currently extends a legal base perimeter with refineries; remote
+//! MCV outposts and coordinated transport landings remain separate mechanisms.
 
 use crate::rules::object_type::ObjectType;
 use crate::rules::ruleset::RuleSet;
@@ -47,24 +38,14 @@ pub(crate) fn team_delay(native_delay: i32, credits: i32) -> i32 {
         })
 }
 
-/// Whether a Claude house `owner` may pick a target at cell `(rx, ry)`: a
-/// structure once its cell has been revealed — buildings stay where they were
-/// seen, as a human remembers them — and anything else only while the cell
-/// is in sight. An allied view counts, as it does for a human.
-pub(crate) fn target_cell_known(
-    fog: &FogState,
-    owner: InternedId,
-    (rx, ry): (i16, i16),
-    structure: bool,
-) -> bool {
+/// Whether a fair strategy house may inspect a live target at this cell.
+/// Current sight is required even for structures: explored terrain does not
+/// reveal later construction, destruction or replacement. An allied view counts.
+pub(crate) fn target_cell_known(fog: &FogState, owner: InternedId, (rx, ry): (i16, i16)) -> bool {
     let (Ok(rx), Ok(ry)) = (u16::try_from(rx), u16::try_from(ry)) else {
         return false;
     };
-    if structure {
-        fog.is_cell_revealed(owner, rx, ry)
-    } else {
-        fog.is_cell_visible(owner, rx, ry)
-    }
+    fog.is_cell_visible(owner, rx, ry)
 }
 
 /// Reorder a native base plan's tail, `priority[seeds..]`, so the first
@@ -145,7 +126,7 @@ mod tests {
     use crate::rules::retail_ini_fixture::retail_rulesmd_rules;
     use crate::rules::ruleset::RuleSet;
     use crate::sim::base_plan_generation::{prerequisites_satisfied, recalc_base_plan};
-    use crate::sim::house_state::{HouseDifficulty, HouseState};
+    use crate::sim::house_state::{AiStrategy, HouseDifficulty, HouseState};
 
     #[test]
     fn a_richer_bank_restarts_the_team_timer_sooner() {
@@ -154,16 +135,27 @@ mod tests {
         assert_eq!(team_delay(2000, 10_000), 500);
     }
 
+    #[test]
+    fn explored_terrain_does_not_reveal_live_buildings() {
+        let owner = crate::sim::intern::test_intern("Americans");
+        let mut fog = crate::sim::vision::FogState::new(20, 20);
+        fog.reveal_all_for_owner(owner);
+        assert!(fog.is_cell_revealed(owner, 10, 10));
+        assert!(!super::target_cell_known(&fog, owner, (10, 10)));
+        fog.mark_visible_for_owner(owner, 10, 10);
+        assert!(super::target_cell_known(&fog, owner, (10, 10)));
+    }
+
     /// Retail `[Easy]`, the row a Hard computer plays, has ROF=.8; a Claude
     /// house keeps Hard's AI tables but plays the human's `[Normal]` row.
     #[test]
-    fn a_claude_house_plays_the_normal_stat_row_at_hard_tables() {
+    fn fair_ai_plays_the_normal_stat_row_at_hard_tables() {
         let Some(rules) = retail_rulesmd_rules() else {
             return;
         };
-        let house = |claude_ai, difficulty| {
+        let house = |strategy, difficulty| {
             let mut house = HouseState::new(Default::default(), 0, None, false, 0, 10);
-            house.set_claude_ai(claude_ai);
+            house.set_ai_strategy(strategy);
             house.set_difficulty(
                 difficulty,
                 &rules.general,
@@ -174,25 +166,34 @@ mod tests {
             );
             house
         };
-        let normal = house(false, HouseDifficulty::Normal).rof_bias();
-        assert_ne!(house(false, HouseDifficulty::Hard).rof_bias(), normal);
-        let claude = house(true, HouseDifficulty::Hard);
-        assert_eq!(claude.rof_bias(), normal);
-        assert_eq!(claude.difficulty(), HouseDifficulty::Hard);
+        let normal = house(AiStrategy::Native, HouseDifficulty::Normal).rof_bias();
+        assert_ne!(
+            house(AiStrategy::Native, HouseDifficulty::Hard).rof_bias(),
+            normal
+        );
+        for strategy in [AiStrategy::Claude, AiStrategy::OpenAi] {
+            let fair = house(strategy, HouseDifficulty::Hard);
+            assert_eq!(fair.rof_bias(), normal);
+            assert_eq!(fair.difficulty(), HouseDifficulty::Hard);
+        }
     }
 
     /// Retail `MultiplayerAICM=400,0,0` quintuples a Hard computer's bank at
     /// the start; a Claude house keeps the credits a human starts with.
     #[test]
-    fn a_claude_house_gets_no_opening_credit_grant() {
+    fn fair_ai_gets_no_opening_credit_grant() {
         let Some(rules) = retail_rulesmd_rules() else {
             return;
         };
         let mut houses = crate::sim::houses::Houses::default();
         let mut interner = crate::sim::intern::StringInterner::default();
-        for (name, claude_ai) in [("Native", false), ("Claude", true)] {
+        for (name, strategy) in [
+            ("Native", AiStrategy::Native),
+            ("Claude", AiStrategy::Claude),
+            ("OpenAi", AiStrategy::OpenAi),
+        ] {
             let mut house = HouseState::new(interner.intern(name), 0, None, false, 0, 10);
-            house.set_claude_ai(claude_ai);
+            house.set_ai_strategy(strategy);
             house.set_difficulty_for_test(HouseDifficulty::Hard);
             house.economy_mut().add_credits(10_000);
             houses.register(house);
@@ -201,6 +202,12 @@ mod tests {
         let (native, claude) = (interner.intern("Native"), interner.intern("Claude"));
         assert!(houses[&native].economy().available_money() > 10_000);
         assert_eq!(houses[&claude].economy().available_money(), 10_000);
+        assert_eq!(
+            houses[&interner.intern("OpenAi")]
+                .economy()
+                .available_money(),
+            10_000
+        );
     }
 
     /// The retail Allied plan: a Claude house plans the Battle Lab sooner

@@ -846,3 +846,119 @@ fn ares_retail_soviet_computer_draws_between_both_nod_plants() {
         "one Randomizer(0, 1)"
     );
 }
+
+fn fair_economy_fixture() -> (Simulation, RuleSet, InternedId) {
+    let rules = RuleSet::from_ini(&crate::sim::arena_fixture::clear_ground_ini(
+        "[Countries]\n0=Americans\n[Americans]\nSide=Allied\n[Sides]\nAllied=Americans\n\
+         [General]\nPrerequisitePower=PLANT\nPrerequisiteProc=REF\n\
+         [AI]\nBuildConst=YARD\nBuildPower=PLANT\nBuildRefinery=REF\nBuildTech=LAB\n\
+         [BuildingTypes]\n0=YARD\n1=PLANT\n2=REF\n3=LAB\n\
+         [YARD]\nStrength=1000\nConstructionYard=yes\nFactory=BuildingType\nOwner=Americans\nTechLevel=1\n\
+         [PLANT]\nStrength=500\nPower=100\nOwner=Americans\nTechLevel=1\nCost=800\n\
+         [REF]\nStrength=500\nOwner=Americans\nTechLevel=1\nPrerequisite=POWER\nCost=2000\n\
+         [LAB]\nStrength=500\nOwner=Americans\nTechLevel=1\nPrerequisite=REF\nCost=2000\n",
+    )).unwrap();
+    let (mut sim, owner) = computer_house(true);
+    crate::sim::arena_fixture::flat_ground(&mut sim, &rules);
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .set_ai_strategy(crate::sim::house_state::AiStrategy::OpenAi);
+    sim.spawn_object("YARD", "AIHouse", 12, 12, 0, &rules)
+        .unwrap();
+    (sim, rules, owner)
+}
+
+#[test]
+fn fair_economy_recovers_refinery_before_other_pending_construction() {
+    let (mut sim, rules, owner) = fair_economy_fixture();
+    sim.spawn_object("PLANT", "AIHouse", 16, 12, 0, &rules)
+        .unwrap();
+    let refinery = rules.building_type_index("REF").unwrap();
+    let lab = rules.building_type_index("LAB").unwrap();
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .base_plan_mut()
+        .rebuild([lab, refinery]);
+    choose_building(&mut sim, &rules, owner, None);
+    assert_eq!(sim.houses[&owner].ai_production().building_choice, refinery);
+    assert_eq!(
+        sim.houses[&owner].base_plan().nodes()[0].type_or_control,
+        refinery
+    );
+}
+
+#[test]
+fn fair_economy_keeps_tech_reserve_and_uses_real_prerequisites() {
+    let (mut sim, rules, owner) = fair_economy_fixture();
+    let refinery = rules.building_type_index("REF").unwrap();
+    let lab = rules.building_type_index("LAB").unwrap();
+    let house = sim.houses.get_mut(&owner).unwrap();
+    house.base_plan_mut().rebuild([refinery]);
+    choose_building(&mut sim, &rules, owner, None);
+    assert_eq!(sim.houses[&owner].ai_production().building_choice, -1);
+
+    sim.spawn_object("PLANT", "AIHouse", 16, 12, 0, &rules)
+        .unwrap();
+    sim.spawn_object("REF", "AIHouse", 20, 12, 0, &rules)
+        .unwrap();
+    let house = sim.houses.get_mut(&owner).unwrap();
+    house.base_plan_mut().rebuild([lab]);
+    house.economy_mut().set_credits_for_test(3_499);
+    choose_building(&mut sim, &rules, owner, None);
+    assert_eq!(sim.houses[&owner].ai_production().building_choice, -1);
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .economy_mut()
+        .add_credits(1);
+    choose_building(&mut sim, &rules, owner, None);
+    assert_eq!(sim.houses[&owner].ai_production().building_choice, lab);
+}
+
+#[test]
+fn fair_economy_expands_only_with_funds_and_avoids_duplicate_orders() {
+    let Some(ini) = crate::rules::retail_ini_fixture::retail_ini("rulesmd.ini") else {
+        return;
+    };
+    let overlays = OverlayTypeRegistry::from_ini(&ini, None);
+    let ore = overlays.id_for_name("TIB01").expect("retail ore");
+    let (mut sim, rules, owner) = fair_economy_fixture();
+    sim.spawn_object("PLANT", "AIHouse", 16, 12, 0, &rules)
+        .unwrap();
+    sim.spawn_object("REF", "AIHouse", 20, 12, 0, &rules)
+        .unwrap();
+    let house = sim.houses.get_mut(&owner).unwrap();
+    house.set_base_center_for_test(Some((12, 12)));
+    house.base_plan_mut().rebuild([]);
+    house.economy_mut().set_credits_for_test(5_999);
+    sim.fog = crate::sim::vision::FogState::new(32, 32);
+    sim.fog.mark_visible_for_owner(owner, 5, 25);
+    sim.overlay_grid = Some(crate::sim::overlay_grid::OverlayGrid::new(32, 32));
+    sim.overlay_grid
+        .as_mut()
+        .unwrap()
+        .place_overlay(5, 25, ore, 11);
+    choose_building(&mut sim, &rules, owner, Some(&overlays));
+    assert!(sim.houses[&owner].base_plan().nodes().is_empty());
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .economy_mut()
+        .add_credits(1);
+    choose_building(&mut sim, &rules, owner, Some(&overlays));
+    assert_eq!(
+        sim.houses[&owner].ai_production().building_choice,
+        rules.building_type_index("REF").unwrap()
+    );
+    assert_eq!(sim.houses[&owner].base_plan().nodes().len(), 1);
+    assert_eq!(sim.houses[&owner].economy().available_money(), 6_000);
+    sim.houses
+        .get_mut(&owner)
+        .unwrap()
+        .ai_production_mut()
+        .building_choice = -1;
+    choose_building(&mut sim, &rules, owner, Some(&overlays));
+    assert_eq!(sim.houses[&owner].base_plan().nodes().len(), 1);
+}

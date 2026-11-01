@@ -492,6 +492,7 @@ pub(crate) fn choose_building(
         return;
     }
     let naval_allowed = house.ai_production().naval_allowed;
+    prepare_fair_economic_plan(sim, rules, owner, registry);
     let Some(mut index) = find_node(sim, rules, owner, -1, registry) else {
         return;
     };
@@ -580,10 +581,115 @@ pub(crate) fn choose_building(
         }
         return;
     }
+    if let Some(house) = sim.houses.get(&owner).filter(|house| house.fair_ai()) {
+        if crate::sim::production::can_build(sim, rules, owner, ty, false, true)
+            != crate::sim::production::CanBuild::Yes
+        {
+            return;
+        }
+        if rules.is_build_tech(&ty.id)
+            && house.economy().available_money()
+                < sim.cost_of(owner, ty, rules).max(0).saturating_add(1_500)
+        {
+            return;
+        }
+    }
     // `0x004FEA3C..0x004FEA42`.
     if let Some(house) = sim.houses.get_mut(&owner) {
         house.ai_production_mut().building_choice = node.type_or_control;
     }
+}
+
+/// Product strategy extension. Expansion enters the ordinary paid production
+/// queue; BasePlan and the building lifecycle remain its only state owners.
+fn prepare_fair_economic_plan(
+    sim: &mut Simulation,
+    rules: &RuleSet,
+    owner: InternedId,
+    registry: Option<&OverlayTypeRegistry>,
+) {
+    use crate::sim::production::{CanBuild, can_build};
+
+    let Some(house) = sim.houses.get(&owner).filter(|house| house.fair_ai()) else {
+        return;
+    };
+    let is_refinery = |ty: &ObjectType| {
+        rules
+            .build_refinery_types
+            .iter()
+            .any(|name| name.eq_ignore_ascii_case(&ty.id))
+    };
+    let live_refineries = house
+        .base_projection()
+        .buildings()
+        .iter()
+        .filter(|&&id| {
+            sim.entities().get(id).is_some_and(|building| {
+                building.is_object_alive()
+                    && building.health.current() > 0
+                    && !building.lifecycle.in_limbo()
+                    && sim
+                        .entity_object_type(building, rules)
+                        .is_some_and(is_refinery)
+            })
+        })
+        .count();
+    let pending_refinery =
+        house
+            .base_plan()
+            .nodes()
+            .iter()
+            .enumerate()
+            .find_map(|(index, node)| {
+                (rules
+                    .building_type_at(node.type_or_control)
+                    .is_some_and(is_refinery)
+                    && !node_satisfied(sim, rules, owner, node, registry))
+                .then_some(index)
+            });
+    if let Some(index) = pending_refinery {
+        let node = house.base_plan().nodes()[index];
+        if live_refineries == 0
+            && rules
+                .building_type_at(node.type_or_control)
+                .is_some_and(|ty| can_build(sim, rules, owner, ty, false, true) == CanBuild::Yes)
+        {
+            let house = sim.houses.get_mut(&owner).expect("retained owner");
+            house.base_plan_mut().remove(index);
+            house.base_plan_mut().insert(0, node);
+        }
+        return;
+    }
+    let bank = house.economy().available_money();
+    if !(1..5).contains(&live_refineries) || bank < 6_000 {
+        return;
+    }
+    let Some(refinery) = rules
+        .build_refinery_types
+        .iter()
+        .filter_map(|name| rules.object_in_category(ObjectCategory::Building, name))
+        .find(|&ty| {
+            can_build(sim, rules, owner, ty, false, true) == CanBuild::Yes
+                && find_factory(sim, rules, owner, ty, true, true, true).is_some()
+                && bank >= sim.cost_of(owner, ty, rules).max(0).saturating_add(3_000)
+        })
+    else {
+        return;
+    };
+    if crate::sim::ai_base_site::known_resource_expansion_target(sim, rules, owner, registry)
+        .is_none()
+    {
+        return;
+    }
+    let node = BasePlanNode {
+        type_or_control: refinery.base_plan_type_index,
+        ..BasePlanNode::default()
+    };
+    sim.houses
+        .get_mut(&owner)
+        .expect("retained owner")
+        .base_plan_mut()
+        .insert(0, node);
 }
 
 /// Original gamemd.exe HouseClass::AI_ScanBasePerimeter5082C0. Grow the
@@ -1024,7 +1130,9 @@ fn building_site(
         .filter(|&packed| packed != 0);
     if let Some(packed) = node_cell {
         let cell = unpack_base_plan_cell(packed);
-        if reserved_near(sim, rules, owner, ty, cell) {
+        if reserved_near(sim, rules, owner, ty, cell)
+            && crate::sim::ai_base_site::fair_building_site_allowed(sim, rules, owner, ty, cell)
+        {
             return cell;
         }
     }
@@ -1062,7 +1170,9 @@ fn place_building(
     registry: Option<&OverlayTypeRegistry>,
     effects: FrameEffects<'_>,
 ) -> bool {
-    if !can_place_building_at(sim, rules, registry, ty, site, Some(owner), None, None) {
+    if !crate::sim::ai_base_site::fair_building_site_allowed(sim, rules, owner, ty, site)
+        || !can_place_building_at(sim, rules, registry, ty, site, Some(owner), None, None)
+    {
         return false;
     }
     let (Ok(rx), Ok(ry)) = (u16::try_from(site.0), u16::try_from(site.1)) else {

@@ -676,3 +676,42 @@ fn secret_lab_can_build_matches_original_human_ai_limit_and_priority_controls() 
         assert_eq!(answer, int(&row["answer"]), "{}", row["name"]);
     }
 }
+
+#[test]
+#[cfg(not(feature = "ares"))]
+fn fair_ai_requires_owned_tech_and_obeys_build_limits() {
+    use crate::sim::house_state::AiStrategy;
+
+    let rules = RuleSet::from_ini(&IniFile::from_str(
+        "[Countries]\n0=C1\n[BuildingTypes]\n0=Q\n1=LAB\n\
+         [Q]\nTechLevel=1\nStrength=100\nPrerequisite=LAB\nBuildLimit=1\n\
+         [LAB]\nStrength=100\n",
+    ))
+    .unwrap();
+    let product = rules.object("Q").unwrap();
+    for strategy in [AiStrategy::Claude, AiStrategy::OpenAi] {
+        let (mut sim, owner) = sim_for(&json!({"house":{"human":false}}), &rules);
+        assert_eq!(
+            can_build(&sim, &rules, owner, product, false, false),
+            CanBuild::Yes
+        );
+        sim.houses
+            .get_mut(&owner)
+            .unwrap()
+            .set_ai_strategy(strategy);
+        assert_eq!(
+            can_build(&sim, &rules, owner, product, false, false),
+            CanBuild::No
+        );
+        sim.spawn_object("LAB", "H0", 10, 10, 0, &rules).unwrap();
+        assert_eq!(
+            can_build(&sim, &rules, owner, product, false, false),
+            CanBuild::Yes
+        );
+        sim.spawn_object("Q", "H0", 14, 10, 0, &rules).unwrap();
+        assert_eq!(
+            can_build(&sim, &rules, owner, product, false, false),
+            CanBuild::AtLimit
+        );
+    }
+}
