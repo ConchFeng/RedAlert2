@@ -732,6 +732,15 @@ fn rally_entry(
         lepton_to_cell_packed(coords.x),
         lepton_to_cell_packed(coords.y),
     );
+    // Product extension: a Claude house aims only at what it has seen.
+    let candidate = candidate
+        && (!house.claude_ai()
+            || crate::sim::claude_ai::target_cell_known(
+                &sim.fog,
+                house.name(),
+                cell,
+                entity.category() == EntityCategory::Structure,
+            ));
     RallyEntry {
         candidate,
         value,

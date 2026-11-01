@@ -797,7 +797,8 @@ fn projected_roster(session: &MatchSession) -> Result<[String; NETWORK_PLAYER_SL
             match ai {
                 AiDifficulty::Easy => setup::EASY_AI,
                 AiDifficulty::Normal => setup::MEDIUM_AI,
-                AiDifficulty::Hard => setup::HARD_AI,
+                // Network setup never admits the offline-only Claude tier.
+                AiDifficulty::Hard | AiDifficulty::Claude => setup::HARD_AI,
             }
             .to_owned()
         } else {

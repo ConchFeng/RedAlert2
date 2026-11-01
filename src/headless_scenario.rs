@@ -120,6 +120,7 @@ impl HeadlessScenario {
             source_human_index: None,
             handle: None,
             difficulty: crate::sim::house_state::HouseDifficulty::Normal,
+            claude_ai: false,
             commander: None,
         };
         let runtime = &mut self.runtime;

@@ -158,6 +158,11 @@ pub(crate) fn update_team_creation(
             .map_or(delay, |definition| {
                 crate::rules::personality::scale_team_delay(delay, definition.team_delay_percent)
             });
+        let delay = if house.claude_ai() {
+            crate::sim::claude_ai::team_delay(delay, house.economy().available_money())
+        } else {
+            delay
+        };
         house.team_creation_mut().restart(frame, delay);
     }
 }

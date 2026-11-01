@@ -981,6 +981,33 @@ fn retail_walk_reads_each_object() {
     assert_eq!(fact(&sim, built), (false, 2, false), "held");
 }
 
+/// A Claude house's walk admits an enemy object only once its own fog shows
+/// the object's cell; a native Hard house sees it through the shroud.
+#[test]
+fn a_claude_house_aims_only_at_what_its_fog_shows() {
+    let Some((rules, mut sim, americans, russians)) = retail_skirmish() else {
+        return;
+    };
+    let yard = sim
+        .spawn_object_at_height("NACNST", "Russians", 40, 40, 0, 0, &rules)
+        .expect("NACNST stands");
+    let candidate = |sim: &Simulation| {
+        rally_entry(
+            sim,
+            &rules,
+            &sim.houses[&americans],
+            Some(russians),
+            sim.substrate.entities.get(yard).unwrap(),
+        )
+        .candidate
+    };
+    assert!(candidate(&sim), "native");
+    sim.houses.get_mut(&americans).unwrap().set_claude_ai(true);
+    assert!(!candidate(&sim), "unexplored");
+    sim.fog.mark_visible_for_owner(americans, 42, 42);
+    assert!(candidate(&sim), "seen");
+}
+
 /// A Hard computer house in a skirmish fires its charged nuclear missile from
 /// its first Strategy tick at the enemy's construction yard, the object it
 /// values most (100 against a power plant's 60 and a tank's 2), through the

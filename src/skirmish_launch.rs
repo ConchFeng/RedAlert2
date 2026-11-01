@@ -383,15 +383,25 @@ pub enum AiDifficulty {
     Easy,
     Normal,
     Hard,
+    /// Product extension, offline skirmish only: the Claude AI tier (see
+    /// [`crate::sim::claude_ai`]). It plays with Hard's per-difficulty AI
+    /// tables but none of the computer's advantages. Network setup never
+    /// admits it; its row codes stay the native 4/5/6.
+    Claude,
 }
 
 impl AiDifficulty {
+    /// The native difficulty value the house's AI tables are indexed by.
     pub const fn as_i32(self) -> i32 {
         match self {
-            Self::Hard => 0,
+            Self::Hard | Self::Claude => 0,
             Self::Normal => 1,
             Self::Easy => 2,
         }
+    }
+
+    pub const fn is_claude(self) -> bool {
+        matches!(self, Self::Claude)
     }
 }
 

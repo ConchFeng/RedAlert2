@@ -2877,6 +2877,7 @@ impl Simulation {
                 .get_mut(&owner_id)
                 .expect("qualifying deploy owner remains registered");
             if house.base_plan().nodes().is_empty() {
+                let claude_ai = house.claude_ai();
                 recalc_base_plan(
                     house.base_plan_mut(),
                     rules,
@@ -2886,6 +2887,7 @@ impl Simulation {
                         .expect("empty qualifying plan was preflighted with a country"),
                     side_index,
                     difficulty,
+                    claude_ai,
                     tech_level,
                     self.session.game_options().super_weapons,
                     &mut self.scenario_rng,

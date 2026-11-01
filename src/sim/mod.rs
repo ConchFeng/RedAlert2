@@ -44,6 +44,7 @@ pub mod bomb;
 pub(crate) mod c4_plant;
 pub mod campaign_carry_over; // the record 0x008A38E0 one campaign mission hands to the next start
 pub mod capture_manager;
+pub(crate) mod claude_ai; // product extension: the Claude AI skirmish tier
 pub mod cloak_disguise;
 pub mod command;
 pub mod command_queue;

@@ -72,6 +72,7 @@ pub(crate) fn recalc_base_plan(
     country_name: &str,
     side_index: i32,
     difficulty: HouseDifficulty,
+    claude_ai: bool,
     tech_level: i32,
     super_weapons: bool,
     scenario_rng: &mut SimRng,
@@ -218,6 +219,12 @@ pub(crate) fn recalc_base_plan(
         priority.len() >= 3,
         "active Recalc priority contains its three native seed entries"
     );
+    // Product extension: a Claude house reorders the tail behind the
+    // ConYard, power, barracks and war factory seeds. The defense
+    // placeholders below draw on the plan's length only, which is unchanged.
+    if claude_ai {
+        crate::sim::claude_ai::pull_tech_forward(&mut priority, 4, rules);
+    }
     let mut final_values = Vec::with_capacity(priority.len());
     final_values.extend(
         priority[..3]
@@ -312,41 +319,49 @@ pub(crate) fn prerequisites_satisfied(
     present: &[&ObjectType],
     rules: &RuleSet,
 ) -> bool {
-    candidate.prerequisite.iter().all(|entry| {
-        #[cfg(feature = "ares")]
-        if let Some(group) = rules.ares_prerequisite_group(*entry) {
-            // Ares3.0 hook505360 -> ListContainsAll10008370 inspects only
-            // immediate building members. Runtime alternates are unread;
-            // a negative member code cannot match a BuildingType index.
-            return group.members().iter().any(|member| match *member {
-                Prerequisite::Building(index) => {
-                    present.iter().any(|ty| ty.base_plan_type_index == index)
-                }
-                Prerequisite::Group(_) | Prerequisite::GenericGroup(_) => false,
-            });
-        }
-        match *entry {
+    candidate
+        .prerequisite
+        .iter()
+        .all(|entry| prerequisite_satisfied(entry, present, rules))
+}
+
+/// One `Prerequisite=` entry of [`prerequisites_satisfied`] against `present`.
+pub(crate) fn prerequisite_satisfied(
+    entry: &Prerequisite,
+    present: &[&ObjectType],
+    rules: &RuleSet,
+) -> bool {
+    #[cfg(feature = "ares")]
+    if let Some(group) = rules.ares_prerequisite_group(*entry) {
+        // Ares3.0 hook505360 -> ListContainsAll10008370 inspects only
+        // immediate building members. Runtime alternates are unread;
+        // a negative member code cannot match a BuildingType index.
+        return group.members().iter().any(|member| match *member {
             Prerequisite::Building(index) => {
                 present.iter().any(|ty| ty.base_plan_type_index == index)
             }
-            Prerequisite::Group(group) => {
-                let family = match group {
-                    PrerequisiteGroup::Power => &rules.build_power_types,
-                    PrerequisiteGroup::Factory => &rules.build_weapons_types,
-                    PrerequisiteGroup::Barracks => &rules.build_barracks_types,
-                    PrerequisiteGroup::Radar => &rules.build_radar_types,
-                    PrerequisiteGroup::Tech => &rules.build_tech_types,
-                    PrerequisiteGroup::Proc => &rules.build_refinery_types,
-                };
-                present.iter().any(|ty| {
-                    family
-                        .iter()
-                        .any(|type_id| type_id.eq_ignore_ascii_case(&ty.id))
-                })
-            }
-            Prerequisite::GenericGroup(_) => false,
+            Prerequisite::Group(_) | Prerequisite::GenericGroup(_) => false,
+        });
+    }
+    match *entry {
+        Prerequisite::Building(index) => present.iter().any(|ty| ty.base_plan_type_index == index),
+        Prerequisite::Group(group) => {
+            let family = match group {
+                PrerequisiteGroup::Power => &rules.build_power_types,
+                PrerequisiteGroup::Factory => &rules.build_weapons_types,
+                PrerequisiteGroup::Barracks => &rules.build_barracks_types,
+                PrerequisiteGroup::Radar => &rules.build_radar_types,
+                PrerequisiteGroup::Tech => &rules.build_tech_types,
+                PrerequisiteGroup::Proc => &rules.build_refinery_types,
+            };
+            present.iter().any(|ty| {
+                family
+                    .iter()
+                    .any(|type_id| type_id.eq_ignore_ascii_case(&ty.id))
+            })
         }
-    })
+        Prerequisite::GenericGroup(_) => false,
+    }
 }
 
 #[cfg(all(test, feature = "ares"))]
@@ -435,6 +450,7 @@ mod tests {
             country,
             side,
             difficulty,
+            false,
             10,
             true,
             &mut rng,

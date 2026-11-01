@@ -2818,6 +2818,10 @@ impl Simulation {
             .and_then(|house| house.enemy_house());
         let asker = self.interner.resolve(owner);
         let terrain = self.resolved_terrain.as_ref();
+        let claude_ai = self
+            .houses
+            .get(&owner)
+            .is_some_and(|house| house.claude_ai());
         let buildings: Vec<TargetBuilding> = self
             .substrate
             .entities
@@ -2825,6 +2829,21 @@ impl Simulation {
             .filter(|(_, building)| {
                 building.category() == EntityCategory::Structure
                     && building.type_facts.base_plan_type_index() == index
+            })
+            // Product extension: a Claude house targets only what it has seen.
+            .filter(|(_, building)| {
+                !claude_ai || {
+                    let [x, y, _] = location_xyz(building, terrain);
+                    crate::sim::claude_ai::target_cell_known(
+                        &self.fog,
+                        owner,
+                        (
+                            crate::util::lepton::lepton_to_cell_packed(x),
+                            crate::util::lepton::lepton_to_cell_packed(y),
+                        ),
+                        true,
+                    )
+                }
             })
             .map(|(id, building)| TargetBuilding {
                 id,

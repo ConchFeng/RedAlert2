@@ -574,6 +574,10 @@ pub struct HouseState {
     /// Product extension identity; names survive catalog reordering in saves.
     #[serde(default)]
     personality_name: Option<String>,
+    /// Product extension: the house plays the Claude AI tier
+    /// ([`crate::sim::claude_ai`]). Stamped once at skirmish launch.
+    #[serde(default)]
+    claude_ai: bool,
     /// Original House scalar difficulty fields. All seven biases begin at1.0
     /// and both delays at0.0; the shared SetDifficulty owner replaces them.
     #[serde(default)]
@@ -1469,6 +1473,21 @@ impl HouseState {
             std::hash::Hash::hash(b"house-commander-name-v1", hasher);
             std::hash::Hash::hash(name, hasher);
         }
+        // Only a Claude house hashes the flag, so every other hash is unchanged.
+        if self.claude_ai {
+            std::hash::Hash::hash(b"house-claude-ai-v1", hasher);
+        }
+    }
+
+    /// Whether this computer house plays the Claude AI tier.
+    pub const fn claude_ai(&self) -> bool {
+        self.claude_ai
+    }
+
+    /// Installed by the skirmish launch before [`Self::set_difficulty`], which
+    /// reads it.
+    pub(crate) fn set_claude_ai(&mut self, value: bool) {
+        self.claude_ai = value;
     }
 
     /// The strategy half of a commander, applied once right after
@@ -2320,7 +2339,14 @@ impl HouseState {
     ) {
         use crate::util::native_x87::MaskedX87Chop53 as X;
         self.difficulty = difficulty;
-        let row = general.difficulty_rows[difficulty.table_index()];
+        // A Claude house keeps its AI tables at `difficulty` but plays with
+        // the neutral Normal stat row, as a human does.
+        let row_difficulty = if self.claude_ai {
+            HouseDifficulty::Normal
+        } else {
+            difficulty
+        };
+        let row = general.difficulty_rows[row_difficulty.table_index()];
         let bits = |value: f64| NativeF64Bits::from_bits(value.to_bits());
         let bias = bits(general.game_speed_bias);
         let fold = |value: f64, speed_scaled: bool, country: NativeF64Bits| {
@@ -2687,6 +2713,7 @@ impl HouseState {
             difficulty_biases: HouseDifficultyBiases::default(),
             personality: None,
             personality_name: None,
+            claude_ai: false,
             multiplay_passive: false,
             country_cost_mults: CountryCostMults::default(),
             country_speed_mults: CountrySpeedMults::default(),

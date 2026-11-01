@@ -1347,7 +1347,8 @@ pub(crate) fn effective_purifier_count(
     else {
         return real;
     };
-    if house.is_human() || !sim.session.game_mode_nonzero() {
+    // A Claude house earns what its real purifiers earn, as a human does.
+    if house.is_human() || house.claude_ai() || !sim.session.game_mode_nonzero() {
         return real;
     }
     let table = rules.general.ai_virtual_purifiers;

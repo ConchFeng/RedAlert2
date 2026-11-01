@@ -611,7 +611,8 @@ impl MultiplayerShellRuntime {
                     row_type: match ai.difficulty {
                         AiDifficulty::Easy => 4,
                         AiDifficulty::Normal => 5,
-                        AiDifficulty::Hard => 6,
+                        // Network setup never admits the offline-only Claude tier.
+                        AiDifficulty::Hard | AiDifficulty::Claude => 6,
                     },
                     country: if ai.country_random {
                         RANDOM_ITEM_DATA
@@ -1856,9 +1857,13 @@ fn ai_row_type_from_persisted(value: i32) -> SkirmishAiRowType {
         4 => SkirmishAiRowType::Hard,
         5 => SkirmishAiRowType::Normal,
         6 => SkirmishAiRowType::Easy,
+        CLAUDE_AI_PERSISTED_ROW => SkirmishAiRowType::Claude,
         _ => SkirmishAiRowType::None,
     }
 }
+
+/// VERA's own slot code for the Claude AI tier, past the native 1..6 codes.
+const CLAUDE_AI_PERSISTED_ROW: i32 = 7;
 
 fn persisted_row_type(value: SkirmishAiRowType) -> i32 {
     match value {
@@ -1866,6 +1871,7 @@ fn persisted_row_type(value: SkirmishAiRowType) -> i32 {
         SkirmishAiRowType::Hard => 4,
         SkirmishAiRowType::Normal => 5,
         SkirmishAiRowType::Easy => 6,
+        SkirmishAiRowType::Claude => CLAUDE_AI_PERSISTED_ROW,
     }
 }
 
