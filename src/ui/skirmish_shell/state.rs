@@ -258,8 +258,8 @@ impl SkirmishAiRowType {
             Self::Normal => ("GUI:AINormal", "Normal"),
             Self::Hard => ("GUI:AIHard", "Hard"),
             // No retail CSF entry; the fallback is the label.
-            Self::Claude => ("GUI:AIClaude", "Claude AI"),
-            Self::OpenAi => ("GUI:AIOpenAi", "Open AI"),
+            Self::Claude => ("VERA:AIClaude", "Claude AI"),
+            Self::OpenAi => ("VERA:AIOpenAi", "Open AI"),
         }
     }
 }

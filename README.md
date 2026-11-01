@@ -9,7 +9,7 @@ A Rust reimplementation of *Command & Conquer: Red Alert 2 — Yuri’s Revenge*
 
 基于 [VERA20K](https://github.com/YuriPlanet/vera20k)，使用 Rust 重新实现《命令与征服：红色警戒 2 — 尤里的复仇》。
 
-[版本与下载 / Version & Downloads](#version) · [致谢与许可 / Credits & License](#license) · [功能展示 / Feature Showcase](#features)
+[版本与下载 / Version & Downloads](#version) · [更新日志 / Latest Updates](#updates) · [AI 等级 / AI Levels](#ai-levels) · [致谢与许可 / Credits & License](#license) · [功能展示 / Feature Showcase](#features)
 
 </div>
 
@@ -33,6 +33,21 @@ A Rust reimplementation of *Command & Conquer: Red Alert 2 — Yuri’s Revenge*
 
 **Release note:** Version 1.1.0 aligns the client, engine, and app versions and includes the features below: 30-player battles, AI commanders, automatic battle camera, live standings, AI series, a second battlefield view, replay bookmarks, time seeking, and unit tracking.
 
+<a id="updates"></a>
+
+## Latest Updates / 更新日志
+
+### Unreleased · Current `main` / 尚未发布 · 当前 `main`
+
+- **New AI levels: Open AI and Claude AI.** Select either level for individual opponents in offline Skirmish; the selection is saved with setup preferences.<br>**新增 Open AI 和 Claude AI 等级。** 离线遭遇战中可为每个电脑对手分别选择，重新打开设置后会保留选择。
+- **Economy, technology, and base planning:** prioritize income, bring Battle Lab prerequisites forward, and fund nearby refinery expansion while keeping a cash reserve.<br>**经济、科技与基地规划：** 优先保障采矿收入，提前建设作战实验室及其前置建筑，有资金时向附近已知矿区扩建矿厂，并保留周转资金。
+- **Open AI combined arms:** balance ground, naval, and air teams, including Kirovs and Rocketeers; increase offensive pressure as funds grow.<br>**Open AI 海陆空协同：** 平衡陆军、海军与空中编队，基洛夫和火箭飞行兵也计入空军；资金充足时提高进攻力度。
+- **Fair play:** equal starting funds and neutral combat stats, normal spending and build limits, player placement restrictions, and scouting through each AI's own fog.<br>**公平对战：** 使用相同初始资金和正常战斗属性，遵守建造花费、数量上限及玩家建造范围，根据自身视野选择敌军目标，不读取敌方私有资金、电力数据。
+
+**Availability / 可用范围:** These AI levels were added after release 1.1.0 and are available in current source builds; the 1.1.0 downloads above do not include them.<br>这两个 AI 等级是在 1.1.0 发布后加入的，目前可通过当前源码编译体验，上方 1.1.0 下载包尚未包含。
+
+**Save compatibility / 存档兼容性:** The AI strategy update changes the save layout. Start a fresh match with the new build; earlier save layouts cannot be loaded.<br>本次 AI 策略更新改变了存档格式。请使用新版本开始新对局，旧格式存档无法读取。
+
 <a id="license"></a>
 
 ## Acknowledgments & License / 致谢与许可
@@ -55,6 +70,27 @@ With appreciation to **Westwood Studios and Electronic Arts** for *Command & Con
 以下均为实际客户端截图。30 人规模指本地遭遇战席位；可以亲自对抗 AI，也可以作为观察者观看 AI 混战。
 
 All images below are actual client screenshots. The 30-player capacity refers to local Skirmish slots: join the battle yourself or watch the AI opponents as an Observer.
+
+<a id="ai-levels"></a>
+
+### New · Open AI & Claude AI / 新增 · Open AI 与 Claude AI
+
+Choose a strategy level for each offline computer opponent. Both levels play with normal resources and combat stats, develop their economy and technology, and scout before choosing live enemy targets.<br>为每个离线电脑对手选择策略等级。两个等级均使用正常资源与战斗属性，经营经济、发展科技，通过侦察发现敌军目标。
+
+| AI level / AI 等级 | Strategy / 策略特点 |
+| --- | --- |
+| **Claude AI** | Prioritizes income and technology, recovers lost refinery capacity, expands toward nearby visible ore, and creates teams sooner as its bank grows.<br>优先发展经济和科技，及时补建矿厂，向附近可见矿区扩建，并在资金增长时加快编队节奏。 |
+| **Open AI** | Adds adaptive ground, naval, and air team selection, avoids duplicate forming teams, and favors offensive teams when rich.<br>进一步平衡海陆空编队，避免重复组建尚未成形的队伍，并在资金充足时优先进攻编队。 |
+
+**Open / 入口:** Single Player → Skirmish → Opponent AI dropdown → **Open AI** or **Claude AI** / 单人游戏 → 遭遇战 → 电脑等级下拉框 → **Open AI** 或 **Claude AI**。
+
+<p align="center">
+<img src="docs/images/features/ai-levels.jpg" alt="Actual Skirmish setup showing Open AI and Claude AI levels / 实际遭遇战设置，展示 Open AI 与 Claude AI 等级" width="800">
+</p>
+
+*Actual current-build screenshot; both AI levels run locally without an external AI account or API key. / 当前编译版本的实际截图；两个 AI 等级均在本地运行，无需外部 AI 账号或 API 密钥。*
+
+[Strategy details and current limits / 策略细节与当前边界](docs/ai-battle-features.md#offline-ai-strategy-tiers)
 
 ### 01 · 30 人大战 / 30-Player Battles
 

@@ -47,17 +47,16 @@ pub(super) fn localized_label(state: &AppState, key: &str, fallback: &str) -> St
 /// [`localized_label`] for a label that may be VERA's own: a `VERA:` key that
 /// the string table lacks shows its fallback instead of gamemd's `MISSING:`
 /// text. Retail keys keep the native lookup.
-pub(super) fn localized_vera_label(state: &AppState, key: &str, fallback: &str) -> String {
-    let missing_vera_key = key.starts_with("VERA:")
-        && state
-            .process_assets
-            .csf
-            .as_ref()
-            .is_some_and(|csf| csf.get(key).is_none());
-    if missing_vera_key {
+pub(super) fn localized_vera_label(
+    csf: Option<&crate::assets::csf_file::CsfFile>,
+    key: &str,
+    fallback: &str,
+) -> String {
+    if key.starts_with("VERA:") && csf.is_some_and(|csf| csf.get(key).is_none()) {
         fallback.to_string()
     } else {
-        localized_label(state, key, fallback)
+        csf.map(|csf| csf.text(key).into_owned())
+            .unwrap_or_else(|| fallback.to_string())
     }
 }
 
@@ -88,10 +87,14 @@ pub(super) fn team_label(state: &AppState, team: i32) -> String {
 
 pub(crate) fn combo_item_label(state: &AppState, item: SkirmishComboItem) -> String {
     match item {
-        SkirmishComboItem::Observer => localized_vera_label(state, "VERA:Observer", "Observer"),
+        SkirmishComboItem::Observer => localized_vera_label(
+            state.process_assets.csf.as_ref(),
+            "VERA:Observer",
+            "Observer",
+        ),
         SkirmishComboItem::AiType(row_type) => {
             let (key, fallback) = row_type_label(row_type);
-            localized_label(state, key, fallback)
+            localized_vera_label(state.process_assets.csf.as_ref(), key, fallback)
         }
         SkirmishComboItem::Country(SkirmishCountryChoice::Random) => {
             localized_label(state, "GUI:RandomAsSymbols", "Random")
@@ -770,7 +773,7 @@ pub(super) fn build_shell_text_draws(
             continue;
         };
         let (key, fallback) = row_type_label(opponent.row_type);
-        let row_type = localized_label(state, key, fallback);
+        let row_type = localized_vera_label(state.process_assets.csf.as_ref(), key, fallback);
         push_combo_face_label_draw(&mut shell_draws, state, &row_type, ai_type, scale);
         let sibling_text_color = opponent_sibling_combo_text_color(opponent);
         push_combo_face_label_draw_with_color(
@@ -1109,7 +1112,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
         push_text_draw(
             out,
             state,
-            &localized_vera_label(state, entry.key, entry.fallback),
+            &localized_vera_label(state.process_assets.csf.as_ref(), entry.key, entry.fallback),
             rect_to_text_rect(rect),
             SHELL_LABEL_TEXT_RGB,
             ShellAlign::V_CENTER,
@@ -1163,7 +1166,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
             push_text_draw(
                 out,
                 state,
-                &localized_vera_label(state, entry.key, entry.fallback),
+                &localized_vera_label(state.process_assets.csf.as_ref(), entry.key, entry.fallback),
                 rect_to_text_rect(row_rect),
                 SHELL_LABEL_TEXT_RGB,
                 ShellAlign::V_CENTER,
@@ -1679,6 +1682,39 @@ pub(super) fn push_saved_browser_prompt_text<I>(
 mod tests {
     use super::*;
     use crate::ui::skirmish_shell::COMBO_DROPDOWN_ROW_H;
+
+    #[test]
+    fn custom_ai_labels_use_fallbacks_with_retail_strings() {
+        let csf = crate::assets::csf_file::test_csf(&[("GUI:AIHard", "Hard AI")]);
+        for (row_type, expected) in [
+            (SkirmishAiRowType::Claude, "Claude AI"),
+            (SkirmishAiRowType::OpenAi, "Open AI"),
+            (SkirmishAiRowType::Hard, "Hard AI"),
+        ] {
+            let (key, fallback) = row_type_label(row_type);
+            assert_eq!(localized_vera_label(Some(&csf), key, fallback), expected);
+        }
+    }
+
+    #[test]
+    fn custom_ai_labels_accept_localized_overrides() {
+        let csf = crate::assets::csf_file::test_csf(&[
+            ("VERA:AIClaude", "Claude Commander"),
+            ("VERA:AIOpenAi", "Open AI Commander"),
+        ]);
+        for (row_type, expected) in [
+            (SkirmishAiRowType::Claude, "Claude Commander"),
+            (SkirmishAiRowType::OpenAi, "Open AI Commander"),
+        ] {
+            let (key, fallback) = row_type_label(row_type);
+            assert_eq!(localized_vera_label(Some(&csf), key, fallback), expected);
+            assert_eq!(localized_vera_label(None, key, fallback), fallback);
+        }
+        assert_eq!(
+            localized_vera_label(Some(&csf), "GUI:AIHard", "Hard"),
+            "MISSING:'GUI:AIHard'"
+        );
+    }
 
     /// `0x105` hides a text an open list touches; that is exact only while
     /// every list ends in the gap between rows.

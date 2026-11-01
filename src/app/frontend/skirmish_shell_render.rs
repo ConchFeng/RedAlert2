@@ -838,7 +838,11 @@ fn render_skirmish_shell_with_atlas(
         push_button_label_draw(
             &mut shell_draws,
             state,
-            &localized_vera_label(state, "VERA:AISeries", "AI Series..."),
+            &localized_vera_label(
+                state.process_assets.csf.as_ref(),
+                "VERA:AISeries",
+                "AI Series...",
+            ),
             rect,
             state.frontend.ai_series_dialog_buttons.is_pressed(0xF220),
             SHELL_CONTROL_TEXT_DEPTH,
@@ -853,7 +857,7 @@ fn render_skirmish_shell_with_atlas(
             &mut shell_draws,
             state,
             &localized_vera_label(
-                state,
+                state.process_assets.csf.as_ref(),
                 "VERA:AICommanders",
                 if state.frontend.ai_commanders_notice.is_some() {
                     "AI Commanders... *"

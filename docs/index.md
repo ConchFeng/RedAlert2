@@ -9,6 +9,11 @@ title: Documentation and agent index
 Yuri's Revenge engine using player-supplied retail assets. The current code determines
 behavior; documentation explains its owners and how to work with them.
 
+**New in current source / 当前源码新增：** Offline Skirmish now offers **Open AI**
+and **Claude AI** strategy levels. See the [bilingual update notes and screenshots /
+中英文更新日志与截图](../README.md#updates), or the
+[AI strategy guide / AI 策略说明](ai-battle-features.md#offline-ai-strategy-tiers).
+
 ## Start here
 
 1. Read [AGENTS.md](../AGENTS.md) for scope, architecture, evidence and validation
