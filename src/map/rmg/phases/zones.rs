@@ -139,7 +139,11 @@ impl ZoneField {
     /// The start-region cell filter: plain clear ground in the reference
     /// derived zone.
     pub fn is_reference_ground(&self, x: i32, y: i32) -> bool {
-        self.class(x, y) == CLASS_CLEAR && self.zone(x, y) == self.reference
+        self.is_clear_ground(x, y) && self.zone(x, y) == self.reference
+    }
+
+    pub fn is_clear_ground(&self, x: i32, y: i32) -> bool {
+        self.class(x, y) == CLASS_CLEAR
     }
 }
 

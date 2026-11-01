@@ -104,11 +104,12 @@ const fn item(key: &'static str, fallback: &'static str, value: i32) -> SetupCom
 /// Landform entries. Note the values start at 1, not 0: archipelago (0) is
 /// deliberately absent from the list, so a map type of 0 leaves the combo
 /// showing nothing at all rather than falling back to the first entry.
-const MAP_TYPE_ITEMS: [SetupComboItem; 4] = [
+const MAP_TYPE_ITEMS: [SetupComboItem; 5] = [
     item("TXT_MAP_CONTINENT", "Continent", 1),
     item("TXT_MAP_TEAM_CONTINENTS", "Team Continents", 2),
     item("TXT_MAP_INLAND", "Inland", 3),
     item("TXT_MAP_MOUNTAINOUS", "Mountainous", 4),
+    item("VERA:MapIslandWar", "Island War", 5),
 ];
 
 const TIME_ITEMS: [SetupComboItem; 4] = [
@@ -185,6 +186,7 @@ pub struct RandomMapSetupModalState {
     pub open_combo: Option<SetupCombo>,
     /// The Players slider holding the mouse since a press on it.
     pub players_hold: Option<TrackbarHold>,
+    pub islands_hold: Option<TrackbarHold>,
     pub pressed_control: Option<RandomMapSetupControl>,
     /// VERA: the most players the Players slider reaches.
     pub max_players: i32,
@@ -226,6 +228,7 @@ impl RandomMapSetupModalState {
             saved_seed_buttons_enabled: saved_seeds_available,
             open_combo: None,
             players_hold: None,
+            islands_hold: None,
             pressed_control: None,
             max_players: crate::map::rmg::RMG_MAX_PLAYERS,
             generated_preview: None,
@@ -258,6 +261,7 @@ impl RandomMapSetupModalState {
             // Accept and save both require a generated result.
             C::Ok0x6c5 | C::Save0x6c3 => self.generated,
             C::Load0x6c2 | C::Delete0x6c4 => self.saved_seed_buttons_enabled,
+            C::Islands => self.options.map_type == 5,
             _ => true,
         }
     }
@@ -294,6 +298,39 @@ impl RandomMapSetupModalState {
     pub fn set_num_players(&mut self, value: i32) {
         self.options.num_players = value;
         self.on_option_changed();
+    }
+
+    pub fn islands_range(&self) -> TrackbarRange {
+        TrackbarRange::new(2, crate::map::rmg::RMG_MAX_PLAYERS, 1)
+    }
+
+    pub fn set_island_count(&mut self, value: i32) {
+        self.options.island_count = value;
+        self.on_option_changed();
+    }
+
+    pub fn press_islands(&mut self, x: i32, y: i32, window: RectPx, scale: ShellScale) -> bool {
+        let press = self
+            .islands_range()
+            .press_in(self.options.island_count, x, y, window, scale);
+        self.islands_hold = press.hold(());
+        match press {
+            TrackbarPress::Jump(value) => self.change_island_count(value),
+            _ => false,
+        }
+    }
+
+    pub fn drag_islands(&mut self, x: i32, window: RectPx, scale: ShellScale) -> bool {
+        self.islands_hold.is_some_and(|hold| hold.dragging)
+            && self.change_island_count(self.islands_range().value_at_in(x, window, scale))
+    }
+
+    fn change_island_count(&mut self, value: i32) -> bool {
+        let changed = self.options.island_count != value;
+        if changed {
+            self.set_island_count(value);
+        }
+        changed
     }
 
     /// A press at device `(x, y)` on the Players slider window. Returns whether
@@ -433,6 +470,7 @@ impl RandomMapSetupModalState {
         self.generating = true;
         self.open_combo = None;
         self.players_hold = None;
+        self.islands_hold = None;
     }
 
     /// Release a failed worker without presenting an old/partial map as a
@@ -696,10 +734,10 @@ mod tests {
     #[test]
     fn map_type_entries_start_at_one_and_omit_archipelago() {
         let items = setup_combo_items(SetupCombo::MapType);
-        assert_eq!(items.len(), 4);
+        assert_eq!(items.len(), 5);
         assert_eq!(
             items.iter().map(|entry| entry.value).collect::<Vec<_>>(),
-            [1, 2, 3, 4]
+            [1, 2, 3, 4, 5]
         );
     }
 
@@ -714,6 +752,34 @@ mod tests {
         );
         state.set_map_type(3);
         assert_eq!(state.selected_item_index(SetupCombo::MapType), Some(2));
+    }
+
+    #[test]
+    fn island_war_slider_retains_custom_counts_and_invalidates_the_preview() {
+        let mut state = opened();
+        assert!(!state.is_enabled(RandomMapSetupControl::Islands));
+        state.set_map_type(5);
+        assert!(state.is_enabled(RandomMapSetupControl::Islands));
+        assert_eq!(state.options.island_count, 4);
+        state.finish_generate(Some(one_pixel_preview()));
+        let layout = super::super::super::layout::compute_random_map_setup_layout(800, 600);
+        let slider = layout.control_rects[6];
+        assert_eq!(
+            super::super::super::layout::random_map_setup_control_at(
+                &layout,
+                slider.x + slider.w / 2,
+                slider.y + slider.h / 2
+            ),
+            Some(RandomMapSetupControl::Islands)
+        );
+        state.set_island_count(30);
+        assert_eq!(state.options.island_count, 30);
+        assert_eq!(state.options.num_players, 2);
+        assert!(!state.generated);
+        assert!(state.generated_preview.is_none());
+        state.set_island_count(9);
+        state.set_num_players(8);
+        assert_eq!(state.options.island_count, 9);
     }
 
     #[test]

@@ -221,6 +221,7 @@ pub fn load_saved_seed(
 
 fn options_from_bytes(bytes: &[u8], current: &RmgOptions, default_description: &str) -> RmgOptions {
     let mut options = current.clone();
+    options.mountain_ridges = false;
     // Unlike the integer keys, Description uses the localized default passed
     // at 0x00597AFD to INIClass__ReadCommaHexUTF16, not the current description.
     options.description = default_description.into();
@@ -246,6 +247,35 @@ pub fn delete_saved_seed(path: &Path) -> std::io::Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn mountain_ridges_round_trip_without_changing_legacy_seed_behavior() {
+        let current = RmgOptions {
+            mountain_ridges: true,
+            ..RmgOptions::default()
+        };
+        let legacy = options_from_bytes(
+            b"[RandomMap]\nMapType=4\nWidth=5\nHeight=5\nNumPlayers=30\nSeed=1234\n",
+            &current,
+            "Mountains",
+        );
+        assert!(!legacy.mountain_ridges);
+        let mut enhanced = legacy.clone();
+        enhanced.mountain_ridges = true;
+        let bytes = enhanced.to_sed_bytes();
+        assert!(
+            crate::rules::ini_parser::IniFile::from_bytes(&bytes)
+                .unwrap()
+                .section_or_empty("RandomMap")
+                .read_bool("VERAMountainRidges", false)
+        );
+        assert_eq!(options_from_bytes(&bytes, &legacy, "Mountains"), enhanced);
+        assert_ne!(enhanced.native_digest(), legacy.native_digest());
+        let mut ordinary = legacy.clone();
+        ordinary.map_type = 2;
+        enhanced.map_type = 2;
+        assert_eq!(ordinary.native_digest(), enhanced.native_digest());
+    }
 
     #[test]
     fn metadata_requires_a_recognized_complete_section_line() {
@@ -328,11 +358,13 @@ mod tests {
         let current = RmgOptions {
             theater: 1,
             map_type: 3,
+            mountain_ridges: false,
             resources: 2,
             ruggedness: 67,
             time: 3,
             water_amount: 31,
             num_players: 6,
+            island_count: 4,
             tiberium: 47,
             tiberium_layout: 19,
             vegetation: 29,

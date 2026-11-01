@@ -91,15 +91,22 @@ pub struct StartsOutcome {
 }
 
 pub fn run(ctx: &mut StartsCtx<'_>, args: &StartsArgs, zones: &ZoneField) -> StartsOutcome {
-    // Survival threshold: max(genH * genW * 0.03, 400), truncated.
+    // Island War retains buildable islands even when each is under 3% of a large map.
+    // Other types use the native max(genH * genW * 0.03, 400), truncated.
     let area = TruncF64::from_f64(f64::from(args.gen_h))
         .mul(TruncF64::from_f64(f64::from(args.gen_w)))
         .mul(TruncF64::from_f64(AREA_FRACTION));
     let floor = TruncF64::from_f64(MIN_REGION_CELLS);
-    let threshold =
-        X87Chop53::ftol_f64_low_masked(if area.lt(floor) { floor } else { area }.to_f64());
+    let threshold = X87Chop53::ftol_f64_low_masked(
+        if args.map_type == 5 || area.lt(floor) {
+            floor
+        } else {
+            area
+        }
+        .to_f64(),
+    );
 
-    rebuild_regions(ctx, zones);
+    rebuild_regions(ctx, zones, args.map_type == 5);
 
     // Delete undersized regions, iterating downward so removals cannot skip
     // entries. The multiplier of the later sort key is captured BEFORE the
@@ -135,7 +142,11 @@ pub fn run(ctx: &mut StartsCtx<'_>, args: &StartsArgs, zones: &ZoneField) -> Sta
     let mut assigned = 0i32;
     for (position, &(_, index)) in order.iter().enumerate() {
         cumulative += ctx.regions.list[index].cell_count;
-        let quota = if position == order.len() - 1 {
+        let quota = if args.map_type == 5 {
+            // VERA Island War balances occupied islands rather than weighting by land area.
+            let count = order.len() as i32;
+            args.start_quota / count + i32::from((position as i32) < args.start_quota % count)
+        } else if position == order.len() - 1 {
             args.start_quota - assigned
         } else {
             X87Chop53::ftol_f64_low_masked(
@@ -189,16 +200,24 @@ pub fn run(ctx: &mut StartsCtx<'_>, args: &StartsArgs, zones: &ZoneField) -> Sta
 }
 
 /// Teardown + fresh region build over the final map: every unclaimed
-/// reference-ground cell in native scan order seeds a flood fill whose
+/// eligible ground cell in native scan order seeds a flood fill whose
 /// popped cells are appended to the region's cell list.
-fn rebuild_regions(ctx: &mut StartsCtx<'_>, zones: &ZoneField) {
+fn rebuild_regions(ctx: &mut StartsCtx<'_>, zones: &ZoneField, all_islands: bool) {
     ctx.scratch.reset_region_ids();
     ctx.regions.list.clear();
     ctx.regions.id_counter = 0;
 
+    let eligible = |x, y| {
+        if all_islands {
+            zones.is_clear_ground(x, y)
+        } else {
+            zones.is_reference_ground(x, y)
+        }
+    };
+
     let coords: Vec<(i32, i32)> = ctx.grid.native_cells().collect();
     for &(x, y) in &coords {
-        if ctx.scratch.get(x, y).region != -1 || !zones.is_reference_ground(x, y) {
+        if ctx.scratch.get(x, y).region != -1 || !eligible(x, y) {
             continue;
         }
         let id = ctx.regions.id_counter;
@@ -228,7 +247,7 @@ fn rebuild_regions(ctx: &mut StartsCtx<'_>, zones: &ZoneField) {
                 if !ctx.scratch.in_diamond(nx, ny) {
                     continue;
                 }
-                if !zones.is_reference_ground(nx, ny) {
+                if !eligible(nx, ny) {
                     continue;
                 }
                 if ctx.scratch.get(nx, ny).stamp != -1 {
@@ -598,6 +617,61 @@ mod tests {
             run(&mut ctx, &args, &field)
         };
         (outcome, regions, grid, scratch)
+    }
+
+    #[test]
+    fn island_war_balances_actual_starts_across_unequal_islands() {
+        let args = StartsArgs {
+            map_type: 5,
+            start_quota: 15,
+            num_players: 15,
+            gen_w: 120,
+            gen_h: 120,
+            map_w: 124,
+            ..args()
+        };
+        let (mut grid, mut scratch) = world(&args);
+        let islands = [
+            (15, 15, 28, 24),
+            (60, 15, 36, 28),
+            (15, 70, 24, 24),
+            (60, 65, 45, 35),
+        ];
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            let u = (x - y + args.map_w - 1) / 2;
+            let v = (x + y - args.map_w - 1) / 2;
+            grid.get_mut(x, y).unwrap().tile =
+                if islands.iter().any(|&(left, top, width, height)| {
+                    (left..left + width).contains(&u) && (top..top + height).contains(&v)
+                }) {
+                    0
+                } else {
+                    500
+                };
+        }
+        let field = zone_field(&grid, &args);
+        let mut regions = Regions::default();
+        let outcome = run(
+            &mut StartsCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &ids(),
+                rng: &mut RmgRng::new(4242),
+                regions: &mut regions,
+            },
+            &args,
+            &field,
+        );
+        let mut counts = std::collections::BTreeMap::new();
+        for &(x, y) in outcome.waypoints.iter().flatten() {
+            *counts
+                .entry(scratch.get(i32::from(x), i32::from(y)).region)
+                .or_insert(0) += 1;
+        }
+        let mut counts: Vec<_> = counts.into_values().collect();
+        counts.sort_unstable();
+        assert_eq!(counts, [3, 4, 4, 4]);
+        assert_eq!(outcome.unfilled_start_slots, 0);
     }
 
     #[test]

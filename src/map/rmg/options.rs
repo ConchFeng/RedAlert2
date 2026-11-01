@@ -19,11 +19,13 @@ const SECTION: &str = "RandomMap";
 pub struct RmgOptions {
     pub theater: i32,
     pub map_type: i32,
+    pub mountain_ridges: bool,
     pub resources: i32,
     pub ruggedness: i32,
     pub time: i32,
     pub water_amount: i32,
     pub num_players: i32,
+    pub island_count: i32,
     pub tiberium: i32,
     pub tiberium_layout: i32,
     pub vegetation: i32,
@@ -45,11 +47,13 @@ impl Default for RmgOptions {
         Self {
             theater: 0,
             map_type: 1,
+            mountain_ridges: false,
             resources: 1,
             ruggedness: 0,
             time: 1,
             water_amount: 0,
             num_players: 2,
+            island_count: 4,
             tiberium: 0,
             tiberium_layout: 0,
             vegetation: 0,
@@ -78,11 +82,12 @@ impl RmgOptions {
     /// and is resolved later by the theater-name lookup.
     pub fn normalize(&mut self) {
         self.resources = self.resources.clamp(0, 3);
-        self.map_type = self.map_type.clamp(0, 4);
+        self.map_type = self.map_type.clamp(0, 5);
         self.time = self.time.clamp(0, 3);
         self.ruggedness = self.ruggedness.clamp(0, 100);
         self.water_amount = self.water_amount.clamp(0, 100);
         self.num_players = self.num_players.clamp(2, super::RMG_MAX_PLAYERS);
+        self.island_count = self.island_count.clamp(2, super::RMG_MAX_PLAYERS);
         self.tiberium = self.tiberium.clamp(1, 100);
         self.tiberium_layout = self.tiberium_layout.clamp(0, 100);
         self.vegetation = self.vegetation.clamp(0, 100);
@@ -116,8 +121,10 @@ impl RmgOptions {
         read("Width", &mut self.width);
         read("Height", &mut self.height);
         read("NumPlayers", &mut self.num_players);
+        read("VERAIslandCount", &mut self.island_count);
         read("Seed", &mut self.seed);
         read("MapType", &mut self.map_type);
+        self.mountain_ridges = section.read_bool("VERAMountainRidges", self.mountain_ridges);
         read("Theater", &mut self.theater);
         read("Time", &mut self.time);
         read("RegionSize", &mut self.region_size);
@@ -139,8 +146,13 @@ impl RmgOptions {
             ("Width", self.width.to_string()),
             ("Height", self.height.to_string()),
             ("NumPlayers", self.num_players.to_string()),
+            ("VERAIslandCount", self.island_count.to_string()),
             ("Seed", self.seed.to_string()),
             ("MapType", self.map_type.to_string()),
+            (
+                "VERAMountainRidges",
+                if self.mountain_ridges { "yes" } else { "no" }.into(),
+            ),
             ("Theater", self.theater.to_string()),
             ("Time", self.time.to_string()),
             ("RegionSize", self.region_size.to_string()),
@@ -190,6 +202,16 @@ impl RmgOptions {
             .map(|field| field as u32)
             .chain(std::iter::repeat_n(0, DESCRIPTION_DWORDS))
             .fold(0u32, |crc, dword| crc.rotate_left(1).wrapping_add(dword));
+        let crc = if self.map_type == 5 {
+            crc.rotate_left(1).wrapping_add(self.island_count as u32)
+        } else {
+            crc
+        };
+        let crc = if self.map_type == 4 && self.mountain_ridges {
+            crc.rotate_left(1).wrapping_add(1)
+        } else {
+            crc
+        };
         format!("{crc:08X}")
     }
 }
@@ -229,6 +251,27 @@ mod tests {
     }
 
     #[test]
+    fn island_war_options_round_trip_and_identify_the_island_count() {
+        let mut options = RmgOptions {
+            map_type: 5,
+            num_players: 30,
+            island_count: 8,
+            seed: 1234,
+            ..Default::default()
+        };
+        options.normalize();
+        let mut restored = RmgOptions::default();
+        restored.apply_sed(&IniFile::from_bytes(&options.to_sed_bytes()).unwrap());
+        restored.normalize();
+        assert_eq!(restored, options);
+        restored.island_count = 6;
+        assert_ne!(restored.native_digest(), options.native_digest());
+        restored.map_type = 2;
+        options.map_type = 2;
+        assert_eq!(restored.native_digest(), options.native_digest());
+    }
+
+    #[test]
     fn theater_is_never_clamped() {
         let mut high = RmgOptions {
             theater: 99,
@@ -251,10 +294,12 @@ mod tests {
             theater: 0,
             resources: 9,
             map_type: 9,
+            mountain_ridges: false,
             time: 9,
             ruggedness: 500,
             water_amount: -1,
             num_players: 1,
+            island_count: 4,
             tiberium: 0,
             tiberium_layout: 500,
             vegetation: -3,
@@ -270,7 +315,7 @@ mod tests {
 
         assert_eq!(
             (options.resources, options.map_type, options.time),
-            (3, 4, 3)
+            (3, 5, 3)
         );
         assert_eq!((options.ruggedness, options.water_amount), (100, 0));
         assert_eq!(options.num_players, 2, "player floor is 2, not 0");
@@ -329,11 +374,13 @@ mod tests {
         let mut original = RmgOptions {
             theater: 2,
             map_type: 3,
+            mountain_ridges: false,
             resources: 2,
             ruggedness: 40,
             time: 1,
             water_amount: 55,
             num_players: 6,
+            island_count: 4,
             tiberium: 30,
             tiberium_layout: 20,
             vegetation: 70,

@@ -706,6 +706,7 @@ mod tests {
             map_type: 3,
             water_percent: RIVERED_WATER,
             num_players: 4,
+            island_count: 4,
             bridge_enabled: true,
             playable: PlayableRect {
                 x: 2,
@@ -814,6 +815,7 @@ mod tests {
             map_type,
             water_percent: RIVERED_WATER,
             num_players: 4,
+            island_count: 4,
             bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
@@ -985,6 +987,7 @@ mod tests {
                 map_type: 3,
                 water_percent: input["water_percent"].as_i64().unwrap() as i32,
                 num_players: 2,
+                island_count: 4,
                 bridge_enabled: false,
                 playable: PlayableRect {
                     x: 0,

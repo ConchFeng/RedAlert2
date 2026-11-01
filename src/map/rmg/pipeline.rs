@@ -34,8 +34,8 @@ use super::phases::trees::{TreeArgs, TreeCtx};
 use super::phases::water::{PlayableRect, WaterArgs};
 use super::phases::zones::{self, ZoneKind, ZoneParams};
 use super::phases::{
-    cliff_materialization, cliff_variants, green_spread, hills, lat_fixup, lat_patches, regions,
-    rocks, starts, tech_buildings, tiberium, trees, water, water_finalize,
+    cliff_materialization, cliff_variants, green_spread, hills, lat_fixup, lat_patches, mountains,
+    regions, rocks, starts, tech_buildings, tiberium, trees, water, water_finalize,
 };
 use super::rng::RmgRng;
 use super::scratch::RmgScratch;
@@ -70,6 +70,8 @@ pub struct PipelineInputs<'a> {
     pub accessibility: i32,
     pub theater: i32,
     pub num_players: i32,
+    pub island_count: i32,
+    pub mountain_ridges: bool,
     /// `WaterAmount` option.
     pub water_percent: i32,
     /// `Resources` option (gems appear only when 3).
@@ -174,6 +176,7 @@ pub fn run_pipeline(
             map_type: inputs.map_type,
             water_percent: inputs.water_percent,
             num_players: inputs.num_players,
+            island_count: inputs.island_count,
             bridge_enabled: inputs.bridge_enabled,
             playable: PlayableRect {
                 x: local_rect[0],
@@ -189,6 +192,9 @@ pub fn run_pipeline(
     observe(Stage::WaterFinalize, grid, &waypoints, &terrain);
 
     // ---- Regions -----------------------------------------------------------
+    if inputs.mountain_ridges {
+        mountains::seed(grid, inputs.ids, rng, geometry, inputs.map_type);
+    }
     let mut regions: Regions = {
         let mut ctx = RegionCtx {
             grid: &mut *grid,

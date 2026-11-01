@@ -966,6 +966,7 @@ impl ApplicationHandler for App {
                     skirmish.trackbar_hold = None;
                     if let Some(setup) = skirmish.random_map_setup_modal.as_mut() {
                         setup.players_hold = None;
+                        setup.islands_hold = None;
                     }
                     if let Some(campaign) = state.frontend.campaign.as_mut() {
                         campaign.slider_release();

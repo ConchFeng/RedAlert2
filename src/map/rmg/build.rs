@@ -240,6 +240,8 @@ fn generate_on_this_stack(
         accessibility: options.accessibility,
         theater: options.theater,
         num_players: options.num_players,
+        island_count: options.island_count,
+        mountain_ridges: options.mountain_ridges,
         bridge_enabled,
         water_percent: options.water_amount,
         resources: options.resources,

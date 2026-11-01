@@ -57,6 +57,7 @@ pub struct WaterArgs {
     pub map_type: i32,
     pub water_percent: i32,
     pub num_players: i32,
+    pub island_count: i32,
     /// Whether a river may attempt waterfall terrain — the first MapGen draw.
     /// Unread until the river lands; the draw is already stream-relevant.
     pub bridge_enabled: bool,
@@ -134,7 +135,7 @@ pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
 
     // Phase 2: shape dispatch.
     match args.map_type {
-        0 => archipelago(ctx, args),
+        0 | 5 => archipelago(ctx, args),
         1 => continental(ctx, args),
         _ => islands_in_sea(ctx, args),
     }
@@ -188,25 +189,28 @@ pub fn run(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
     }
 }
 
-/// Mode 0: islands on a randomized partition grid.
+/// Archipelago and VERA Island War share the randomized partition and land-blob owners.
 fn archipelago(ctx: &mut BlobCtx<'_>, args: &WaterArgs) {
     let mut blob_counter = 1;
-    let m = (args.num_players / 2).max(2);
-
-    // Extra-island draw: ftol(draw * m * K + 1.0), rejection > m.
-    let extra = loop {
-        let value = X87Chop53::ftol_f64_low_masked(
-            TruncF64::from_f64(f64::from(ctx.rng.next_u32()))
-                .mul(TruncF64::from_f64(f64::from(m)))
-                .mul(TruncF64::from_f64(f64::from_bits(RANGE_K_BITS)))
-                .add(TruncF64::from_f64(1.0))
-                .to_f64(),
-        );
-        if value <= m {
-            break value;
-        }
+    let islands = if args.map_type == 5 {
+        args.island_count.clamp(2, 30)
+    } else {
+        let m = (args.num_players / 2).max(2);
+        // Extra-island draw: ftol(draw * m * K + 1.0), rejection > m.
+        let extra = loop {
+            let value = X87Chop53::ftol_f64_low_masked(
+                TruncF64::from_f64(f64::from(ctx.rng.next_u32()))
+                    .mul(TruncF64::from_f64(f64::from(m)))
+                    .mul(TruncF64::from_f64(f64::from_bits(RANGE_K_BITS)))
+                    .add(TruncF64::from_f64(1.0))
+                    .to_f64(),
+            );
+            if value <= m {
+                break value;
+            }
+        };
+        args.num_players + extra
     };
-    let islands = args.num_players + extra;
 
     let rect4 = [
         args.playable.x,
@@ -644,6 +648,7 @@ mod tests {
             map_type,
             water_percent,
             num_players: 4,
+            island_count: 4,
             bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,
@@ -832,6 +837,7 @@ mod tests {
             map_type,
             water_percent,
             num_players: 4,
+            island_count: 4,
             bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,

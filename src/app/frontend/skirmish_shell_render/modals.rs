@@ -29,14 +29,6 @@ use super::{
     SHELL_LABEL_TEXT_RGB, SHELL_MODAL_BG_RGB, SHELL_MODAL_PANEL_RGB, SHELL_PARENT_BACKGROUND_DEPTH,
 };
 
-/// The five combo rows as hit-test controls, for the enabled/disabled lookup.
-const SETUP_COMBO_CONTROLS: [RandomMapSetupControl; 5] = [
-    RandomMapSetupControl::MapType0x405,
-    RandomMapSetupControl::Time0x3ea,
-    RandomMapSetupControl::Theater0x407,
-    RandomMapSetupControl::Size0x406,
-    RandomMapSetupControl::Resources0x408,
-];
 const PLAYERS_ROW: usize = 5;
 
 const VALIDATION_MODAL_SPRITE_DEPTHS: shell_paint::ModalDepths = shell_paint::ModalDepths {
@@ -410,8 +402,8 @@ pub(super) fn push_random_map_setup_modal_control_instances(
     let chrome = atlas.control_chrome();
     // Rows 0..4 are combos; row 5 is the players trackbar. A collapsed combo
     // occupies only its face, not the dropdown extent the resource reserves.
-    for (row, control) in SETUP_COMBO_ROWS.iter().enumerate() {
-        let rect = layout.control_rects[row];
+    for control in &SETUP_COMBO_ROWS {
+        let rect = layout.control_rects[control.row()];
         let face = combo_face_rect(rect, layout.scale);
         // Native owner-draw controls preserve their composed background. The
         // solid plate is only needed when retail shell artwork is unavailable.
@@ -432,27 +424,38 @@ pub(super) fn push_random_map_setup_modal_control_instances(
                 rect: face,
                 swatch: None,
                 open: modal.open_combo == Some(*control),
-                disabled: !modal.is_enabled(SETUP_COMBO_CONTROLS[row]),
+                disabled: !modal.is_enabled(control.control()),
             },
             layout.scale,
         );
     }
-    let players = layout.control_rects[PLAYERS_ROW];
-    paint_control(
-        out,
-        &chrome,
-        ControlPaint::Trackbar {
-            rect: players,
-            thumb_left: modal.players_range().thumb_left_in(
-                modal.options.num_players,
-                players,
-                layout.scale,
-            ),
-            plaque: true,
-            disabled: false,
-        },
-        layout.scale,
-    );
+    for (row, value, range, control) in [
+        (
+            PLAYERS_ROW,
+            modal.options.num_players,
+            modal.players_range(),
+            RandomMapSetupControl::Players0x3eb,
+        ),
+        (
+            6,
+            modal.options.island_count,
+            modal.islands_range(),
+            RandomMapSetupControl::Islands,
+        ),
+    ] {
+        let rect = layout.control_rects[row];
+        paint_control(
+            out,
+            &chrome,
+            ControlPaint::Trackbar {
+                rect,
+                thumb_left: range.thumb_left_in(value, rect, layout.scale),
+                plaque: true,
+                disabled: !modal.is_enabled(control),
+            },
+            layout.scale,
+        );
+    }
 
     // Surprise Me and Generate are owner-draw type 3 for this dialog, so they
     // take the MNBTTN modal button art rather than the generic PCX slices --

@@ -434,3 +434,173 @@ fn thirty_player_huge_and_giant_maps_seat_every_start() {
         }
     }
 }
+
+fn generated_movement_zones(
+    options: &RmgOptions,
+    prepared: &PreparedRandomMapGeneration,
+    map: &crate::map::map_file::MapFile,
+) -> (
+    crate::map::rmg::RmgGrid,
+    crate::map::rmg::phases::zones::ZoneField,
+) {
+    use crate::map::rmg::phases::zones::{self, ZoneKind, ZoneParams};
+    use crate::map::rmg::{MapGeometry, RmgGrid};
+    let geometry = MapGeometry::from_options(options);
+    let mut grid = RmgGrid::new(geometry.stride, geometry.diamond_min, geometry.diamond_max);
+    for cell in &map.cells {
+        let target = grid
+            .get_mut(i32::from(cell.rx), i32::from(cell.ry))
+            .unwrap();
+        target.tile = cell.tile_index;
+        target.sub_tile = cell.sub_tile;
+        target.level = cell.z;
+        target.slope = prepared
+            .blocks
+            .block(cell.tile_index)
+            .and_then(|block| block.subtiles.get(usize::from(cell.sub_tile)))
+            .and_then(|subtile| subtile.as_ref())
+            .map_or(0, |subtile| subtile.slope);
+    }
+    let zones = zones::compute(
+        &grid,
+        &prepared.blocks,
+        &ZoneParams {
+            map_w: geometry.map_w,
+            local_rect: [2, 5, geometry.gen_w, geometry.gen_h],
+            wheel_impassable: prepared.resolved_inputs.wheel_impassable,
+        },
+        ZoneKind::Normal,
+    );
+    (grid, zones)
+}
+
+#[test]
+#[ignore = "slow; run when changing Island War generation"]
+fn island_war_separates_islands_and_balances_starts_on_retail_terrain() {
+    use std::collections::BTreeMap;
+
+    for (players, islands, size, seed) in [(30, 8, 4, 4242), (8, 30, 0, 137), (30, 2, 0, 11)] {
+        let options = RmgOptions {
+            num_players: players,
+            island_count: islands,
+            width: size,
+            height: size,
+            ..ordinary_recipe(seed, 5)
+        };
+        let Some((_assets, prepared, _rules)) = retail_generation_inputs(&options) else {
+            return;
+        };
+        let generated = crate::map::rmg::build::generate_map(
+            &options,
+            &prepared.settings,
+            &prepared.resolved_inputs,
+            &prepared.blocks,
+            &prepared.tech_types,
+        );
+        let (grid, zones) = generated_movement_zones(&options, &prepared, &generated.map_file);
+        let mut land = BTreeMap::<_, usize>::new();
+        for (x, y) in grid.native_cells() {
+            if zones.is_clear_ground(x, y) {
+                *land.entry(zones.zone(x, y)).or_default() += 1;
+            }
+        }
+        land.retain(|_, cells| *cells >= 400);
+        let mut counts: BTreeMap<_, usize> = land.keys().map(|&zone| (zone, 0)).collect();
+        for &(_, x, y) in &generated.start_waypoints {
+            let zone = zones.zone(i32::from(x), i32::from(y));
+            *counts
+                .get_mut(&zone)
+                .expect("start must be on a buildable island") += 1;
+        }
+        let counts: Vec<_> = counts.into_values().collect();
+        eprintln!("Island War: {players} players / {islands} islands: {counts:?}");
+        assert_eq!(
+            land.len(),
+            islands as usize,
+            "exact disconnected island count"
+        );
+        assert_eq!(generated.start_waypoints.len(), players as usize);
+        assert_eq!(generated.unfilled_start_slots, 0);
+        assert!(counts.iter().max().unwrap() - counts.iter().min().unwrap() <= 1);
+        assert_eq!(
+            generated
+                .start_waypoints
+                .iter()
+                .map(|&(_, x, y)| (x, y))
+                .collect::<std::collections::BTreeSet<_>>()
+                .len(),
+            players as usize
+        );
+    }
+}
+
+#[test]
+#[ignore = "slow; run when changing Mountainous generation"]
+fn giant_mountainous_map_has_ridges_and_plateau_ramps() {
+    let mut options = RmgOptions::default();
+    options.apply_sed(&crate::rules::ini_parser::IniFile::from_str(
+        "[RandomMap]\nMapType=4\nVERAMountainRidges=yes\nWidth=5\nHeight=5\nNumPlayers=30\nSeed=36753\n\
+         Ruggedness=96\nRegionSize=4\nAccessibility=0\nWaterAmount=93\nTiberium=40\n\
+         TiberiumLayout=66\nVegetation=75\nResources=2\n",
+    ));
+    options.normalize();
+    let Some((_assets, prepared, _rules)) = retail_generation_inputs(&options) else {
+        return;
+    };
+    let cliff_base = i32::from(prepared.theater.cliff_ranges.cliff_set.unwrap());
+    let ramp_base = prepared.resolved_inputs.ids.ramp_base;
+    let mut plateau_ramps = 0;
+    let generated = generate_map_observed(
+        &options,
+        &prepared.settings,
+        &prepared.resolved_inputs,
+        &prepared.blocks,
+        &prepared.tech_types,
+        &mut |view| {
+            if view.point() == GenerationPoint::After(Stage::IslandPasses) {
+                plateau_ramps = view
+                    .snapshot()
+                    .map_file
+                    .cells
+                    .iter()
+                    .filter(|cell| (ramp_base..ramp_base + 8).contains(&cell.tile_index))
+                    .count();
+            }
+        },
+    );
+    let cliffs = generated
+        .map_file
+        .cells
+        .iter()
+        .filter(|cell| (cliff_base..cliff_base + 40).contains(&cell.tile_index))
+        .count();
+    eprintln!(
+        "Giant Mountainous: cliffs={cliffs}, ramp_cells={plateau_ramps}, starts={}",
+        generated.start_waypoints.len()
+    );
+    assert!(
+        cliffs >= 2_000,
+        "a Giant mountain layout needs visible ridge boundaries"
+    );
+    assert!(
+        plateau_ramps >= 64,
+        "plateaus need real ramp tiles before the Hills phase"
+    );
+    assert_eq!(generated.start_waypoints.len(), 30);
+    assert_eq!(generated.unfilled_start_slots, 0);
+    let (grid, zones) = generated_movement_zones(&options, &prepared, &generated.map_file);
+    let (_, start_x, start_y) = generated.start_waypoints[0];
+    let start_zone = zones.zone(i32::from(start_x), i32::from(start_y));
+    let raised: Vec<_> = grid
+        .native_cells()
+        .filter(|&(x, y)| zones.is_clear_ground(x, y) && grid.get(x, y).unwrap().level >= 8)
+        .collect();
+    assert!(
+        raised.len() >= 30_000,
+        "a Giant map needs substantial usable high ground"
+    );
+    assert!(
+        raised.iter().all(|&(x, y)| zones.zone(x, y) == start_zone),
+        "raised plateaus must connect to the starting lowland through ramps"
+    );
+}

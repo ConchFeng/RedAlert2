@@ -174,6 +174,16 @@ pub fn generated_dimensions(options: &RmgOptions) -> (i32, i32) {
     };
     w *= size_factor(options.width);
     h *= size_factor(options.height);
+    if options.map_type == 5 {
+        // Island War needs space for buildable interiors and navigable sea gaps even at Small.
+        let islands = options.island_count.clamp(2, 30) as u32;
+        let strips = (islands - 1).isqrt() + 1;
+        let players_per_island = (players as u32).div_ceil(islands);
+        let player_side = (players_per_island - 1).isqrt() + 1;
+        let minimum_side = (strips * (player_side * 24).max(48)) as i32;
+        w = w.max(minimum_side);
+        h = h.max(minimum_side);
+    }
     // map_w + map_h pads the interior by 16 and must leave the extended cell
     // array's y*1000+x waypoint keys unique.
     let budget = MAX_PADDED_SPAN - 16;

@@ -164,9 +164,11 @@ pub(crate) fn carve_connectors_for_region(
             continue;
         }
 
+        // Original RmgRegion::CarveConnectorsOrBridges005905D0 selects the uphill
+        // receiver at5907F8..590850/590960 before calling590970 at5908EF.
         let carve_regions = CarveRegions {
-            region: region.id,
-            level: region.level,
+            region: uphill.id,
+            level: uphill.level,
             lower_region: downhill.id,
             lower_level: downhill.level,
         };
@@ -242,6 +244,73 @@ mod tests {
             cell_count,
             neighbours: neighbours.to_vec(),
         }
+    }
+
+    #[test]
+    fn a_lower_id_lowland_carves_from_the_uphill_plateau() {
+        use crate::map::playfield::PlayfieldBounds;
+        use crate::map::rmg::grid::RmgGrid;
+        use crate::map::rmg::phases::shore::{SubTile, TileBlock, TileBlocks};
+        use crate::map::rmg::scratch::RmgScratch;
+        use crate::map::rmg::tiles::TileIds;
+        use crate::map::theater::RmgTileKeys;
+
+        struct Blocks(TileBlock);
+        impl TileBlocks for Blocks {
+            fn block(&self, _tile: i32) -> Option<&TileBlock> {
+                Some(&self.0)
+            }
+        }
+        let blocks = Blocks(TileBlock {
+            width: 1,
+            height: 1,
+            subtiles: vec![Some(SubTile {
+                height: 4,
+                ..SubTile::default()
+            })],
+        });
+        let ids = TileIds::from_keys(&RmgTileKeys {
+            clear_tile: Some(0),
+            ramp_base: Some(200),
+            slope_set_pieces: Some(900),
+            ..RmgTileKeys::default()
+        });
+        let mut grid = RmgGrid::new(217, 104, 328);
+        let mut scratch = RmgScratch::new(217, 104, 328);
+        for (x, y) in grid.native_cells().collect::<Vec<_>>() {
+            let uphill = y < 110;
+            let cell = grid.get_mut(x, y).unwrap();
+            cell.tile = 0;
+            cell.level = if uphill { 8 } else { 4 };
+            scratch.get_mut(x, y).region = i32::from(uphill);
+        }
+        let regions = [
+            region(0, 4, false, 1000, &[1]),
+            region(1, 8, false, 1000, &[0]),
+        ];
+        let carved = carve_connectors_for_region(
+            &mut CarveCtx {
+                grid: &mut grid,
+                scratch: &mut scratch,
+                ids: &ids,
+                blocks: &blocks,
+                rng: &mut RmgRng::new(1),
+                playfield: &PlayfieldBounds::from_normalized_local_size(104, 2, 5, 100, 100),
+            },
+            &regions,
+            &regions[0],
+            0,
+            &mut Vec::new(),
+            &mut RmgConstructionTrace::default(),
+        );
+        assert!(
+            carved,
+            "the uphill plateau must admit a ramp regardless of region ID order"
+        );
+        assert!(grid.native_cells().any(|(x, y)| {
+            let cell = grid.get(x, y).unwrap();
+            cell.slope != 0 && (4..8).contains(&cell.level)
+        }));
     }
 
     #[test]

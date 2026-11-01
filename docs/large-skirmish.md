@@ -27,6 +27,58 @@ starts from them.
 Examples, with 8 players → 30 players: Very Large is 120 → 232 cells a side,
 Huge 240 → 464, Giant 480 → 492 (capped).
 
+## Island War random maps
+
+Choose **Island War** in Create Random Map, then set **Islands** to any number
+from **2 through 30**. The count is independent of Players: extra islands can be
+unoccupied. This is a VERA map type (`MapType=5`), separate from the retail types.
+Saved `.SED` recipes retain the choice as `[RandomMap] VERAIslandCount` and include
+it in the Island War map digest.
+
+The water phase reuses the archipelago partition and land-blob code to separate
+the requested islands with sea. Island War grows undersized map dimensions to
+leave buildable interiors and water gaps. Huge and Giant remain useful for larger
+naval battles.
+
+Starting positions are split evenly across buildable islands, with at most one
+start's difference. Larger islands receive any remainder. For example, 30 starts
+on eight islands produce six islands with four starts and two with three. The
+existing farthest-point selector spreads starts within each island, and the
+existing clearing pass protects the land around them. This balance describes the
+generated start slots; unused slots and explicit player position choices can
+change the occupied distribution.
+
+The owners are [options.rs](../src/map/rmg/options.rs),
+[water.rs](../src/map/rmg/phases/water.rs),
+[starts.rs](../src/map/rmg/phases/starts.rs), and the existing
+[setup dialog](../src/ui/skirmish_shell/state/random_map_setup.rs). Unlike the
+retail start filter, Island War admits clear land outside the reference island
+and retains islands below 3% of the map area. The full retail-terrain regression
+`island_war_separates_islands_and_balances_starts_on_retail_terrain` checks exact
+disconnected island counts, balanced starts, and unique starting cells.
+
+Original `Generate`
+(`0x00598960`, type dispatch `0x00598AF3..0x00598B14`) sends both Inland and
+Mountainous through the carved-water driver (`0x0059C580`), which admits at most
+one successful river system and one lake. Legacy Mountainous recipes therefore
+can look mostly like rolling land, including maps with no cliff tiles.
+
+New Mountainous generations enable `[RandomMap] VERAMountainRidges=yes`. On maps
+whose smaller interior side exceeds the retail maximum of 120 cells, the
+[mountain layout](../src/map/rmg/phases/mountains.rs) seeds broad plateaus with
+four-level boundaries and a clear apron. Plateau density grows with map area.
+The existing region, ramp, cliff, start-clearing and Hills phases then produce
+the finished terrain. The layout uses integer geometry and the existing MapGen
+RNG, and runs before starting positions and resources are chosen. It is an
+intentional VERA extension; retail-sized maps keep their original terrain path.
+Older `.SED` files omit the key and retain the legacy mountain layout.
+
+The shared ramp driver also uses the actual uphill region as the carve receiver,
+matching `RmgRegion::CarveConnectorsOrBridges` (`0x005905D0`, receiver selection
+`0x005907F8..0x005908EF`). This allows a higher-ID plateau to connect to a
+lower-ID lowland. The Giant retail regression checks substantial cliff and ramp
+tiles, starting slots, and movement-zone connectivity of the raised ground.
+
 ## Default AI spectator match
 
 A fresh offline Skirmish defaults to one **Observer** and 29 **Normal** computers

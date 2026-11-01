@@ -92,7 +92,7 @@ pub struct TiberiumOutcome {
 /// The pass-1 gem flag, by map type.
 fn pass1_gem_flag(map_type: i32, resources: i32) -> bool {
     match map_type {
-        0 => resources == 3,
+        0 | 5 => resources == 3,
         1 | 3 | 4 => resources != 3,
         2 => true,
         _ => false,

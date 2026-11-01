@@ -22,6 +22,7 @@ pub mod lake;
 pub mod lat_fixup;
 pub mod lat_patches;
 pub mod meander;
+pub(super) mod mountains;
 pub mod ramp;
 pub mod regions;
 pub mod river;

@@ -48,7 +48,12 @@ pub fn derive_from_map_type(
     settings: &RmgSettings,
     rng: &mut impl RandomRanged,
 ) {
-    let bucket = options.map_type.clamp(0, MAP_TYPES as i32 - 1) as usize;
+    options.mountain_ridges = options.map_type == 4;
+    let bucket = if options.map_type == 5 {
+        2
+    } else {
+        options.map_type.clamp(0, MAP_TYPES as i32 - 1) as usize
+    };
 
     options.water_amount = rng.ranged(WATER_MIN[bucket], WATER_MAX[bucket]);
     options.ruggedness = rng.ranged(RUGGEDNESS_MIN[bucket], RUGGEDNESS_MAX[bucket]);

@@ -997,6 +997,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
         ("GUI:MapSize", "Map Size"),
         ("GUI:Resources", "Resources"),
         ("GUI:Players", "Players"),
+        ("VERA:IslandCount", "Islands"),
     ]
     .into_iter()
     .enumerate()
@@ -1004,7 +1005,7 @@ pub(super) fn push_random_map_setup_modal_text_draws(
         push_text_draw(
             out,
             state,
-            &localized_label(state, key, fallback),
+            &localized_vera_label(state.process_assets.csf.as_ref(), key, fallback),
             rect_to_text_rect(layout.label_rects[row]),
             SHELL_LABEL_TEXT_RGB,
             ShellAlign::V_CENTER,
@@ -1099,12 +1100,12 @@ pub(super) fn push_random_map_setup_modal_text_draws(
     // Selected entry on each closed combo face. A value with no entry -- map
     // type 0, which the list omits -- leaves the face blank, as the original's
     // match-the-entry selection does.
-    for (row, combo) in SETUP_COMBO_ROWS.iter().enumerate() {
+    for combo in &SETUP_COMBO_ROWS {
         let items = setup_combo_items(*combo);
         let Some(selected) = modal.selected_item_index(*combo) else {
             continue;
         };
-        let rect = combo_text_rect(layout.control_rects[row], scale);
+        let rect = combo_text_rect(layout.control_rects[combo.row()], scale);
         if text_covered_by_overlay(rect, &open_list) {
             continue;
         }
@@ -1121,19 +1122,23 @@ pub(super) fn push_random_map_setup_modal_text_draws(
         );
     }
 
-    // The players trackbar carries its value in the plaque at its right end.
-    let value_rect = value_text_rect(layout.control_rects[PLAYERS_ROW], scale);
-    if !text_covered_by_overlay(value_rect, &open_list) {
-        push_text_draw(
-            out,
-            state,
-            &modal.options.num_players.to_string(),
-            rect_to_text_rect(value_rect),
-            SHELL_LABEL_TEXT_RGB,
-            ShellAlign::H_CENTER | ShellAlign::V_CENTER,
-            SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
-            scale.factor(),
-        );
+    for (row, value) in [
+        (PLAYERS_ROW, modal.options.num_players),
+        (6, modal.options.island_count),
+    ] {
+        let value_rect = value_text_rect(layout.control_rects[row], scale);
+        if !text_covered_by_overlay(value_rect, &open_list) {
+            push_text_draw(
+                out,
+                state,
+                &value.to_string(),
+                rect_to_text_rect(value_rect),
+                SHELL_LABEL_TEXT_RGB,
+                ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+                SHELL_DROPDOWN_TEXT_DEPTH - 0.00009,
+                scale.factor(),
+            );
+        }
     }
 
     if modal.generating {
@@ -1725,12 +1730,14 @@ mod tests {
             // The Players window has the runtime growth (226 wide) the
             // combos do not have yet (225), so its value text runs one
             // column past the lists.
-            let mut players_value =
-                value_text_rect(layout.control_rects[PLAYERS_ROW], ShellScale::RETAIL);
-            players_value.w -= 1;
+            let slider_values = layout.control_rects[PLAYERS_ROW..].iter().map(|&control| {
+                let mut value = value_text_rect(control, ShellScale::RETAIL);
+                value.w -= 1;
+                value
+            });
             let texts: Vec<RectPx> = (0..PLAYERS_ROW)
                 .map(|row| combo_text_rect(layout.control_rects[row], ShellScale::RETAIL))
-                .chain([players_value])
+                .chain(slider_values)
                 .collect();
             for combo in SETUP_COMBO_ROWS {
                 let list = random_map_setup_dropdown_rect(

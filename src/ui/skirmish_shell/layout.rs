@@ -78,12 +78,12 @@ const SETUP_LABEL_X: i32 = 74;
 const SETUP_LABEL_W: i32 = 93;
 const SETUP_CONTROL_X: i32 = 179;
 const SETUP_CONTROL_W: i32 = 150;
-/// Row tops for map type, time, theater, size, resources, players.
-const SETUP_ROW_Y: [i32; 6] = [41, 65, 90, 114, 138, 163];
+/// Row tops for map type, time, theater, size, resources, players, and islands.
+const SETUP_ROW_Y: [i32; 7] = [41, 65, 90, 114, 138, 163, 187];
 /// Label tops; the taller rows sit one DLU above their control.
-const SETUP_LABEL_Y: [i32; 6] = [40, 64, 90, 114, 138, 162];
+const SETUP_LABEL_Y: [i32; 7] = [40, 64, 90, 114, 138, 162, 187];
 /// Label heights are NOT uniform: rows 0/1/5 are 14 DLU, rows 2/3/4 are 12.
-const SETUP_LABEL_H: [i32; 6] = [14, 14, 12, 12, 12, 14];
+const SETUP_LABEL_H: [i32; 7] = [14, 14, 12, 12, 12, 14, 12];
 const SETUP_COMBO_H: i32 = 103;
 /// The time combo's dropdown is two DLU shorter than the others.
 const SETUP_TIME_COMBO_H: i32 = 101;
@@ -283,6 +283,7 @@ pub enum RandomMapSetupControl {
     Size0x406,
     Resources0x408,
     Players0x3eb,
+    Islands,
     Randomize0x621,
     Generate0x620,
     Ok0x6c5,
@@ -332,8 +333,8 @@ pub struct RandomMapSetupLayout {
     pub scale: ShellScale,
     pub screen: RectPx,
     pub dialog: RectPx,
-    pub label_rects: [RectPx; 6],
-    pub control_rects: [RectPx; 6],
+    pub label_rects: [RectPx; 7],
+    pub control_rects: [RectPx; 7],
     pub randomize: RectPx,
     pub generate: RectPx,
     pub seed_field: RectPx,
@@ -780,8 +781,7 @@ pub fn compute_choose_map_modal_layout(screen_w: u32, screen_h: u32) -> ChooseMa
 /// Layout for the random-map setup dialog `0x105`.
 ///
 /// Shares choose-map's frame and right-panel anchoring; only the left column
-/// differs. Rows are map type, time, theater, size, resources, players — the
-/// players row is a trackbar, so it is shorter than the five combos.
+/// differs. Five combo rows precede the Players and Islands trackbars.
 pub fn compute_random_map_setup_layout(screen_w: u32, screen_h: u32) -> RandomMapSetupLayout {
     let screen_w = screen_w as i32;
     let screen_h = screen_h as i32;
@@ -789,7 +789,7 @@ pub fn compute_random_map_setup_layout(screen_w: u32, screen_h: u32) -> RandomMa
 
     let control_h = |row: usize| match row {
         1 => SETUP_TIME_COMBO_H,
-        5 => SETUP_TRACKBAR_H,
+        5 | 6 => SETUP_TRACKBAR_H,
         _ => SETUP_COMBO_H,
     };
     let label_rects = std::array::from_fn(|row| {
@@ -803,7 +803,7 @@ pub fn compute_random_map_setup_layout(screen_w: u32, screen_h: u32) -> RandomMa
     // The players trackbar takes its runtime window; the combos keep the
     // resource conversion, which their face paint expects.
     let control_rects = std::array::from_fn(|row| {
-        let window = if row == 5 { child_window } else { dlu_rect };
+        let window = if row >= 5 { child_window } else { dlu_rect };
         window(
             SETUP_CONTROL_X,
             SETUP_ROW_Y[row],
@@ -882,19 +882,20 @@ pub fn random_map_setup_control_at(
     x: i32,
     y: i32,
 ) -> Option<RandomMapSetupControl> {
-    const ROW_CONTROLS: [RandomMapSetupControl; 6] = [
+    const ROW_CONTROLS: [RandomMapSetupControl; 7] = [
         RandomMapSetupControl::MapType0x405,
         RandomMapSetupControl::Time0x3ea,
         RandomMapSetupControl::Theater0x407,
         RandomMapSetupControl::Size0x406,
         RandomMapSetupControl::Resources0x408,
         RandomMapSetupControl::Players0x3eb,
+        RandomMapSetupControl::Islands,
     ];
     // A closed combo only occupies its face, not the dropdown extent the
     // resource reserves, so hit-test the face height the shell already uses.
     for (row, control) in ROW_CONTROLS.iter().enumerate() {
         let rect = layout.control_rects[row];
-        let face_h = if row == 5 {
+        let face_h = if row >= 5 {
             rect.h
         } else {
             combo_face_rect(rect, layout.scale).h
@@ -928,12 +929,19 @@ pub fn random_map_setup_dropdown_rect(
     item_count: usize,
 ) -> RectPx {
     let face = combo_face_rect(layout.control_rects[row], layout.scale);
-    RectPx::new(
+    let mut list = RectPx::new(
         face.x,
         face.y + face.h,
         face.w,
         DropdownMetrics::scaled(layout.scale).row_h * item_count as i32,
-    )
+    );
+    for &control in layout.control_rects.iter().take(5).skip(row + 1) {
+        let covered = combo_face_rect(control, layout.scale);
+        if covered.y < list.y + list.h && covered.y + covered.h > list.y + list.h {
+            list.h = covered.y + covered.h - list.y;
+        }
+    }
+    list
 }
 
 /// Which entry of an open dropdown `(x, y)` falls on.

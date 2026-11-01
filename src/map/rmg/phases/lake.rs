@@ -533,6 +533,7 @@ mod tests {
             map_type,
             water_percent,
             num_players: 4,
+            island_count: 4,
             bridge_enabled: false,
             playable: PlayableRect {
                 x: 2,

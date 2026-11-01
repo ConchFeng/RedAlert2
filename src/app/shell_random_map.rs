@@ -7,7 +7,7 @@ pub(crate) const RANDMAP_SED_FILE: &str = "RandMap.Sed";
 /// becomes the sentinel row's displayed name.
 pub(super) const RANDOM_MAP_DESCRIPTION_KEY: &str = "TXT_RANDOM_MAP_DESCRIPTION";
 pub(super) const RANDOM_MAP_DESCRIPTION_FALLBACK: &str = "Random Map";
-/// The players slider is the last of the setup dialog's six option rows.
+/// The Players slider follows the setup dialog's five combo rows.
 const SETUP_PLAYERS_ROW: usize = 5;
 /// Matches the rules default the map-load path falls back to; the preview only
 /// needs it because terrain resolution takes it, not because cliffs affect the
@@ -29,6 +29,7 @@ struct RandomMapStorageKey {
     num_players: i32,
     width: i32,
     height: i32,
+    island_war_dimensions: Option<(i32, i32)>,
 }
 
 impl RandomMapStorageKey {
@@ -40,6 +41,8 @@ impl RandomMapStorageKey {
             num_players: normalized.num_players,
             width: normalized.width,
             height: normalized.height,
+            island_war_dimensions: (normalized.map_type == 5)
+                .then(|| crate::map::rmg::generated_dimensions(&normalized)),
         }
     }
 }
@@ -1452,6 +1455,13 @@ impl App {
                 }
                 return true;
             }
+            if control == crate::ui::skirmish_shell::RandomMapSetupControl::Islands {
+                let rect = layout.control_rects[6];
+                if modal.is_enabled(control) && modal.press_islands(x, y, rect, layout.scale) {
+                    Self::play_skirmish_shell_generic_click_sound(state);
+                }
+                return true;
+            }
             // A disabled control swallows the click without arming a press, so
             // releasing over it cannot fire.
             if modal.is_enabled(control) {
@@ -1478,7 +1488,11 @@ impl App {
             .skirmish_shell_state
             .random_map_setup_modal
             .as_ref()
-            .is_some_and(|modal| modal.open_combo.is_some() || modal.players_hold.is_some());
+            .is_some_and(|modal| {
+                modal.open_combo.is_some()
+                    || modal.players_hold.is_some()
+                    || modal.islands_hold.is_some()
+            });
         if !mouse_held {
             let help = crate::ui::skirmish_shell::random_map_setup_control_at(&layout, x, y)
                 .map(|control| {
@@ -1508,11 +1522,14 @@ impl App {
         else {
             return;
         };
-        if modal.players_hold.is_none() {
+        let changed = if modal.players_hold.is_some() {
+            modal.drag_players(x, layout.control_rects[SETUP_PLAYERS_ROW], layout.scale)
+        } else if modal.islands_hold.is_some() {
+            modal.drag_islands(x, layout.control_rects[6], layout.scale)
+        } else {
             return;
-        }
-        let rect = layout.control_rects[SETUP_PLAYERS_ROW];
-        if modal.drag_players(x, rect, layout.scale) {
+        };
+        if changed {
             Self::play_skirmish_shell_generic_click_sound(state);
         }
         state.platform.window.request_redraw();
@@ -1531,7 +1548,7 @@ impl App {
         };
         // The release goes to a slider holding the mouse; freeing it lets the
         // dialog's hit test run again.
-        if modal.players_hold.take().is_some() {
+        if modal.players_hold.take().is_some() | modal.islands_hold.take().is_some() {
             Self::handle_random_map_setup_mouse_move(state);
             return true;
         }
@@ -1612,7 +1629,8 @@ impl App {
             | Control::Theater0x407
             | Control::Size0x406
             | Control::Resources0x408
-            | Control::Players0x3eb => {}
+            | Control::Players0x3eb
+            | Control::Islands => {}
         }
 
         if let Some(mode) = open_browser {
@@ -2265,6 +2283,21 @@ mod tests {
             expected,
             "repeated Generate in one open dialog reuses the cached RMG map storage"
         );
+
+        let mut island_war = same_storage.clone();
+        island_war.map_type = 5;
+        island_war.island_count = 2;
+        assert!(apply_storage_decision_for_test(
+            &mut retention,
+            &island_war,
+            &process_dummy
+        ));
+        island_war.island_count = 30;
+        assert!(apply_storage_decision_for_test(
+            &mut retention,
+            &island_war,
+            &process_dummy
+        ));
 
         type OptionsChange = fn(&mut crate::map::rmg::RmgOptions);
         let changes: [(&str, OptionsChange); 4] = [

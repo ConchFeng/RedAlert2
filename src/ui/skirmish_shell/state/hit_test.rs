@@ -273,6 +273,7 @@ pub fn status_help_key_for_random_map_setup(control: RandomMapSetupControl) -> &
         C::Size0x406 => "STT:GenerateCBoxMapSize",
         C::Resources0x408 => "STT:GenerateCBoxResources",
         C::Players0x3eb => "STT:GenerateSliderNumPlayers",
+        C::Islands => "",
         C::Randomize0x621 => "STT:GenerateButtonSurprise",
         C::Generate0x620 => "STT:GenerateButtonPreview",
         C::Ok0x6c5 => "STT:GenerateButtonUseMap",
