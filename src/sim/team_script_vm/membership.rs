@@ -542,21 +542,23 @@ impl Simulation {
             return false;
         }
         let owner = team.owner;
+        // The original asks Can_Add of every other house's infantryman and
+        // aircraft too, and Can_Add (0x006EA610) refuses each one without a
+        // side effect, so leaving them out keeps the winner and spares a
+        // 30-house match most of its calls and of the class walk.
         let candidates: Vec<RecruitCandidate> = self
             .substrate
             .entities
-            .iter_sorted()
-            .filter(|(_, entity)| entity.category() == class)
+            .iter_owned_of_category(owner, class)
             .map(|(id, entity)| RecruitCandidate {
                 id,
                 xy: position_world_xy(&entity.position),
                 // gamemd.exe Recruit6EAA90 reads Techno+214, including
                 // authored campaign groups (6EAC7A for Infantry).
                 group: entity.object_group(),
-                // The unit search's own house and type test.
+                // The unit search's own type test; the house test is above.
                 matches: class != EntityCategory::Unit
-                    || (entity.owner() == owner
-                        && member_type_identity(entity) == entry.member_type),
+                    || member_type_identity(entity) == entry.member_type,
             })
             .collect();
         let winner = recruit_pick(&candidates, origin, group, recruiter, |id| {

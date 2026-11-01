@@ -540,6 +540,24 @@ impl EntityStore {
             .filter_map(|(_, entity)| entity.as_deref())
     }
 
+    /// `owner`'s entities of `category` with their ids, in stable_id order,
+    /// chosen by the owner and category columns without loading the others.
+    pub(crate) fn iter_owned_of_category(
+        &self,
+        owner: InternedId,
+        category: EntityCategory,
+    ) -> impl Iterator<Item = (u64, &GameEntity)> {
+        self.ids
+            .iter()
+            .zip(&self.owners)
+            .zip(&self.categories)
+            .zip(&self.entities)
+            .filter(move |&(((_, &stored_owner), &stored), _)| {
+                stored_owner == owner && stored == category
+            })
+            .filter_map(|(((&id, _), _), entity)| entity.as_deref().map(|entity| (id, entity)))
+    }
+
     /// Iterate all entities mutably in stable_id order.
     pub fn values_mut(&mut self) -> impl Iterator<Item = &mut GameEntity> {
         self.touched.note_all();
@@ -1035,6 +1053,21 @@ mod tests {
                             .map(|(&id, _)| id)
                             .collect::<Vec<_>>()
                     );
+                    for house in houses {
+                        assert_eq!(
+                            store
+                                .iter_owned_of_category(house, class)
+                                .map(|(id, entity)| (id, entity.stable_id()))
+                                .collect::<Vec<_>>(),
+                            categories
+                                .iter()
+                                .filter(|&(id, &category)| {
+                                    category == class && owners.get(id) == Some(&house)
+                                })
+                                .map(|(&id, _)| (id, id))
+                                .collect::<Vec<_>>()
+                        );
+                    }
                 }
                 assert_eq!(
                     store.building_registry,
