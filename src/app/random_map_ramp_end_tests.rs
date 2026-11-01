@@ -271,6 +271,7 @@ fn generated_connector_uses_native_slope_piece_tileset() {
         &mut assets,
         Some(&rules),
         Some(seed_name),
+        None,
         &mut SilentProgress,
     )
     .expect("ordinary selected-.SED load");

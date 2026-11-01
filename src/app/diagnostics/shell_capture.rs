@@ -182,6 +182,10 @@ const CHECKPOINT_SKIRMISH_DEFEAT_REPLAY: &str = "skirmish-defeat-replay";
 const CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD: &str = "skirmish-observer-generated-battlefield";
 const CHECKPOINT_SKIRMISH_OBSERVER_CAMERA: &str = "skirmish-observer-camera";
 const CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS: &str = "skirmish-observer-standings";
+const CHECKPOINT_SKIRMISH_AI_SERIES_SETUP: &str = "skirmish-ai-series-setup";
+const CHECKPOINT_SKIRMISH_AI_SERIES_START: &str = "skirmish-ai-series-start";
+const CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS: &str = "skirmish-ai-series-results";
+const CHECKPOINT_SKIRMISH_AI_SERIES_RECOVERY: &str = "skirmish-ai-series-recovery";
 const CHECKPOINT_SKIRMISH_DIPLOMACY: &str = "skirmish-diplomacy";
 const CHECKPOINT_SCORE_0X108_STEADY: &str = "score-0x108-steady";
 const CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY: &str = "campaign-score-0x103-steady";
@@ -363,6 +367,10 @@ pub enum ShellCaptureCheckpoint {
     SkirmishObserverBattlefield,
     SkirmishObserverCamera,
     SkirmishObserverStandings,
+    SkirmishAiSeriesSetup,
+    SkirmishAiSeriesStart,
+    SkirmishAiSeriesResults,
+    SkirmishAiSeriesRecovery,
     SkirmishDiplomacy,
     /// The score dialog `0x108` with the retail comparison game's values,
     /// settled.
@@ -586,6 +594,10 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD => Ok(Self::SkirmishObserverBattlefield),
             CHECKPOINT_SKIRMISH_OBSERVER_CAMERA => Ok(Self::SkirmishObserverCamera),
             CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS => Ok(Self::SkirmishObserverStandings),
+            CHECKPOINT_SKIRMISH_AI_SERIES_SETUP => Ok(Self::SkirmishAiSeriesSetup),
+            CHECKPOINT_SKIRMISH_AI_SERIES_START => Ok(Self::SkirmishAiSeriesStart),
+            CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS => Ok(Self::SkirmishAiSeriesResults),
+            CHECKPOINT_SKIRMISH_AI_SERIES_RECOVERY => Ok(Self::SkirmishAiSeriesRecovery),
             CHECKPOINT_SKIRMISH_DIPLOMACY => Ok(Self::SkirmishDiplomacy),
             CHECKPOINT_SCORE_0X108_STEADY => Ok(Self::Score0x108Steady),
             CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY => Ok(Self::CampaignScore0x103Steady),
@@ -989,6 +1001,10 @@ impl ShellCaptureCheckpoint {
             Self::SkirmishObserverBattlefield => CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD,
             Self::SkirmishObserverCamera => CHECKPOINT_SKIRMISH_OBSERVER_CAMERA,
             Self::SkirmishObserverStandings => CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
+            Self::SkirmishAiSeriesSetup => CHECKPOINT_SKIRMISH_AI_SERIES_SETUP,
+            Self::SkirmishAiSeriesStart => CHECKPOINT_SKIRMISH_AI_SERIES_START,
+            Self::SkirmishAiSeriesResults => CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS,
+            Self::SkirmishAiSeriesRecovery => CHECKPOINT_SKIRMISH_AI_SERIES_RECOVERY,
             Self::SkirmishDiplomacy => CHECKPOINT_SKIRMISH_DIPLOMACY,
             Self::Score0x108Steady => CHECKPOINT_SCORE_0X108_STEADY,
             Self::CampaignScore0x103Steady => CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY,
@@ -2369,6 +2385,18 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::SkirmishObserverStandings => {
                 Some(skirmish::SkirmishCapture::observer_standings())
             }
+            ShellCaptureCheckpoint::SkirmishAiSeriesSetup => Some(
+                skirmish::SkirmishCapture::ai_series(skirmish::AiSeriesTarget::Setup),
+            ),
+            ShellCaptureCheckpoint::SkirmishAiSeriesStart => Some(
+                skirmish::SkirmishCapture::ai_series(skirmish::AiSeriesTarget::Start),
+            ),
+            ShellCaptureCheckpoint::SkirmishAiSeriesResults => Some(
+                skirmish::SkirmishCapture::ai_series(skirmish::AiSeriesTarget::Results),
+            ),
+            ShellCaptureCheckpoint::SkirmishAiSeriesRecovery => Some(
+                skirmish::SkirmishCapture::ai_series(skirmish::AiSeriesTarget::Recovery),
+            ),
             ShellCaptureCheckpoint::SkirmishDiplomacy => Some(skirmish::SkirmishCapture::loading(
                 skirmish::LoadingTarget::Diplomacy,
             )),
@@ -2521,6 +2549,10 @@ impl ShellCaptureSession {
             self.request.checkpoint,
             ShellCaptureCheckpoint::SkirmishObserverBattlefield
                 | ShellCaptureCheckpoint::SkirmishObserverStandings
+                | ShellCaptureCheckpoint::SkirmishAiSeriesSetup
+                | ShellCaptureCheckpoint::SkirmishAiSeriesStart
+                | ShellCaptureCheckpoint::SkirmishAiSeriesResults
+                | ShellCaptureCheckpoint::SkirmishAiSeriesRecovery
         ) {
             return 40_000;
         }
@@ -4596,6 +4628,26 @@ mod tests {
             (
                 CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
                 ShellCaptureCheckpoint::SkirmishObserverStandings,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_AI_SERIES_SETUP,
+                ShellCaptureCheckpoint::SkirmishAiSeriesSetup,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_AI_SERIES_START,
+                ShellCaptureCheckpoint::SkirmishAiSeriesStart,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_AI_SERIES_RESULTS,
+                ShellCaptureCheckpoint::SkirmishAiSeriesResults,
+                40_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_AI_SERIES_RECOVERY,
+                ShellCaptureCheckpoint::SkirmishAiSeriesRecovery,
                 40_000,
             ),
         ] {

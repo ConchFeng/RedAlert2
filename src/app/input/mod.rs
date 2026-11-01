@@ -47,3 +47,5 @@ pub(crate) mod network_options;
 pub(crate) mod multiplayer_setup;
 pub(crate) mod campaign_input;
 pub(crate) mod touch;
+
+pub(crate) mod ai_series;

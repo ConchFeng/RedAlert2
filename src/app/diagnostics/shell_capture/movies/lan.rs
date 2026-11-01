@@ -1136,6 +1136,7 @@ impl LanCapture {
             manager.context("controlled host assets")?,
             rules,
             Some(crate::map::skirmish_scenarios::RANDMAP_SED),
+            None,
             &mut Silent,
         )?;
         let map = initial.map_data();

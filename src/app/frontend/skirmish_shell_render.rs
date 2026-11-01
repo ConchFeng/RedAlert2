@@ -105,6 +105,7 @@ const SHELL_PARENT_BACKGROUND_DEPTH: f32 = 0.00090;
 const SHELL_LOWER_STRIP_DEPTH: f32 = 0.00077;
 const SHELL_PREVIEW_BACKDROP_DEPTH: f32 = 0.00059;
 const SHELL_PREVIEW_SURFACE_DEPTH: f32 = 0.00058;
+const RIGHT_PANEL_BUTTON_DEPTH: f32 = 0.00059;
 const SHELL_CONTROL_DEPTH: f32 = 0.00055;
 const SHELL_CONTROL_TEXT_DEPTH: f32 = 0.00039;
 const SHELL_SWATCH_DEPTH: f32 = 0.00054;
@@ -363,7 +364,6 @@ fn build_skirmish_shell_instances(
         );
     }
 
-    const RIGHT_PANEL_BUTTON_DEPTH: f32 = 0.00059;
     match wave {
         // While either slide runs the engine draws the top-panel art (map
         // button, top panel, warning display) and the whole tile column in
@@ -763,6 +763,19 @@ fn render_skirmish_shell_with_atlas(
         );
     }
     let parent_showing = !message_box_up && choose_map_layout.is_none() && !leaving;
+    if parent_showing
+        && !sliding
+        && let Some(rect) = crate::app::frontend::ai_series_render::entry_rect(state)
+    {
+        push_right_panel_button_shp(
+            &mut instances,
+            atlas,
+            rect,
+            state.frontend.ai_series_dialog_buttons.is_pressed(0xF220),
+            false,
+            RIGHT_PANEL_BUTTON_DEPTH,
+        );
+    }
     // ComboDropWin is a popup over the dialog: its frame and rows go after
     // every dialog text, which this unbuffered pass paints in queue order.
     let mut dropdown_instances = Vec::new();
@@ -801,6 +814,20 @@ fn render_skirmish_shell_with_atlas(
     } else {
         (Vec::new(), Vec::new())
     };
+    if parent_showing
+        && !sliding
+        && let Some(rect) = crate::app::frontend::ai_series_render::entry_rect(state)
+    {
+        push_button_label_draw(
+            &mut shell_draws,
+            state,
+            &localized_vera_label(state, "VERA:AISeries", "AI Series..."),
+            rect,
+            state.frontend.ai_series_dialog_buttons.is_pressed(0xF220),
+            SHELL_CONTROL_TEXT_DEPTH,
+            layout.scale,
+        );
+    }
     if let Some(choose_map_layout) = choose_map_layout.as_ref().filter(|_| !message_box_up) {
         // Mirrors the sprite pass: the setup dialog replaces the chooser, so
         // only one of the two contributes text.

@@ -294,6 +294,8 @@ pub(crate) struct LoadingRequest {
     /// Setup-generated preview retained only as a loading-composition fallback.
     /// It never supplies gameplay map data, RNG continuation, or constructors.
     random_map_preview: Option<crate::map::rmg::GeneratedMap>,
+    /// Explicit series input; ordinary selected `.SED` loads keep reading disk.
+    frozen_seed_bytes: Option<std::sync::Arc<[u8]>>,
     /// Phobos `[General] SkirmishUnlimitedColors=` for this load. The match
     /// owner stamps it from the rules it just loaded; the constructors leave it
     /// unset, which resolves to the vanilla priority table.
@@ -324,6 +326,7 @@ impl LoadingRequest {
             },
             accepted_rmg_start_staging: None,
             random_map_preview: None,
+            frozen_seed_bytes: None,
             skirmish_colors: None,
         }
     }
@@ -333,6 +336,7 @@ impl LoadingRequest {
             startup: LoadingStartup::Campaign(startup),
             accepted_rmg_start_staging: None,
             random_map_preview: None,
+            frozen_seed_bytes: None,
             skirmish_colors: None,
         }
     }
@@ -346,6 +350,7 @@ impl LoadingRequest {
             startup,
             accepted_rmg_start_staging: None,
             random_map_preview: None,
+            frozen_seed_bytes: None,
             skirmish_colors: None,
         }
     }
@@ -355,6 +360,7 @@ impl LoadingRequest {
             startup: LoadingStartup::Accepted(startup),
             accepted_rmg_start_staging: None,
             random_map_preview: None,
+            frozen_seed_bytes: None,
             skirmish_colors: None,
         }
     }
@@ -370,6 +376,7 @@ impl LoadingRequest {
             },
             accepted_rmg_start_staging: None,
             random_map_preview: None,
+            frozen_seed_bytes: None,
             skirmish_colors: None,
         }
     }
@@ -382,6 +389,7 @@ impl LoadingRequest {
             },
             accepted_rmg_start_staging: None,
             random_map_preview: None,
+            frozen_seed_bytes: None,
             skirmish_colors: None,
         }
     }
@@ -419,6 +427,7 @@ impl LoadingRequest {
             asset_manager,
             native_rules,
             Some(self.startup().physical_map_file()),
+            self.frozen_seed_bytes.as_deref(),
             progress,
         )?;
         if let LoadingStartup::Network(_) = self.startup() {
@@ -480,9 +489,10 @@ impl LoadingRequest {
         accepted: Option<crate::app::shell_random_map::AcceptedRandomMapLaunch>,
     ) -> Self {
         if let Some(accepted) = accepted {
-            let (preview, start_staging) = accepted.into_parts();
-            self.random_map_preview = Some(preview);
+            let (preview, start_staging, seed_bytes) = accepted.into_parts();
+            self.random_map_preview = preview;
             self.accepted_rmg_start_staging = Some(start_staging);
+            self.frozen_seed_bytes = seed_bytes;
         }
         self
     }
@@ -1336,6 +1346,7 @@ fn prepare_session_for_loading(
 }
 
 pub(crate) fn begin_loading(state: &mut AppState, request: LoadingRequest) {
+    crate::app::ai_series::external_world_replacement(state);
     state
         .frontend
         .multiplayer_shell_runtime
@@ -3256,6 +3267,9 @@ fn fail_loading(state: &mut AppState, policy: LoadingFailurePolicy, err: anyhow:
         policy,
     );
     reset_loading_presentation(state);
+    if crate::app::ai_series::loading_failed(state, &format!("{err:#}")) {
+        return;
+    }
     if state.frontend.external_launch {
         state.frontend.external_launch_error = Some(format!("CnCNet map loading failed: {err:#}"));
         crate::app::App::return_to_main_menu(state);

@@ -560,13 +560,23 @@ impl App {
     ) {
         let layout = Self::score_layout(state);
         let mut feed = Self::menu_page_button_feed(&layout.page);
+        if crate::app::ai_series::in_progress(state) {
+            feed.retain(|control| control.id != crate::ui::score_shell::CONTINUE_BUTTON);
+        }
+        for (id, _) in crate::app::ai_series::score_actions(state) {
+            if let Some(rect) = crate::app::frontend::ai_series_render::score_action_rect(state, id)
+            {
+                feed.push(crate::ui::shell::layout::LaidOutControl { id, rect });
+            }
+        }
         if crate::app::match_runtime::post_match::available(state) {
             for id in [
                 crate::ui::score_shell::VIEW_BATTLEFIELD,
                 crate::ui::score_shell::PLAY_AGAIN,
             ] {
                 if id == crate::ui::score_shell::PLAY_AGAIN
-                    && !crate::app::match_runtime::post_match::replay_available(state)
+                    && (crate::app::ai_series::in_progress(state)
+                        || !crate::app::match_runtime::post_match::replay_available(state))
                 {
                     continue;
                 }
@@ -627,6 +637,7 @@ impl App {
     pub(super) fn handle_score_shell_mouse_up(state: &mut AppState) {
         let (_, feed, (x, y)) = Self::score_input(state);
         match state.frontend.shell_controller.on_pointer_up(x, y, &feed) {
+            Some(id @ 0xF210..=0xF215) => crate::app::ai_series::activate_score_action(state, id),
             Some(crate::ui::score_shell::VIEW_BATTLEFIELD) => {
                 crate::app::match_runtime::post_match::view_battlefield(state)
             }

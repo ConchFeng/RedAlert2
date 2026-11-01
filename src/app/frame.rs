@@ -878,6 +878,10 @@ impl App {
                     crate::app::frontend::skirmish_shell_render::render_network_options(state, &mut encoder, &output.texture)?;
                 }
             }
+            _ if crate::app::frontend::ai_series_render::dialog_active(state) => {
+                crate::app::frontend::ai_series_render::render_ai_series_setup(state, &mut encoder, &output.texture)?;
+                presented_shell = PresentedShell::Skirmish;
+            }
             _ if screen_page == ScreenPage::FullscreenMovie => {
                 Self::advance_fullscreen_movie(state)?;
                 if state.frontend.fullscreen_movie.is_some() {

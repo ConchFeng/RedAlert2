@@ -1129,6 +1129,9 @@ impl ApplicationHandler for App {
                     }
                     return;
                 }
+                if crate::app::input::ai_series::key(state, &event) {
+                    return;
+                }
                 if let PhysicalKey::Code(code) = event.physical_key {
                     // ESC always reaches the handler when in-game (even when paused)
                     // so the player can toggle pause regardless of diagnostic GUI focus.
@@ -1391,6 +1394,9 @@ impl ApplicationHandler for App {
                     state.match_state.input.cursor_from_touch = false;
                 }
                 state.set_cursor_from_window(position.x as f32, position.y as f32);
+                if crate::app::input::ai_series::cursor_moved(state) {
+                    return;
+                }
                 let layer = crate::app::input::precedence::input_layer(state);
                 match layer {
                     InputLayer::HouseOutcomeWait => return,
@@ -1523,6 +1529,9 @@ impl ApplicationHandler for App {
                         return;
                     }
                 };
+                if crate::app::input::ai_series::mouse(state, button, btn_state.is_pressed()) {
+                    return;
+                }
                 let left = button == MouseButton::Left;
                 let pressed = btn_state.is_pressed();
                 match screen {
@@ -1636,6 +1645,9 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseWheel { delta, .. } => {
+                if crate::app::frontend::ai_series_render::dialog_active(state) {
+                    return;
+                }
                 let lines = match delta {
                     MouseScrollDelta::LineDelta(_, y) => y,
                     MouseScrollDelta::PixelDelta(pos) => (pos.y as f32 / 30.0).clamp(-3.0, 3.0),
@@ -1755,6 +1767,7 @@ impl ApplicationHandler for App {
             Self::update_saved_seed_browser_scroll(state, false);
             Self::update_load_saved_game_scroll(state, false);
             [
+                crate::app::ai_series::poll(state),
                 crate::app::input::keyboard::poll_scroll_repeat(state),
                 crate::app::input::network_options::poll_scroll_repeat(state),
                 crate::app::shell_lan::poll(state),

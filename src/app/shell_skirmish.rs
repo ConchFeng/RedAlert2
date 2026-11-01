@@ -163,10 +163,33 @@ impl App {
         session: crate::skirmish_launch::SkirmishLaunchSession,
         clock: &mut impl crate::app::match_bootstrap::MatchSeedClock,
     ) -> anyhow::Result<()> {
-        let accepted_random_map = state
-            .frontend
-            .random_map_retention
-            .take_acceptance_for_loading(session.selected_map_file.as_deref());
+        Self::start_skirmish_session_with_frozen(state, session, clock, None)
+    }
+
+    pub(super) fn start_skirmish_session_with_frozen(
+        state: &mut AppState,
+        session: crate::skirmish_launch::SkirmishLaunchSession,
+        clock: &mut impl crate::app::match_bootstrap::MatchSeedClock,
+        frozen: Option<&crate::app::shell_random_map::FrozenRandomMapAcceptance>,
+    ) -> anyhow::Result<()> {
+        let accepted_random_map = if let Some(frozen) = frozen {
+            Some(
+                state
+                    .frontend
+                    .random_map_retention
+                    .reissue_acceptance_for_loading(frozen, session.selected_map_file.as_deref())
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "Series generated-map acceptance does not match the selected map"
+                        )
+                    })?,
+            )
+        } else {
+            state
+                .frontend
+                .random_map_retention
+                .take_acceptance_for_loading(session.selected_map_file.as_deref())
+        };
         let request = match crate::app::match_bootstrap::classify_startup_session(&session) {
             crate::app::match_bootstrap::StartupSessionClassification::AcceptedExplicitFixedBattle(
                 accepted,

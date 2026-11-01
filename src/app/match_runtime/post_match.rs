@@ -49,6 +49,7 @@ pub(crate) fn view_battlefield(state: &mut AppState) {
     if !available(state) {
         return;
     }
+    crate::app::ai_series::pause_for_inspection(state);
     state.frontend.shell_first_paint_slide = None;
     state
         .match_state
@@ -65,6 +66,7 @@ pub(crate) fn show_results(state: &mut AppState) {
     if !viewing_battlefield(state) {
         return;
     }
+    crate::app::ai_series::resume_results(state);
     let kind = state
         .match_state
         .sim_runtime

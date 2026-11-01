@@ -279,7 +279,7 @@ pub(crate) struct RandomMapGenerationJob {
 
 /// Provenance-bearing copy of the eight Scenario start-staging cells written
 /// by the accepted random-map setup run.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct AcceptedRmgStartStaging {
     starts: Vec<crate::map::waypoints::Waypoint>,
 }
@@ -347,13 +347,50 @@ impl AcceptedRmgStartStaging {
 /// gameplay start cells.
 #[derive(Debug)]
 pub(crate) struct AcceptedRandomMapLaunch {
-    presentation_preview: crate::map::rmg::GeneratedMap,
+    presentation_preview: Option<crate::map::rmg::GeneratedMap>,
     start_staging: AcceptedRmgStartStaging,
+    seed_bytes: Option<std::sync::Arc<[u8]>>,
 }
 
 impl AcceptedRandomMapLaunch {
-    pub(crate) fn into_parts(self) -> (crate::map::rmg::GeneratedMap, AcceptedRmgStartStaging) {
-        (self.presentation_preview, self.start_staging)
+    pub(crate) fn into_parts(
+        self,
+    ) -> (
+        Option<crate::map::rmg::GeneratedMap>,
+        AcceptedRmgStartStaging,
+        Option<std::sync::Arc<[u8]>>,
+    ) {
+        (
+            self.presentation_preview,
+            self.start_staging,
+            self.seed_bytes,
+        )
+    }
+}
+
+/// A series retains the accepted definition and start cells, never generated
+/// terrain, construction trace, or a preview's MapGen continuation. Each round
+/// still regenerates gameplay after its own match reseed through Scenario read
+/// 0x00684620; only the seed-file read source is frozen for this app extension.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct FrozenRandomMapAcceptance {
+    selected_map_file: String,
+    seed_bytes: Vec<u8>,
+    start_staging: AcceptedRmgStartStaging,
+}
+
+impl FrozenRandomMapAcceptance {
+    pub(crate) fn selected_map_file(&self) -> &str {
+        &self.selected_map_file
+    }
+
+    pub(crate) fn seed_bytes(&self) -> &[u8] {
+        &self.seed_bytes
+    }
+
+    #[cfg(test)]
+    pub(crate) fn start_staging(&self) -> &AcceptedRmgStartStaging {
+        &self.start_staging
     }
 }
 
@@ -369,6 +406,7 @@ impl AcceptedRandomMapLaunch {
 pub(crate) struct RandomMapGenerationRetention {
     candidate: Option<crate::map::rmg::GeneratedMap>,
     accepted_launch: Option<(String, AcceptedRandomMapLaunch)>,
+    frozen_acceptance: Option<FrozenRandomMapAcceptance>,
     /// The native MapSeed+0x178 clone survives repeated Generate/OK work while
     /// the dialog is open. A four-field mismatch replaces its backing storage,
     /// and common dialog teardown destroys it before a later reopen.
@@ -455,6 +493,7 @@ impl RandomMapGenerationRetention {
     pub(super) fn begin_generation(&mut self) {
         self.candidate = None;
         self.accepted_launch = None;
+        self.frozen_acceptance = None;
     }
 
     pub(super) fn finish_generation(&mut self, generated: crate::map::rmg::GeneratedMap) {
@@ -464,19 +503,80 @@ impl RandomMapGenerationRetention {
     fn cancel_setup(&mut self) {
         self.candidate = None;
         self.accepted_launch = None;
+        self.frozen_acceptance = None;
     }
 
     pub(super) fn accept_setup(&mut self, selected_map_file: &str) {
+        self.frozen_acceptance = None;
         self.accepted_launch = self.candidate.take().map(|generated| {
             let start_staging = AcceptedRmgStartStaging::from_generated(&generated);
             (
                 selected_map_file.to_owned(),
                 AcceptedRandomMapLaunch {
-                    presentation_preview: generated,
+                    presentation_preview: Some(generated),
                     start_staging,
+                    seed_bytes: None,
                 },
             )
         });
+    }
+
+    /// Freeze only bytes successfully persisted by the accepted setup caller
+    /// (0x005E8590). Ordinary launches retain their native disk-read behavior.
+    fn write_accepted_seed(
+        &mut self,
+        ra2_dir: &std::path::Path,
+        options: &crate::map::rmg::RmgOptions,
+    ) -> std::io::Result<()> {
+        let seed_bytes = options.to_sed_bytes();
+        crate::util::file_system::write(ra2_dir.join(RANDMAP_SED_FILE), &seed_bytes)?;
+        self.frozen_acceptance = self.accepted_launch.as_ref().and_then(|(file, accepted)| {
+            file.eq_ignore_ascii_case(RANDMAP_SED_FILE)
+                .then(|| FrozenRandomMapAcceptance {
+                    selected_map_file: file.clone(),
+                    seed_bytes,
+                    start_staging: accepted.start_staging.clone(),
+                })
+        });
+        Ok(())
+    }
+
+    pub(crate) fn frozen_acceptance(
+        &self,
+        selected_map_file: Option<&str>,
+    ) -> Option<FrozenRandomMapAcceptance> {
+        self.frozen_acceptance
+            .as_ref()
+            .filter(|accepted| {
+                selected_map_file.is_some_and(|selected| {
+                    accepted.selected_map_file.eq_ignore_ascii_case(selected)
+                })
+            })
+            .cloned()
+    }
+
+    /// Reissue through the same launch owner; a series supplies the frozen
+    /// seed read source explicitly and receives no reusable preview gameplay.
+    pub(crate) fn reissue_acceptance_for_loading(
+        &mut self,
+        frozen: &FrozenRandomMapAcceptance,
+        selected_map_file: Option<&str>,
+    ) -> Option<AcceptedRandomMapLaunch> {
+        if !selected_map_file
+            .is_some_and(|selected| frozen.selected_map_file.eq_ignore_ascii_case(selected))
+        {
+            return None;
+        }
+        self.frozen_acceptance = Some(frozen.clone());
+        self.accepted_launch = Some((
+            frozen.selected_map_file.clone(),
+            AcceptedRandomMapLaunch {
+                presentation_preview: None,
+                start_staging: frozen.start_staging.clone(),
+                seed_bytes: Some(std::sync::Arc::from(frozen.seed_bytes.as_slice())),
+            },
+        ));
+        self.take_acceptance_for_loading(selected_map_file)
     }
 
     pub(super) fn select_map(&mut self, selected_map_file: &str) {
@@ -489,6 +589,13 @@ impl RandomMapGenerationRetention {
         {
             self.accepted_launch = None;
         }
+        if self.frozen_acceptance.as_ref().is_some_and(|accepted| {
+            !accepted
+                .selected_map_file
+                .eq_ignore_ascii_case(selected_map_file)
+        }) {
+            self.frozen_acceptance = None;
+        }
     }
 
     pub(super) fn take_acceptance_for_loading(
@@ -496,9 +603,12 @@ impl RandomMapGenerationRetention {
         selected_map_file: Option<&str>,
     ) -> Option<AcceptedRandomMapLaunch> {
         let (accepted_file, accepted) = self.accepted_launch.take()?;
-        selected_map_file
-            .is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected))
-            .then_some(accepted)
+        if selected_map_file.is_some_and(|selected| accepted_file.eq_ignore_ascii_case(selected)) {
+            Some(accepted)
+        } else {
+            self.frozen_acceptance = None;
+            None
+        }
     }
 
     /// Presentation-only compatibility accessor used by lifecycle tests.
@@ -510,7 +620,7 @@ impl RandomMapGenerationRetention {
         selected_map_file: Option<&str>,
     ) -> Option<crate::map::rmg::GeneratedMap> {
         self.take_acceptance_for_loading(selected_map_file)
-            .map(|accepted| accepted.presentation_preview)
+            .and_then(|accepted| accepted.presentation_preview)
     }
 }
 
@@ -1240,7 +1350,10 @@ impl App {
             .as_ref()
             .map(|config| config.paths.ra2_dir.clone())
             .ok_or_else(|| anyhow::anyhow!("no game config; cannot locate the RA2 directory"))?;
-        crate::util::file_system::write(ra2_dir.join(RANDMAP_SED_FILE), options.to_sed_bytes())?;
+        state
+            .frontend
+            .random_map_retention
+            .write_accepted_seed(&ra2_dir, options)?;
 
         let description_text = options.description.display_text();
         let display = if options.description.is_empty() {
@@ -2277,6 +2390,121 @@ mod tests {
             stages_run: Vec::new(),
             unfilled_start_slots: 0,
         }
+    }
+
+    #[test]
+    fn frozen_acceptance_reissues_serialized_definition_without_preview_or_disk_drift() {
+        let dir = crate::map::source::test_support::TestDirectory::new("frozen-rmg");
+        let options = crate::map::rmg::RmgOptions {
+            seed: 0x5432,
+            num_players: 30,
+            ..Default::default()
+        };
+        let starts: Vec<_> = (0..30)
+            .map(|slot| (slot, 10 + u16::from(slot), 20))
+            .collect();
+        let mut generated = generated_preview(options.seed, 10);
+        generated.start_waypoints = starts.clone();
+        let mut retention = RandomMapGenerationRetention::default();
+        retention.finish_generation(generated);
+        retention.accept_setup(RANDMAP_SED_FILE);
+        retention.write_accepted_seed(dir.path(), &options).unwrap();
+        let persisted = std::fs::read(dir.path().join(RANDMAP_SED_FILE)).unwrap();
+        let ordinary = retention
+            .take_acceptance_for_loading(Some(RANDMAP_SED_FILE))
+            .unwrap();
+        let (preview, staging, override_bytes) = ordinary.into_parts();
+        assert!(preview.is_some());
+        assert!(
+            override_bytes.is_none(),
+            "ordinary launch must use its native disk read"
+        );
+        let expected_staging = staging.waypoint_table_for_admission();
+        assert_eq!(expected_staging.len(), 30);
+        assert!(
+            retention
+                .take_acceptance_for_loading(Some(RANDMAP_SED_FILE))
+                .is_none()
+        );
+        let frozen = retention.frozen_acceptance(Some("RANDMAP.SED")).unwrap();
+        assert_eq!(frozen.selected_map_file(), RANDMAP_SED_FILE);
+        assert_eq!(frozen.seed_bytes(), persisted);
+        let serialized = serde_json::to_vec(&frozen).unwrap();
+        let restored: FrozenRandomMapAcceptance = serde_json::from_slice(&serialized).unwrap();
+        assert_eq!(restored, frozen);
+        assert_eq!(
+            restored.start_staging().waypoint_table_for_admission(),
+            expected_staging
+        );
+        std::fs::write(dir.path().join(RANDMAP_SED_FILE), b"[RandomMap]\nSeed=1\n").unwrap();
+        for _ in 0..2 {
+            let repeated = retention
+                .reissue_acceptance_for_loading(&restored, Some("randmap.sed"))
+                .unwrap();
+            let (preview, staging, override_bytes) = repeated.into_parts();
+            assert!(preview.is_none());
+            assert_eq!(override_bytes.unwrap().as_ref(), persisted);
+            assert_eq!(staging.waypoint_table_for_admission(), expected_staging);
+        }
+    }
+
+    #[test]
+    fn frozen_acceptance_requires_successful_write_and_matching_explicit_reissue() {
+        let dir = crate::map::source::test_support::TestDirectory::new("frozen-rmg-admission");
+        let options = crate::map::rmg::RmgOptions::default();
+        let mut retention = RandomMapGenerationRetention::default();
+        retention.finish_generation(generated_preview(options.seed, 12));
+        retention.accept_setup(RANDMAP_SED_FILE);
+        let blocked_path = dir.path().join(RANDMAP_SED_FILE);
+        std::fs::create_dir(&blocked_path).unwrap();
+        assert!(retention.write_accepted_seed(dir.path(), &options).is_err());
+        assert!(
+            retention
+                .frozen_acceptance(Some(RANDMAP_SED_FILE))
+                .is_none()
+        );
+        std::fs::remove_dir(&blocked_path).unwrap();
+        retention.write_accepted_seed(dir.path(), &options).unwrap();
+        let frozen = retention.frozen_acceptance(Some(RANDMAP_SED_FILE)).unwrap();
+        assert!(
+            retention
+                .reissue_acceptance_for_loading(&frozen, Some("Other.Sed"))
+                .is_none()
+        );
+        assert!(
+            retention
+                .take_preview_for_loading(Some(RANDMAP_SED_FILE))
+                .is_some()
+        );
+        retention.select_map("Other.Sed");
+        assert!(
+            retention
+                .frozen_acceptance(Some(RANDMAP_SED_FILE))
+                .is_none()
+        );
+        assert!(
+            retention
+                .reissue_acceptance_for_loading(&frozen, Some(RANDMAP_SED_FILE))
+                .is_some()
+        );
+        retention.begin_generation();
+        assert!(
+            retention
+                .frozen_acceptance(Some(RANDMAP_SED_FILE))
+                .is_none()
+        );
+        assert!(
+            retention
+                .reissue_acceptance_for_loading(&frozen, Some(RANDMAP_SED_FILE))
+                .is_some()
+        );
+        retention.cancel_setup();
+        assert!(
+            retention
+                .frozen_acceptance(Some(RANDMAP_SED_FILE))
+                .is_none()
+        );
+        assert_eq!(frozen.seed_bytes(), options.to_sed_bytes());
     }
 
     fn complete_process_preview(

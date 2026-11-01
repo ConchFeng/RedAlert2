@@ -44,3 +44,5 @@ pub(crate) mod wol_verify;
 // pub mod skirmish;
 // pub mod dialog;
 // pub mod settings;
+
+pub(crate) mod ai_series;

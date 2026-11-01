@@ -468,6 +468,146 @@ fn accepted_random_map_with_starts(
         .expect("matching accepted random-map fixture")
 }
 
+#[test]
+#[ignore = "requires RA2_DIR with the retail game files"]
+fn frozen_rmg_reissue_consumes_accepted_bytes_and_starts_after_disk_replacement() {
+    let root = PathBuf::from(std::env::var_os("RA2_DIR").expect("RA2_DIR"));
+    let mut assets = AssetManager::new(
+        &root,
+        crate::assets::asset_manager::MediaArchiveMode::STOCK_DIGITAL,
+    )
+    .unwrap();
+    let audio = crate::rules::audio_sources::AudioDefinitions::select(&assets);
+    let (_, _, rules) = crate::rules::retail_sources::load_startup_rules(
+        &assets,
+        std::sync::Arc::clone(audio.sounds()),
+        std::sync::Arc::clone(audio.eva()),
+    )
+    .unwrap()
+    .into_parts();
+    let dir = crate::map::source::test_support::TestDirectory::new("series-frozen-seed");
+    let selected = crate::app::shell_random_map::RANDMAP_SED_FILE;
+    let options = crate::map::rmg::RmgOptions {
+        seed: 4242,
+        num_players: 4,
+        map_type: 1,
+        ..Default::default()
+    };
+    let seed_bytes = options.to_sed_bytes();
+    std::fs::write(dir.path().join(selected), &seed_bytes).unwrap();
+    let original = init::load_map_initial_with_assets(
+        dir.path().to_path_buf(),
+        &mut assets,
+        Some(&rules),
+        Some(selected),
+        None,
+        &mut NoopProgressSink,
+    )
+    .unwrap();
+    let mut starts: Vec<_> = original
+        .map_data()
+        .waypoints
+        .values()
+        .filter(|waypoint| waypoint.index < 4)
+        .map(|waypoint| (waypoint.index as u8, waypoint.rx, waypoint.ry))
+        .collect();
+    starts.sort_unstable();
+    assert_eq!(starts.len(), 4);
+    let mut staged = starts.clone();
+    for (index, start) in staged.iter_mut().enumerate() {
+        let (_, rx, ry) = starts[(index + 1) % starts.len()];
+        start.1 = rx;
+        start.2 = ry;
+    }
+    let accepted = accepted_random_map_with_starts(selected, options.seed_u16(), &starts, &staged);
+    let mut launch = test_launch_session(LaunchCountry::America);
+    launch.selected_map_file = Some(selected.into());
+    let request = |accepted| {
+        LoadingRequest::unverified_legacy_skirmish(
+            launch.clone(),
+            crate::app::match_bootstrap::MatchSeed {
+                value: 0x5345_5249,
+                source: crate::app::match_bootstrap::MatchSeedSource::Controlled,
+                seed_authority_certifying: false,
+            },
+        )
+        .with_accepted_random_map(Some(accepted))
+    };
+    let baseline = request(accepted)
+        .prepare_random_map_snapshot_for_test(original, &mut assets)
+        .unwrap();
+    let waypoints: Vec<_> = staged
+        .iter()
+        .map(|&(index, rx, ry)| crate::map::waypoints::Waypoint {
+            index: u32::from(index),
+            rx,
+            ry,
+        })
+        .collect();
+    let frozen: crate::app::shell_random_map::FrozenRandomMapAcceptance =
+        serde_json::from_value(serde_json::json!({
+            "selected_map_file": selected,
+            "seed_bytes": seed_bytes,
+            "start_staging": { "starts": waypoints },
+        }))
+        .unwrap();
+    let mut changed = options.clone();
+    changed.seed = 1;
+    changed.theater = 1;
+    std::fs::write(dir.path().join(selected), changed.to_sed_bytes()).unwrap();
+    let mut retention = crate::app::shell_random_map::RandomMapGenerationRetention::default();
+    let repeated = retention
+        .reissue_acceptance_for_loading(&frozen, Some(selected))
+        .unwrap();
+    let request = request(repeated);
+    assert!(request.random_map_preview.is_none());
+    assert_eq!(
+        request
+            .accepted_rmg_start_staging
+            .as_ref()
+            .unwrap()
+            .waypoint_table_for_admission(),
+        frozen.start_staging().waypoint_table_for_admission()
+    );
+    let loaded = request
+        .load_initial_with_assets(
+            dir.path().to_path_buf(),
+            &mut assets,
+            Some(&rules),
+            &mut NoopProgressSink,
+        )
+        .unwrap();
+    let crate::map::source::LoadedMapSource::Generated {
+        seed_name,
+        seed_source: Some(source),
+    } = loaded.map_source()
+    else {
+        panic!("reissued .SED must retain its consumed source identity");
+    };
+    assert_eq!(seed_name, selected);
+    assert_eq!(source.path, dir.path().join(selected));
+    assert_eq!(source.payload_len, frozen.seed_bytes().len());
+    assert_eq!(
+        source.source_sha256,
+        crate::util::sha256::sha256_hex(frozen.seed_bytes())
+    );
+    let repeated = request
+        .prepare_random_map_snapshot_for_test(loaded, &mut assets)
+        .unwrap();
+    assert_eq!(repeated, baseline);
+    let err = init::load_map_initial_with_assets(
+        dir.path().to_path_buf(),
+        &mut assets,
+        Some(&rules),
+        Some("Authored.map"),
+        Some(frozen.seed_bytes()),
+        &mut NoopProgressSink,
+    )
+    .err()
+    .expect("an authored map cannot consume a seed override");
+    assert!(err.to_string().contains("explicit .SED selection"));
+}
+
 fn receipt_for(
     startup: &crate::app::match_bootstrap::PreparedMatchStartup,
 ) -> crate::app::match_bootstrap::RustL0Receipt {

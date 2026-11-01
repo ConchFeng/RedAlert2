@@ -5,9 +5,12 @@ title: AI battle and spectator feature design
 
 # AI battle and spectator feature design
 
-This is the functional specification for eight requested extensions, in delivery
-order. The automatic battle camera and live AI standings are implemented in
-current source; features 3–8 remain planned. These extensions are not included in the 1.0.1 release.
+This specification preserves the eight original ideas in delivery order. The
+current implementation scope is features **1–6**; the maintainer deferred
+features **7 and 8**. The automatic battle camera, live AI standings, and AI
+series are implemented in current source; features 4–6 remain planned. Features
+7–8 are design references outside the current implementation scope. These
+extensions are not included in the 1.0.1 release.
 Each numbered feature must finish its production path and validation before the
 next implementation starts. Prerequisites discovered below belong to that feature.
 
@@ -244,6 +247,48 @@ application restart, map-load failure, intended seeds, and restoration of the
 user's prior ordinary Skirmish setup. A series is finished only after its ledger
 and displayed standings agree.
 
+### Current implementation
+
+Choose **Observer**, **Free For All**, and at least two computer opponents in
+ordinary Skirmish setup, then open **AI Series...**. The form defaults to five
+matches and the current map. Select maps in rotation order, choose 1–100 matches,
+and use Advanced for the first simulation seed or an explicit seed per match.
+The normal setup remains available unchanged after Cancel or End Series.
+
+Entrants keep their accepted countries and colors by default. **Randomize
+countries each round** uses the existing country-assignment owner while keeping
+series colors stable. Each accepted round recipe is saved before loading; a
+retry or recovery reuses that recipe. Generated maps retain their exact accepted
+SED input and start staging, then regenerate through the ordinary loading owner.
+Authored map fingerprints are checked before every load. Maps that skip their
+results screen cannot participate.
+
+Natural results are recorded once before the next match is admitted. The
+existing score screen supplies **Start Now**, **Pause Series**, **End Series**,
+and **Series Standings / Match Results**. The standings reuse the score table's
+paging with Wins, Draws, Played, and Losses columns. The next match starts after
+ten seconds unless paused. View Battlefield, focus loss, and manual Pause Series
+suspend the countdown. **Stop After This Match** in the spectator toolbar lets
+the ongoing battle finish and retains its final results.
+
+**Recover Last Series** reads the saved descriptor, accepted launches, and
+completed rounds under the configured settings directory's `ai-series` folder.
+Interrupted rounds remain incomplete; Retry restarts the accepted round rather
+than restoring a mid-match world. Historical rows use neutral text colors until
+a match is loaded. A normal failure offers Retry, Skip Match,
+or End Series; skipping never records a win, draw, or defeat. Invalid immutable
+result files are preserved and offer End Series instead of an automatic retry
+that could overwrite history. Loading another scenario or successfully
+restoring a save ends the active series attempt, preserves its durable history,
+and keeps the unrelated game outside series scoring.
+
+The app coordinator is [`ai_series.rs`](../src/app/ai_series.rs), with its
+schedule/countdown model and immutable result repository beside it. The
+`skirmish-ai-series-setup`, `skirmish-ai-series-start`, and
+`skirmish-ai-series-results` capture routes exercise the real setup, full-map
+29-AI launch, and natural results/rematch/standings paths. These are current-source
+features and are absent from the published 1.0.1 packages.
+
 ## 4. Named AI commanders with different styles
 
 ### Purpose and entry
@@ -354,6 +399,9 @@ bytes, not personal configuration or original retail assets.
 
 ## 7. Survival battles with an escalating enemy
 
+**Deferred at the maintainer’s request.** Preserve this design for reference;
+do not implement this mode as part of the current work.
+
 ### Purpose and entry
 
 Offer a separate **Survival** custom mode with **Play / Watch**, **Difficulty**,
@@ -393,6 +441,9 @@ final victory, replay reconstruction, and unchanged mode-off hashes. Keep new
 mode rules explicit and opt-in.
 
 ## 8. Undead Battlefield
+
+**Deferred at the maintainer’s request.** Preserve this design for reference;
+do not implement this mode as part of the current work.
 
 ### Purpose and entry
 

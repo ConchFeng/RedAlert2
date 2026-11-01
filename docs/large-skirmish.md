@@ -172,3 +172,36 @@ The projection is owned by
 layout and navigation in
 [`spectator_standings_ui.rs`](../src/app/presentation/spectator_standings_ui.rs).
 This feature is available in current source, not the published 1.0.1 packages.
+
+### AI series in current source
+
+For an automatic local championship, select Observer and Free For All, retain at
+least two AIs, and open **AI Series...**. Use a name, 1–100 matches (default five),
+and one or more maps with enough setup slots. Selected maps repeat in the order
+you choose. Advanced accepts a first simulation seed or exactly one custom seed
+per match. The generated map's accepted seed input and start positions remain
+fixed independently of the successive simulation seeds.
+
+Countries and colors remain fixed by default. **Randomize countries each
+round** changes the country assignments while preserving the entrants' colors.
+Accepted recipes are stored before loading so Retry and recovery use the same
+match identities.
+
+After a natural finish, the result stays visible with a ten-second countdown.
+Use **Pause Series** to study it, **Start Now** to advance immediately, or
+**Series Standings** to see wins, draws, completed matches, and losses for all
+entrants through the existing score pages. View Battlefield pauses the countdown.
+During play, **Stop After This Match** lets the current battle finish without
+starting another one. End Series restores the ordinary setup.
+
+**Recover Last Series** restores saved history and leaves interrupted matches
+incomplete. Loading failures provide Retry, Skip Match, and End Series; skipping
+never counts as an AI defeat. Corrupt immutable results are retained and stop
+advancement rather than replacing history. Loading another scenario or
+successfully restoring a save ends the active attempt; saved series results
+remain recoverable and the unrelated game is not scored. Authored map changes are reported
+before loading; maps configured to skip results are unavailable for a series.
+
+The coordinator lives in [`ai_series.rs`](../src/app/ai_series.rs). Series records
+are stored beneath the configured settings directory, not in the game assets.
+AI series are available in current source, not the published 1.0.1 packages.

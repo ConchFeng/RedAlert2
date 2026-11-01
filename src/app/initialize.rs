@@ -1023,6 +1023,9 @@ impl App {
                 ),
             },
             frontend: crate::app::frontend::state::FrontendState {
+                ai_series_dialog_buttons: Default::default(),
+                ai_series_setup: None,
+                ai_series: None,
                 shell_dialog_background: None,
                 campaign_speed_control: startup_options.campaign_speed_control,
                 external_launch: false,

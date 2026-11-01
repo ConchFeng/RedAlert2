@@ -39,6 +39,7 @@ impl App {
     }
 
     pub(super) fn return_to_main_menu(state: &mut AppState) {
+        crate::app::ai_series::interrupted(state);
         if let Some(runtime) = state.match_state.sim_runtime.as_mut() {
             // Main55D283 calls BattleControlTerminated686570 on shell return;
             // its retained Scenario mission counter resets to the ctor's 1.
@@ -795,6 +796,7 @@ impl App {
                 model,
             } => {
                 Self::open_score_page(state, model, title, detail);
+                crate::app::ai_series::round_completed(state);
             }
             ScenarioExitDestination::CampaignScore {
                 title,

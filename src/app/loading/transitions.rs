@@ -759,6 +759,7 @@ pub(crate) fn apply_map_load_result(state: &mut AppState, result: init::MapLoadR
                     .multiplayer_shell_runtime
                     .mark_gameplay_scenario_return_pending();
             }
+            crate::app::ai_series::installed(state);
             log::info!("Transitioned to InGame after scenario installation");
         }
         Err(err) => {

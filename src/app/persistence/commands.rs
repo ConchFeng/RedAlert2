@@ -535,6 +535,7 @@ fn restore_save_file(
     // preparation guard has already restored outgoing lookup order on error.
     state.process_assets.return_from_loading(assets);
     let prepared = prepared?;
+    crate::app::ai_series::external_world_replacement(state);
     crate::app::match_runtime::restore::commit_prepared_load(state, path, prepared, from_menu);
     if from_menu {
         // Main52E619 initializes Scenario/Main only on this route; in-game

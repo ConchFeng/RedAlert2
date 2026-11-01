@@ -51,6 +51,13 @@ fn rgb_f32(rgb: [u8; 3]) -> [f32; 3] {
     rgb.map(|channel| f32::from(channel) / 255.0)
 }
 
+pub(crate) fn score_page_indicator_rect(layout: &crate::ui::score_shell::ScoreLayout) -> RectPx {
+    let previous = layout
+        .paging_button(crate::ui::score_shell::PREVIOUS_PAGE)
+        .expect("score paging geometry");
+    RectPx::new(previous.x, previous.y - 24, previous.w, 20)
+}
+
 /// Paint dialog `0x108`. Returns `false` when its chrome or art is missing.
 pub(crate) fn render_score_page(
     state: &mut AppState,
@@ -142,6 +149,9 @@ pub(crate) fn render_score_page(
         }
     }
 
+    let series_actions = crate::app::ai_series::score_actions(state);
+    let series_active = !series_actions.is_empty();
+    let series_status = crate::app::ai_series::status_text(state);
     let chrome = state
         .frontend
         .main_menu_shell_chrome
@@ -244,19 +254,35 @@ pub(crate) fn render_score_page(
             Vec::new()
         }
         None => {
-            let mut buttons = vec![PaintButton {
-                rect: layout.continue_button(),
-                pressed: pressed == Some(CONTINUE_BUTTON),
-                hovered: false,
-                enabled: true,
-            }];
+            let mut buttons = Vec::new();
+            if !series_active {
+                buttons.push(PaintButton {
+                    rect: layout.continue_button(),
+                    pressed: pressed == Some(CONTINUE_BUTTON),
+                    hovered: false,
+                    enabled: true,
+                });
+            }
+            for (id, _) in &series_actions {
+                if let Some(rect) =
+                    crate::app::frontend::ai_series_render::score_action_rect(state, *id)
+                {
+                    buttons.push(PaintButton {
+                        rect,
+                        pressed: pressed == Some(*id),
+                        hovered: false,
+                        enabled: true,
+                    });
+                }
+            }
             if crate::app::match_runtime::post_match::available(state) {
                 for id in [
                     crate::ui::score_shell::VIEW_BATTLEFIELD,
                     crate::ui::score_shell::PLAY_AGAIN,
                 ] {
                     if id == crate::ui::score_shell::PLAY_AGAIN
-                        && !crate::app::match_runtime::post_match::replay_available(state)
+                        && (series_active
+                            || !crate::app::match_runtime::post_match::replay_available(state))
                     {
                         continue;
                     }
@@ -293,7 +319,7 @@ pub(crate) fn render_score_page(
         now,
         None,
     );
-    if wave.is_none() {
+    if wave.is_none() && !series_active {
         labels.push(PaintLabel {
             text: if crate::app::match_runtime::post_match::available(state) {
                 "Return to Menu".into()
@@ -317,7 +343,8 @@ pub(crate) fn render_score_page(
             (crate::ui::score_shell::PLAY_AGAIN, "Play Again"),
         ] {
             if id == crate::ui::score_shell::PLAY_AGAIN
-                && !crate::app::match_runtime::post_match::replay_available(state)
+                && (series_active
+                    || !crate::app::match_runtime::post_match::replay_available(state))
             {
                 continue;
             }
@@ -351,16 +378,41 @@ pub(crate) fn render_score_page(
                 path_a_reveal: None,
             });
         }
-        let rect = layout
-            .paging_button(crate::ui::score_shell::PREVIOUS_PAGE)
-            .expect("paging button");
         labels.push(PaintLabel {
             text: format!("Page {}/{}", page.page_index() + 1, page.page_count()).into(),
-            rect: RectPx::new(rect.x, rect.y - 24, rect.w, 20),
+            rect: score_page_indicator_rect(&layout),
             align: ShellAlign::H_CENTER,
             rgb: SHELL_TEXT_RGB_ENABLED,
             path_a_reveal: None,
         });
+    }
+    if wave.is_none() && series_active {
+        for (id, caption) in series_actions {
+            if let Some(rect) = crate::app::frontend::ai_series_render::score_action_rect(state, id)
+            {
+                labels.push(PaintLabel {
+                    text: caption.into(),
+                    rect: owner_draw_button_label_rect(rect, pressed == Some(id)),
+                    align: ShellAlign::H_CENTER | ShellAlign::V_CENTER,
+                    rgb: SHELL_TEXT_RGB_ENABLED,
+                    path_a_reveal: None,
+                });
+            }
+        }
+        for (index, line) in series_status.lines().take(2).enumerate() {
+            labels.push(PaintLabel {
+                text: line.to_owned().into(),
+                rect: RectPx::new(
+                    20,
+                    screen.h - 94 + index as i32 * 24,
+                    (screen.w - 210).max(1),
+                    24,
+                ),
+                align: ShellAlign::V_CENTER,
+                rgb: SHELL_TEXT_RGB_ENABLED,
+                path_a_reveal: None,
+            });
+        }
     }
     let text = shell_paint::paint_labels_scaled(&state.renderer.bit_font, &labels, scale.factor());
 

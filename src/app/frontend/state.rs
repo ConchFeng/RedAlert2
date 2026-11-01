@@ -13,6 +13,9 @@ use crate::rules::overlay_types::OverlayTypeRegistry;
 use crate::ui::game_screen::GameScreen;
 
 pub(crate) struct FrontendState {
+    pub(crate) ai_series_dialog_buttons: crate::ui::shell::button::ShellButtonInteraction<u16>,
+    pub(crate) ai_series_setup: Option<crate::ui::ai_series::AiSeriesSetupState>,
+    pub(crate) ai_series: Option<crate::app::ai_series::AiSeriesRuntime>,
     /// Immutable process flag from Parse_Command_Line52F94B (0xA8EDDC).
     pub(crate) campaign_speed_control: bool,
     /// External offline launch: returning from the session closes the process for its client.

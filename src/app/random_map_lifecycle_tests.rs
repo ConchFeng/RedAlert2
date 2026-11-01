@@ -413,6 +413,7 @@ fn gsi_04_12_random_map_ui_to_sed_launch_lifecycle_converges() {
         &mut assets,
         Some(&native_rules),
         Some(seed_name),
+        None,
         &mut SilentProgress,
     )
     .expect("direct .SED launch regeneration");

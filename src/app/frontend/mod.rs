@@ -25,3 +25,5 @@ pub(super) mod startup_splash;
 pub(crate) mod state;
 pub(crate) mod status_screen;
 pub(crate) mod wol_welcome_render;
+
+pub(crate) mod ai_series_render;

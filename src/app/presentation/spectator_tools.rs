@@ -22,6 +22,7 @@ pub(crate) enum SpectatorToolAction {
     ToggleCamera,
     ResumeCamera,
     ToggleStandings,
+    StopSeriesAfterMatch,
     SortStandings,
     PreviousStandings,
     NextStandings,
@@ -78,6 +79,7 @@ struct ToolbarLayout {
     panel: GadgetRect,
     toggle: GadgetRect,
     standings: GadgetRect,
+    stop_series: Option<GadgetRect>,
     resume: Option<GadgetRect>,
     status: GadgetRect,
 }
@@ -85,10 +87,11 @@ struct ToolbarLayout {
 impl ToolbarLayout {
     fn new(
         view: (u32, u32),
-        widths: [i32; 3],
+        widths: [i32; 4],
         status_width: i32,
         text_height: i32,
         resume: bool,
+        series: bool,
     ) -> Option<Self> {
         let available_width = (view.0 as i32 - 2 * MARGIN).min(720);
         let inside_width = available_width - 2 * PAD;
@@ -108,6 +111,16 @@ impl ToolbarLayout {
         }
         let standings = GadgetRect::new(next_x, next_y, standings_width, button_height);
         next_x += standings_width + GAP;
+        let stop_series = series.then(|| {
+            let width = widths[3].max(160).min(inside_width);
+            if next_x + width > MARGIN + PAD + inside_width {
+                next_x = MARGIN + PAD;
+                next_y += button_height + GAP;
+            }
+            let rect = GadgetRect::new(next_x, next_y, width, button_height);
+            next_x += width + GAP;
+            rect
+        });
         let resume_rect = resume.then(|| {
             if next_x + resume_width > MARGIN + PAD + inside_width {
                 next_x = MARGIN + PAD;
@@ -132,6 +145,7 @@ impl ToolbarLayout {
             .max(resume_rect.map_or(0, |rect| rect.x + rect.w - MARGIN + PAD))
             .max(toggle.x + toggle.w - MARGIN + PAD)
             .max(standings.x + standings.w - MARGIN + PAD)
+            .max(stop_series.map_or(0, |rect| rect.x + rect.w - MARGIN + PAD))
             .min(available_width);
         let panel_height = status.y + status.h - TOP + PAD;
         if TOP + panel_height > view.1 as i32 - MARGIN {
@@ -142,6 +156,7 @@ impl ToolbarLayout {
             panel: GadgetRect::new(MARGIN, TOP, panel_width, panel_height),
             toggle,
             standings,
+            stop_series,
             resume: resume_rect,
             status,
         })
@@ -152,6 +167,11 @@ impl ToolbarLayout {
             Some(SpectatorToolAction::ToggleCamera)
         } else if self.standings.contains(point.0, point.1) {
             Some(SpectatorToolAction::ToggleStandings)
+        } else if self
+            .stop_series
+            .is_some_and(|rect| rect.contains(point.0, point.1))
+        {
+            Some(SpectatorToolAction::StopSeriesAfterMatch)
         } else if self
             .resume
             .is_some_and(|rect| rect.contains(point.0, point.1))
@@ -177,6 +197,7 @@ struct ToolbarContent {
     toggle: String,
     resume: String,
     standings: String,
+    stop_series: String,
     status: String,
     layout: ToolbarLayout,
 }
@@ -216,7 +237,22 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
         localized(state, key, &fallback)
     };
     let standings = localized(state, "VERA:SpectatorStandings", "Standings");
+    let stop_series = if crate::app::ai_series::stop_requested(state) {
+        localized(
+            state,
+            "VERA:SeriesStoppingAfterMatch",
+            "Stopping After This Match",
+        )
+    } else {
+        localized(state, "VERA:SeriesStopAfterMatch", "Stop After This Match")
+    };
     let status = format!("{} | {status}", spectator_standings_ui::count_label(state));
+    let series_status = crate::app::ai_series::toolbar_status(state);
+    let status = if series_status.is_empty() {
+        status
+    } else {
+        format!("{status} | {series_status}")
+    };
     let font = &state.renderer.bit_font;
     let layout = ToolbarLayout::new(
         tactical_viewport_size(state),
@@ -224,15 +260,18 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
             font.text_width(&toggle) as i32 + 2 * PAD,
             font.text_width(&resume) as i32 + 2 * PAD,
             font.text_width(&standings) as i32 + 2 * PAD,
+            font.text_width(&stop_series) as i32 + 2 * PAD,
         ],
         font.text_width(&status) as i32,
         font.cell_height() as i32,
         director.enabled() && director.manual_remaining(now) > 0,
+        crate::app::ai_series::in_progress(state),
     )?;
     Some(ToolbarContent {
         toggle,
         resume,
         standings,
+        stop_series,
         status,
         layout,
     })
@@ -244,6 +283,7 @@ pub(crate) fn action_center(state: &AppState, action: SpectatorToolAction) -> Op
         SpectatorToolAction::ToggleCamera => layout.toggle,
         SpectatorToolAction::ResumeCamera => layout.resume?,
         SpectatorToolAction::ToggleStandings => layout.standings,
+        SpectatorToolAction::StopSeriesAfterMatch => layout.stop_series?,
         _ => {
             return spectator_standings_ui::layout(state, layout.panel.y + layout.panel.h + GAP)?
                 .center(action);
@@ -268,6 +308,9 @@ fn activate(state: &mut AppState, control: SpectatorToolAction, now: u64) {
         SpectatorToolAction::ResumeCamera => {
             state.match_state.input.spectator_camera.resume(now);
             state.match_state.input.follow_target = None;
+        }
+        SpectatorToolAction::StopSeriesAfterMatch => {
+            crate::app::ai_series::stop_after_current(state)
         }
         _ => spectator_standings_ui::activate(state, control),
     }
@@ -354,6 +397,9 @@ pub(crate) fn key(state: &mut AppState, edge: &InGameKeyEdge<'_>) -> bool {
         SpectatorToolAction::ToggleCamera,
         SpectatorToolAction::ToggleStandings,
     ];
+    if content.layout.stop_series.is_some() {
+        actions.push(SpectatorToolAction::StopSeriesAfterMatch);
+    }
     if content.layout.resume.is_some() {
         actions.push(SpectatorToolAction::ResumeCamera);
     }
@@ -441,6 +487,11 @@ pub(crate) fn build_instances(state: &AppState) -> (Vec<SpriteInstance>, Vec<Spr
             Some(content.layout.standings),
         ),
         (
+            SpectatorToolAction::StopSeriesAfterMatch,
+            content.stop_series.as_str(),
+            content.layout.stop_series,
+        ),
+        (
             SpectatorToolAction::ResumeCamera,
             content.resume.as_str(),
             content.layout.resume,
@@ -511,7 +562,8 @@ mod tests {
 
     #[test]
     fn narrow_toolbar_wraps_with_shared_hit_rectangles_inside_the_view() {
-        let layout = ToolbarLayout::new((452, 480), [160, 120, 104], 300, 12, true).unwrap();
+        let layout =
+            ToolbarLayout::new((452, 480), [160, 120, 104, 168], 300, 12, true, false).unwrap();
         assert!(layout.status.y > layout.toggle.y);
         assert_eq!(
             layout.hit((layout.toggle.x, layout.toggle.y)),
@@ -611,13 +663,19 @@ mod tests {
 
     #[test]
     fn resume_layout_is_absent_outside_manual_cooldown_and_tiny_views_stay_safe() {
-        let layout = ToolbarLayout::new((800, 480), [160, 120, 104], 200, 12, false).unwrap();
+        let layout =
+            ToolbarLayout::new((800, 480), [160, 120, 104, 168], 200, 12, false, false).unwrap();
         assert!(layout.resume.is_none());
         assert!(layout.status.y >= layout.toggle.y);
-        let stacked = ToolbarLayout::new((220, 320), [160, 120, 104], 200, 12, true).unwrap();
+        let stacked =
+            ToolbarLayout::new((220, 320), [160, 120, 104, 168], 200, 12, true, false).unwrap();
         assert!(stacked.resume.unwrap().y > stacked.toggle.y);
         assert!(stacked.panel.x + stacked.panel.w <= 220);
-        assert!(ToolbarLayout::new((80, 480), [160, 120, 104], 200, 12, true).is_none());
-        assert!(ToolbarLayout::new((452, 60), [160, 120, 104], 200, 12, true).is_none());
+        assert!(
+            ToolbarLayout::new((80, 480), [160, 120, 104, 168], 200, 12, true, false).is_none()
+        );
+        assert!(
+            ToolbarLayout::new((452, 60), [160, 120, 104, 168], 200, 12, true, false).is_none()
+        );
     }
 }

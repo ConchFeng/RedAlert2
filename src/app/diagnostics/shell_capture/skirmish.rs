@@ -40,6 +40,8 @@ enum Phase {
     MainMenu,
     SinglePlayer,
     Skirmish,
+    AiSeriesSetup,
+    AiSeriesRecovery,
     /// Back pressed: the teardown slide runs toward the held tick.
     SlideOut,
     /// Choose Map pressed: `0x102` slides out and `0x6B` slides in.
@@ -156,7 +158,15 @@ pub(super) const RANDOM_MAP_GENERATE_POINT: (i32, i32) = (432, 430);
 const RANDOM_MAP_TERRAIN_ARROW_POINT: (i32, i32) = (484, 79);
 const RANDOM_MAP_MAP_SIZE_FACE_POINT: (i32, i32) = (350, 196);
 
-#[derive(Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum AiSeriesTarget {
+    Setup,
+    Start,
+    Results,
+    Recovery,
+}
+
+#[derive(Debug, Clone, Copy)]
 enum ObserverCameraStep {
     Enable,
     WaitingForBattle {
@@ -227,6 +237,15 @@ pub(super) struct SkirmishCapture {
     observer_battlefield_ready: bool,
     observer_camera_step: Option<ObserverCameraStep>,
     observer_standings: bool,
+    ai_series_target: Option<AiSeriesTarget>,
+    ai_series_setup_presented: bool,
+    ai_series_map_identity: Option<(String, String, usize)>,
+    ai_series_repository: Option<PathBuf>,
+    ai_series_recovery_files: Option<Vec<(PathBuf, String)>>,
+    ai_series_terminal_outcomes: Vec<Value>,
+    ai_series_first_result_at: Option<Instant>,
+    ai_series_rematch_cursor: Option<(f32, f32)>,
+    ai_series_second_round_seen: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -253,7 +272,12 @@ impl CaptureGuard {
             "skirmish capture encountered fallback or a developer shortcut"
         );
         ensure!(self.software_cursor, "software cursor unavailable");
-        ensure!(self.cursor == self.expected_cursor, "capture cursor moved");
+        ensure!(
+            self.cursor == self.expected_cursor,
+            "capture cursor moved: actual={:?}, expected={:?}",
+            self.cursor,
+            self.expected_cursor
+        );
         ensure!(
             !self.interaction_active,
             "skirmish capture encountered modal, editing or interaction state"
@@ -445,6 +469,545 @@ impl SkirmishCapture {
             observer_standings: true,
             ..Self::observer_generated_battlefield()
         }
+    }
+
+    pub(super) fn ai_series(target: AiSeriesTarget) -> Self {
+        Self {
+            ai_series_target: Some(target),
+            ..Self::observer_generated_battlefield()
+        }
+    }
+
+    fn ai_series_click(state: &mut AppState, point: (i32, i32)) -> Result<()> {
+        Self::set_pointer(state, point);
+        crate::app::input::ai_series::cursor_moved(state);
+        for pressed in [true, false] {
+            ensure!(
+                crate::app::input::ai_series::mouse(
+                    state,
+                    winit::event::MouseButton::Left,
+                    pressed
+                ),
+                "AI Series input owner did not consume its visible control"
+            );
+        }
+        Self::set_pointer(state, (EXPECTED_CURSOR_X as i32, EXPECTED_CURSOR_Y as i32));
+        crate::app::input::ai_series::cursor_moved(state);
+        Ok(())
+    }
+
+    fn ai_series_control(
+        state: &mut AppState,
+        control: crate::ui::ai_series::AiSeriesControl,
+    ) -> Result<(i32, i32)> {
+        let layout = crate::app::frontend::ai_series_render::layout(state);
+        let rect = layout
+            .control_rect(control)
+            .context("AI Series control is hidden")?;
+        let point = (rect.x + rect.w / 2, rect.y + rect.h / 2);
+        ensure!(
+            layout.control_at(point.0, point.1) == Some(control),
+            "AI Series controls overlap"
+        );
+        Self::ai_series_click(state, point)?;
+        Ok(point)
+    }
+
+    fn open_ai_series(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        if self.ai_series_target == Some(AiSeriesTarget::Results) {
+            let shell = &mut state.frontend.skirmish_shell_state;
+            shell.unit_count = 0;
+            shell.launch_options_base.bases = false;
+            self.route.push(json!({"screen":"skirmish", "frame":frame, "action":"ConfigureNaturalEmptyArmyFixture", "unit_count":0, "bases":false, "outcome_override":false}));
+        }
+        let rect = crate::app::frontend::ai_series_render::entry_rect(state)
+            .context("AI Series entry is unavailable after accepted observer map setup")?;
+        Self::ai_series_click(state, (rect.x + rect.w / 2, rect.y + rect.h / 2))?;
+        let setup = state
+            .frontend
+            .ai_series_setup
+            .as_ref()
+            .context("AI Series form did not open")?;
+        let draft = setup.validated_setup().map_err(anyhow::Error::msg)?;
+        let selected = state.frontend.skirmish_shell_state.selected_map_idx;
+        let map = setup
+            .maps
+            .iter()
+            .find(|map| map.record_index == selected)
+            .context("current generated map is absent from AI Series choices")?;
+        ensure!(
+            setup.entrant_count == 29
+                && draft.match_count == 5
+                && map.capacity == 30
+                && draft.map_indices == [selected],
+            "AI Series defaults did not retain 29 AIs, 30 capacity, five matches, and current map"
+        );
+        let frozen = state
+            .frontend
+            .random_map_retention
+            .frozen_acceptance(Some(
+                &state.frontend.scenario_catalog.shell_maps()[selected].file_name,
+            ))
+            .context("accepted generated definition is unavailable to AI Series")?;
+        let digest = crate::util::sha256::sha256_hex(frozen.seed_bytes());
+        self.ai_series_map_identity = Some((
+            frozen.selected_map_file().to_owned(),
+            digest.clone(),
+            frozen.seed_bytes().len(),
+        ));
+        self.route.push(json!({"screen":"AI Series setup", "frame":frame, "action":"OpenAiSeries", "entrants":setup.entrant_count, "capacity":map.capacity, "matches":draft.match_count, "map_label":map.label, "selected_maps":draft.map_indices, "seed_source_sha256":digest}));
+        self.phase = Phase::AiSeriesSetup;
+        Ok(())
+    }
+
+    fn start_ai_series(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        use crate::ui::ai_series::AiSeriesControl;
+        for _ in 0..3 {
+            Self::ai_series_control(state, AiSeriesControl::Decrease)?;
+        }
+        Self::ai_series_control(state, AiSeriesControl::Advanced)?;
+        Self::ai_series_control(state, AiSeriesControl::FirstSeed)?;
+        let setup = state
+            .frontend
+            .ai_series_setup
+            .as_mut()
+            .context("AI Series form closed before Start")?;
+        setup
+            .first_seed
+            .set_units_limited("1234".encode_utf16(), 10);
+        let draft = setup.validated_setup().map_err(anyhow::Error::msg)?;
+        ensure!(
+            draft.match_count == 2 && draft.first_seed == 1234,
+            "AI Series input did not configure two matches and seed 1234"
+        );
+        let previous = if self.ai_series_target == Some(AiSeriesTarget::Results) {
+            Self::series_directories(state)?
+        } else {
+            Vec::new()
+        };
+        let start = Self::ai_series_control(state, AiSeriesControl::Start)?;
+        ensure!(
+            crate::app::ai_series::in_progress(state) && state.frontend.ai_series_setup.is_none(),
+            "Start Series did not create an active series: {:?}",
+            state
+                .frontend
+                .ai_series_setup
+                .as_ref()
+                .and_then(|setup| setup.error.as_deref())
+        );
+        if self.ai_series_target == Some(AiSeriesTarget::Results) {
+            let created: Vec<_> = Self::series_directories(state)?
+                .into_iter()
+                .filter(|path| !previous.contains(path))
+                .collect();
+            ensure!(
+                created.len() == 1,
+                "Start Series did not publish exactly one new durable series"
+            );
+            self.ai_series_repository = created.into_iter().next();
+        }
+        self.route.push(json!({"screen":"AI Series setup", "frame":frame, "action":"StartSeries", "matches":2, "first_seed":1234, "start_point":start, "count_input":"three Decrease press/release pairs", "seed_input":"focused UTF16 edit assignment", "status":crate::app::ai_series::status_text(state)}));
+        self.phase = Phase::Starting;
+        Ok(())
+    }
+
+    fn observe_ai_series_started(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        if self.observer_battlefield_ready {
+            return Ok(());
+        }
+        self.observe_generated_battlefield(state, frame)?;
+        let sim = &state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .context("AI Series world missing")?
+            .simulation;
+        if !self.observer_focused || sim.session().tick() < 30 {
+            return Ok(());
+        }
+        ensure!(
+            sim.session().started() && sim.session().seed() == 1234,
+            "AI Series did not install its controlled first seed"
+        );
+        let (source_path, digest) = self.series_source_identity(state)?;
+        let identity = Self::simulation_identity(state)?;
+        let status_before = crate::app::ai_series::status_text(state);
+        ensure!(
+            status_before.contains("Match 1 of 2") && !status_before.contains("stopping"),
+            "AI Series running status is incorrect: {status_before}"
+        );
+        let point = Self::spectator_button(
+            state,
+            crate::app::presentation::spectator_tools::SpectatorToolAction::StopSeriesAfterMatch,
+        )?;
+        let status = crate::app::ai_series::status_text(state);
+        ensure!(
+            status.contains("stopping after this match")
+                && Self::simulation_identity(state)? == identity,
+            "Stop After This Match changed gameplay or failed to update series state"
+        );
+        self.route.push(json!({"screen":"in game", "frame":frame, "action":"AiSeriesStartedAndStopAfterMatch", "matches":2, "seed":1234, "tick":identity.0, "binary_frame":identity.1, "state_hash":format!("{:016x}",identity.2), "seed_path":source_path, "seed_source_sha256":digest, "live_ai":29, "observer_full_map":true, "stop_point":point, "simulation_unchanged":true, "status":status}));
+        self.observer_battlefield_ready = true;
+        Ok(())
+    }
+
+    fn series_source_identity(&self, state: &AppState) -> Result<(String, String)> {
+        let (expected_name, expected_digest, expected_len) =
+            self.ai_series_map_identity
+                .as_ref()
+                .context("accepted series map identity missing")?;
+        let Some(crate::map::source::LoadedMapSource::Generated {
+            seed_name,
+            seed_source: Some(source),
+        }) = state.match_state.loaded_map_source.as_ref()
+        else {
+            bail!("AI Series did not retain a generated seed source");
+        };
+        ensure!(
+            seed_name.eq_ignore_ascii_case(expected_name)
+                && source.source_sha256 == *expected_digest
+                && source.payload_len == *expected_len,
+            "AI Series consumed a different generated definition"
+        );
+        let expected_path = state
+            .platform
+            .game_config
+            .as_ref()
+            .context("game config missing")?
+            .paths
+            .ra2_dir
+            .join(expected_name);
+        ensure!(
+            source.path == expected_path,
+            "AI Series generated source path changed"
+        );
+        let source_path = source.path.display().to_string();
+        let digest = source.source_sha256.clone();
+        Ok((source_path, digest))
+    }
+
+    fn series_directories(state: &AppState) -> Result<Vec<PathBuf>> {
+        let root = state
+            .platform
+            .game_config
+            .as_ref()
+            .context("game config missing")?
+            .paths
+            .settings_dir()
+            .join("ai-series");
+        let entries = match fs::read_dir(root) {
+            Ok(entries) => entries,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.into()),
+        };
+        entries
+            .map(|entry| Ok(entry?.path()))
+            .filter(|entry: &Result<PathBuf>| entry.as_ref().map_or(true, |path| path.is_dir()))
+            .collect()
+    }
+
+    fn read_finished_series_records(&self) -> Result<(Value, Vec<Value>)> {
+        let directory = self
+            .ai_series_repository
+            .as_ref()
+            .context("series repository missing")?;
+        let descriptor: Value = serde_json::from_slice(&fs::read(directory.join("series.json"))?)?;
+        let entrants = descriptor["entrants"]
+            .as_array()
+            .context("series entrants missing")?;
+        ensure!(
+            descriptor["round_limit"] == 2
+                && descriptor["seeds"] == json!([1234, 1235])
+                && entrants.len() == 29,
+            "durable series schedule differs from the UI"
+        );
+        let files: Vec<_> = fs::read_dir(directory)?
+            .map(|entry| entry.map(|entry| entry.file_name()))
+            .collect::<std::io::Result<Vec<_>>>()?
+            .into_iter()
+            .filter(|name| {
+                name.to_str().is_some_and(|name| {
+                    name.starts_with("round-")
+                        && name.ends_with(".json")
+                        && !name.ends_with("-launch.json")
+                })
+            })
+            .collect();
+        ensure!(
+            files.len() == 2,
+            "series did not publish exactly two finished round records"
+        );
+        let mut records = Vec::new();
+        for round in 1..=2 {
+            let record: Value = serde_json::from_slice(&fs::read(
+                directory.join(format!("round-{round:04}.json")),
+            )?)?;
+            ensure!(
+                record["series_id"] == descriptor["id"]
+                    && record["round"] == round
+                    && record["seed"] == 1233 + round
+                    && record["map_index"] == 0,
+                "finished round identity differs from its natural terminal match"
+            );
+            records.push(record);
+        }
+        Ok((descriptor, records))
+    }
+
+    fn verify_finished_series_records(&self) -> Result<Vec<Value>> {
+        let (descriptor, records) = self.read_finished_series_records()?;
+        let entrants = descriptor["entrants"]
+            .as_array()
+            .context("series entrants missing")?;
+        ensure!(
+            self.ai_series_terminal_outcomes.len() == 2,
+            "series did not produce two natural terminal snapshots"
+        );
+        for (record, terminal) in records.iter().zip(&self.ai_series_terminal_outcomes) {
+            let survivors = terminal["survivors"]
+                .as_array()
+                .context("terminal survivors missing")?;
+            match record["outcome"]["kind"].as_str() {
+                Some("winner") => {
+                    let slot = &record["outcome"]["slot_index"];
+                    let winner = entrants
+                        .iter()
+                        .find(|entrant| entrant["slot_index"] == *slot)
+                        .context("recorded winner is not a series entrant")?;
+                    ensure!(
+                        survivors.len() == 1 && survivors[0] == winner["name"],
+                        "recorded winner differs from the actual terminal survivor"
+                    );
+                }
+                Some("draw") => ensure!(
+                    survivors.len() != 1,
+                    "draw record discarded a sole natural winner"
+                ),
+                _ => bail!("an abort, skip, or incomplete result was counted as finished"),
+            }
+        }
+        Ok(records)
+    }
+
+    fn series_disk_snapshot(state: &AppState) -> Result<Vec<(PathBuf, String)>> {
+        let mut files = Vec::new();
+        for directory in Self::series_directories(state)? {
+            for entry in fs::read_dir(directory)? {
+                let path = entry?.path();
+                ensure!(path.is_file(), "unexpected nested series history directory");
+                let digest = crate::util::sha256::sha256_hex(&fs::read(&path)?);
+                files.push((path, digest));
+            }
+        }
+        files.sort_unstable();
+        Ok(files)
+    }
+
+    fn recover_ai_series(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        ensure!(
+            state.match_state.sim_runtime.is_none(),
+            "recovery capture is not a fresh process"
+        );
+        ensure!(
+            state
+                .frontend
+                .ai_series_setup
+                .as_ref()
+                .is_some_and(|setup| setup.recovery_available),
+            "Recover Last is unavailable for the injected completed history"
+        );
+        let directories = Self::series_directories(state)?;
+        ensure!(
+            directories.len() == 1,
+            "recovery capture requires one existing completed series"
+        );
+        self.ai_series_repository = directories.into_iter().next();
+        let (_, records) = self.read_finished_series_records()?;
+        ensure!(
+            records
+                .iter()
+                .all(|record| record["outcome"]["kind"] == "draw"),
+            "recovery fixture must be the two naturally completed draw records"
+        );
+        self.ai_series_recovery_files = Some(Self::series_disk_snapshot(state)?);
+        let point =
+            Self::ai_series_control(state, crate::ui::ai_series::AiSeriesControl::RecoverLast)?;
+        ensure!(
+            state.frontend.ai_series_setup.is_none() && crate::app::ai_series::in_progress(state),
+            "Recover Last did not restore the saved series"
+        );
+        self.route.push(json!({"screen":"AI Series setup", "frame":frame, "action":"RecoverLastSeries", "point":point, "records":records, "new_series_started":false}));
+        self.phase = Phase::AiSeriesRecovery;
+        Ok(())
+    }
+
+    fn observe_ai_series_recovery(&mut self, state: &AppState, frame: u32) -> Result<()> {
+        ensure!(
+            state.match_state.sim_runtime.is_none(),
+            "history recovery installed a gameplay simulation"
+        );
+        let status = crate::app::ai_series::status_text(state);
+        ensure!(
+            status.contains("Series complete"),
+            "completed series did not recover as complete: {status}"
+        );
+        ensure!(
+            state.frontend.score_art.is_some() && App::score_shell_active(state),
+            "recovered history did not use the native score artwork and renderer"
+        );
+        let page = state
+            .frontend
+            .score_page
+            .as_ref()
+            .context("recovered standings model missing")?;
+        ensure!(
+            page.model.rows.len() == 29
+                && page.model.rows.iter().all(|row| row.built == 2
+                    && row.losses == 2
+                    && row.kills == 0
+                    && row.score == 0),
+            "recovered standings differ from two draws for every AI entrant"
+        );
+        let (_, records) = self.read_finished_series_records()?;
+        ensure!(
+            records
+                .iter()
+                .all(|record| record["outcome"]["kind"] == "draw"),
+            "recovered records differ from the saved natural draws"
+        );
+        let files = Self::series_disk_snapshot(state)?;
+        ensure!(
+            self.ai_series_recovery_files.as_ref() == Some(&files),
+            "Recover Last modified history or published a new launch"
+        );
+        if !Self::score_settled(state) || self.observer_battlefield_ready {
+            return Ok(());
+        }
+        self.route.push(json!({"screen":"recovered series standings", "frame":frame, "action":"RecoveredCompletedSeriesStandings", "status":status, "records":records, "entrants":page.model.rows.len(), "history_files":files.len(), "history_unchanged":true, "simulation_present":false, "score_art_present":true}));
+        self.observer_battlefield_ready = true;
+        Ok(())
+    }
+
+    fn observe_ai_series_results(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        if self.observer_battlefield_ready {
+            return Ok(());
+        }
+        let status = crate::app::ai_series::status_text(state);
+        ensure!(
+            !status.contains("Incomplete"),
+            "natural series capture failed: {status}"
+        );
+        let sim = &state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .context("natural series world missing")?
+            .simulation;
+        let seed = sim.session().seed();
+        ensure!(
+            [1234, 1235].contains(&seed),
+            "natural series installed an unexpected seed"
+        );
+        ensure!(
+            sim.session().tick() < 1800 || sim.terminal_score_snapshot().is_some(),
+            "zero-army match did not reach a natural terminal outcome before 1800 ticks"
+        );
+        ensure!(
+            sim.session().game_options().unit_count == 0 && !sim.session().game_options().bases,
+            "zero-army diagnostic options did not reach the active match"
+        );
+        let observer = sim
+            .session()
+            .current_house()
+            .context("series observer missing")?;
+        ensure!(
+            sim.session().is_observer_house(observer)
+                && sim.fog().whole_map_revealed_for_owner(observer),
+            "natural series did not retain its full-map observer"
+        );
+        let (_, digest) = self.series_source_identity(state)?;
+        if seed == 1235 && !self.ai_series_second_round_seen {
+            let started = self
+                .ai_series_first_result_at
+                .context("round two began without first natural results")?;
+            ensure!(
+                started.elapsed() >= Duration::from_secs(9),
+                "round two bypassed the actual countdown"
+            );
+            self.ai_series_second_round_seen = true;
+            self.route.push(json!({"screen":"in game", "frame":frame, "action":"AutomaticSeriesRoundTwoInstalled", "seed":seed, "tick":sim.session().tick(), "seed_source_sha256":digest, "countdown_observed_ms":started.elapsed().as_millis(), "start_now_pressed":false}));
+        }
+        if seed == 1234
+            && self
+                .ai_series_first_result_at
+                .is_some_and(|started| started.elapsed() > Duration::from_secs(60))
+        {
+            bail!("the real series countdown did not launch round two within 60 seconds: {status}");
+        }
+        if !App::score_shell_active(state) {
+            return Ok(());
+        }
+        let round = if seed == 1234 { 1 } else { 2 };
+        if self.ai_series_terminal_outcomes.len() < round {
+            let snapshot = sim
+                .terminal_score_snapshot()
+                .context("score page appeared without a natural terminal snapshot")?;
+            ensure!(
+                snapshot.rows.len() == 29,
+                "natural score snapshot lost AI entrants"
+            );
+            let survivors: Vec<_> = snapshot
+                .rows
+                .iter()
+                .filter(|row| row.survived)
+                .map(|row| sim.interner().resolve(row.owner))
+                .collect();
+            let fact = json!({"round":round, "seed":seed, "tick":sim.session().tick(), "binary_frame":sim.session().binary_frame(), "survivors":survivors, "terminal_snapshot":snapshot});
+            self.route.push(json!({"screen":"natural match results", "frame":frame, "action":"NaturalSeriesRoundFinished", "terminal":fact, "status":status}));
+            self.ai_series_terminal_outcomes.push(fact);
+            if round == 1 {
+                self.ai_series_rematch_cursor = Some((
+                    state.match_state.input.cursor_x,
+                    state.match_state.input.cursor_y,
+                ));
+                ensure!(
+                    status.contains("Next match in"),
+                    "first results did not enter automatic countdown: {status}"
+                );
+                self.ai_series_first_result_at = Some(Instant::now());
+            }
+        }
+        if round != 2 || !status.contains("Series complete") || !Self::score_settled(state) {
+            return Ok(());
+        }
+        ensure!(
+            self.ai_series_second_round_seen,
+            "round two was never installed"
+        );
+        let records = self.verify_finished_series_records()?;
+        let identity = Self::simulation_identity(state)?;
+        self.click_score_action(state, crate::app::ai_series::TOGGLE_STANDINGS)?;
+        ensure!(
+            Self::simulation_identity(state)? == identity,
+            "opening series standings changed the terminal simulation"
+        );
+        let page = state
+            .frontend
+            .score_page
+            .as_ref()
+            .context("series standings did not use the score renderer")?;
+        ensure!(
+            page.model.rows.len() == 29
+                && page.model.rows.iter().all(|row| row.built == 2)
+                && crate::app::ai_series::score_actions(state)
+                    .iter()
+                    .any(|(id, label)| *id == crate::app::ai_series::TOGGLE_STANDINGS
+                        && label == "Match Results"),
+            "series standings did not display both completed matches for every entrant"
+        );
+        self.route.push(json!({"screen":"series standings", "frame":frame, "action":"OpenCompletedSeriesStandings", "records":records, "entrants":page.model.rows.len(), "simulation_unchanged":true, "status":status}));
+        self.observer_battlefield_ready = true;
+        Ok(())
     }
 
     fn observe_standings_controls(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
@@ -909,6 +1472,20 @@ impl SkirmishCapture {
         state.match_state.input.cursor_y = point.1 as f32;
     }
 
+    fn expected_cursor(&self, loading_screen: bool) -> (f32, f32) {
+        if loading_screen
+            && self.phase == Phase::Starting
+            && self.ai_series_target == Some(AiSeriesTarget::Results)
+            && self.ai_series_terminal_outcomes.len() == 1
+            && !self.ai_series_second_round_seen
+            && let Some(cursor) = self.ai_series_rematch_cursor
+        {
+            return cursor;
+        }
+        let rest = self.rest_point();
+        (rest.0 as f32, rest.1 as f32)
+    }
+
     fn guard(&self, state: &AppState) -> Result<()> {
         let rest = self.rest_point();
         guard(
@@ -917,6 +1494,7 @@ impl SkirmishCapture {
             matches!(
                 self.phase,
                 Phase::Starting
+                    | Phase::AiSeriesRecovery
                     | Phase::Quitting
                     | Phase::Defeating
                     | Phase::Scoring
@@ -925,8 +1503,16 @@ impl SkirmishCapture {
                     | Phase::Continuing
                     | Phase::Diplomacy
             ),
-            (rest.0 as f32, rest.1 as f32),
-        )
+            self.expected_cursor(state.frontend.screen == GameScreen::Loading),
+        ).with_context(|| format!(
+            "Skirmish capture guard: phase={:?}, screen={:?}, series_target={:?}, actual_cursor=({:?},{:?}), rest={rest:?}, hover={:?}, hovered={}, chooser={}, random_map={}, terminal_rounds={}",
+            self.phase, state.frontend.screen, self.ai_series_target,
+            state.match_state.input.cursor_x, state.match_state.input.cursor_y,
+            self.hover, self.hovered,
+            state.frontend.skirmish_shell_state.choose_map_modal.is_some(),
+            state.frontend.skirmish_shell_state.random_map_setup_modal.is_some(),
+            self.ai_series_terminal_outcomes.len(),
+        ))
     }
 
     /// A press and release at `point` through the chooser's production
@@ -1071,6 +1657,7 @@ impl SkirmishCapture {
     fn click_score_action(&self, state: &mut AppState, id: u16) -> Result<()> {
         let button = crate::app::frontend::shell_layout::score_layout(state)
             .result_action_button(id)
+            .or_else(|| crate::app::frontend::ai_series_render::score_action_rect(state, id))
             .context("score action button missing")?;
         Self::set_pointer(state, (button.x + button.w / 2, button.y + button.h / 2));
         App::handle_score_shell_mouse_move(state);
@@ -1777,6 +2364,8 @@ impl SkirmishCapture {
                     && !state.frontend.skirmish_shell_state.short_game
                 {
                     self.check_short_game(state, frame)?;
+                } else if self.selected_scene.is_some() && self.ai_series_target.is_some() {
+                    self.open_ai_series(state, frame)?;
                 } else if self.selected_scene.is_some() && self.loading.is_some() {
                     // The pointer moves onto Start Game (`0x617`), whose help
                     // reaches the status line as it would before a click,
@@ -1818,6 +2407,20 @@ impl SkirmishCapture {
                         .push(json!({"dialog": 0x102, "frame": frame, "action": "ChooseMap"}));
                     self.phase = Phase::Chooser;
                 }
+            }
+            (Phase::AiSeriesSetup, PresentedShell::Skirmish) => {
+                self.ai_series_setup_presented = true;
+                if self.ai_series_target == Some(AiSeriesTarget::Recovery) {
+                    self.recover_ai_series(state, frame)?;
+                } else if matches!(
+                    self.ai_series_target,
+                    Some(AiSeriesTarget::Start | AiSeriesTarget::Results)
+                ) {
+                    self.start_ai_series(state, frame)?;
+                }
+            }
+            (Phase::AiSeriesRecovery, PresentedShell::Score) => {
+                self.observe_ai_series_recovery(state, frame)?;
             }
             (Phase::Chooser, PresentedShell::Other | PresentedShell::Skirmish) => {
                 match self.chooser {
@@ -2061,7 +2664,11 @@ impl SkirmishCapture {
                     && (state.frontend.screen == GameScreen::InGame
                         || App::score_shell_active(state)) =>
             {
-                if self.observer_standings {
+                if self.ai_series_target == Some(AiSeriesTarget::Results) {
+                    self.observe_ai_series_results(state, frame)?;
+                } else if self.ai_series_target == Some(AiSeriesTarget::Start) {
+                    self.observe_ai_series_started(state, frame)?;
+                } else if self.observer_standings {
                     self.observe_standings_controls(state, frame)?;
                 } else if self.observer_camera_step.is_some() {
                     self.observe_camera_controls(state, frame)?;
@@ -2218,6 +2825,19 @@ impl SkirmishCapture {
 
     pub(super) fn ready(&self, state: &AppState) -> Result<bool> {
         self.guard(state)?;
+        if self.ai_series_target == Some(AiSeriesTarget::Recovery) {
+            return Ok(self.phase == Phase::AiSeriesRecovery
+                && self.observer_battlefield_ready
+                && self.last_presented == Some(PresentedShell::Score)
+                && state.match_state.sim_runtime.is_none()
+                && Self::score_settled(state));
+        }
+        if self.ai_series_target == Some(AiSeriesTarget::Setup) {
+            return Ok(self.phase == Phase::AiSeriesSetup
+                && self.ai_series_setup_presented
+                && self.last_presented == Some(PresentedShell::Skirmish)
+                && state.frontend.ai_series_setup.is_some());
+        }
         if self.observer_client {
             return Ok(self.observer_battlefield_ready
                 && (state.frontend.screen == GameScreen::InGame
@@ -2420,7 +3040,7 @@ impl SkirmishCapture {
                 "pixel_layout": "BGRA8", "row_order": "top-left", "row_stride": request.width * 4},
             "cursor": {"x": request.cursor_x, "y": request.cursor_y, "policy": "software-composited"},
             "route": self.route,
-            "dialog_resource_id": match (self.chooser, self.loading) {
+            "dialog_resource_id": if self.ai_series_target.is_some() { None } else { match (self.chooser, self.loading) {
                 (
                     Some(
                         ChooserTarget::Steady
@@ -2447,7 +3067,7 @@ impl SkirmishCapture {
                 (Some(ChooserTarget::RandomMap(_)), _) => Some(0x105),
                 (_, Some(_)) => None,
                 _ => Some(0x102),
-            },
+            } },
             "capture_frame": frame,
             "selection": self.selected_scene, "reveals_completed": self.entry_tick.is_none(),
             "ordinary_skirmish_frame": true,
@@ -2467,6 +3087,47 @@ impl SkirmishCapture {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn automatic_series_loading_preserves_only_the_recorded_results_cursor() {
+        let mut capture = SkirmishCapture::ai_series(AiSeriesTarget::Results);
+        capture.phase = Phase::Starting;
+        let guard = |cursor, expected_cursor| CaptureGuard {
+            main_menu_screen: true,
+            surface: (800, 600),
+            failed: false,
+            developer_shortcut: false,
+            software_cursor: true,
+            cursor,
+            expected_cursor,
+            interaction_active: false,
+        };
+        let tactical_center = (316.0, 284.0);
+        let neutral = (400.0, 300.0);
+        assert!(
+            guard(tactical_center, capture.expected_cursor(true))
+                .validate()
+                .is_err()
+        );
+        capture.ai_series_terminal_outcomes.push(json!({"round":1}));
+        capture.ai_series_rematch_cursor = Some(tactical_center);
+        assert!(
+            guard(tactical_center, capture.expected_cursor(true))
+                .validate()
+                .is_ok()
+        );
+        assert!(
+            guard((317.0, 284.0), capture.expected_cursor(true))
+                .validate()
+                .is_err()
+        );
+        assert_eq!(capture.expected_cursor(false), neutral);
+        capture.ai_series_second_round_seen = true;
+        assert_eq!(capture.expected_cursor(true), neutral);
+        capture.ai_series_second_round_seen = false;
+        capture.ai_series_target = Some(AiSeriesTarget::Start);
+        assert_eq!(capture.expected_cursor(true), neutral);
+    }
 
     #[test]
     fn capture_guard_rejects_each_invalid_boundary() {

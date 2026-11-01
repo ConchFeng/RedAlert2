@@ -2395,8 +2395,14 @@ pub(crate) fn load_map_initial_with_assets(
     asset_manager: &mut AssetManager,
     native_rules: Option<&crate::rules::process_owner::NativeRulesProcessOwner>,
     requested_map: Option<&str>,
+    frozen_seed_bytes: Option<&[u8]>,
     progress: &mut dyn crate::app::loading::pump::LoadingProgressSink,
 ) -> Result<MapLoadInitial> {
+    anyhow::ensure!(
+        frozen_seed_bytes.is_none()
+            || requested_map.is_some_and(crate::map::rmg::is_seed_selection),
+        "frozen random-map seed bytes require an explicit .SED selection"
+    );
     // Check RA2_QUICKPLAY env var: if it names a .map/.mpr file, load that directly.
     // UI-selected map name/path (requested_map) takes precedence.
     // Default: try testmap1.map in the project directory first, then fall back to .mmx files.
@@ -2420,7 +2426,11 @@ pub(crate) fn load_map_initial_with_assets(
         let mut options = crate::map::rmg::RmgOptions::default();
         let seed_path = ra2_dir.join(seed_name);
         let mut seed_source = None;
-        match crate::util::file_system::read(&seed_path) {
+        let seed_bytes = match frozen_seed_bytes {
+            Some(bytes) => Ok(std::borrow::Cow::Borrowed(bytes)),
+            None => crate::util::file_system::read(&seed_path).map(std::borrow::Cow::Owned),
+        };
+        match seed_bytes {
             Ok(bytes) => {
                 seed_source = Some(
                     crate::map::source::GeneratedSeedSource::from_consumed_bytes(seed_path, &bytes),
@@ -4441,6 +4451,7 @@ mod random_map_retail_tests {
                     &mut asset_manager,
                     Some(&native_rules),
                     Some(&seed_name),
+                    None,
                     &mut SilentProgress,
                 )
                 .unwrap_or_else(|err| panic!("{tag}: the .SED branch failed: {err}"));
