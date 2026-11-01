@@ -386,7 +386,8 @@ pub enum AiDifficulty {
     /// Product extension, offline skirmish only: the Claude AI tier (see
     /// [`crate::sim::claude_ai`]). It plays with Hard's per-difficulty AI
     /// tables but none of the computer's advantages. Network setup never
-    /// admits it; its row codes stay the native 4/5/6.
+    /// admits it and keeps the native row codes 4/5/6; offline setup saves
+    /// it as row code 7 (Open AI as 8).
     Claude,
     /// Offline strategy tier with fair economy and adaptive decisions.
     OpenAi,

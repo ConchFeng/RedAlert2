@@ -929,6 +929,7 @@ fn genetic_mutator_target(
     if sim.houses.get(&owner)?.preferred_super_weapon_target() != (0, 0) {
         return None;
     }
+    let seen = fair_sight(sim, owner)?;
     let terrain = sim.resolved_terrain.as_ref()?;
     let entities = &sim.substrate.entities;
     let is_infantry = |member: &CellObjectMember| match member {
@@ -954,6 +955,9 @@ fn genetic_mutator_target(
             }
         },
         |cell, layer| {
+            if !seen(cell) {
+                return 0;
+            }
             sim.cell_objects(cell, layer)
                 .skip_while(|member| !is_infantry(member))
                 .take_while(is_infantry)
@@ -990,6 +994,7 @@ fn psychic_dominator_target(
     if sim.houses.get(&owner)?.preferred_super_weapon_target() != (0, 0) {
         return None;
     }
+    let seen = fair_sight(sim, owner)?;
     let terrain = sim.resolved_terrain.as_ref()?;
     let entities = &sim.substrate.entities;
     let is_foot = |member: &CellObjectMember| match member {
@@ -1009,6 +1014,9 @@ fn psychic_dominator_target(
         PSYCHIC_DOMINATOR_SPREAD_BAND,
         |_| MovementLayer::Ground,
         |cell, layer| {
+            if !seen(cell) {
+                return 0;
+            }
             sim.cell_objects(cell, layer)
                 .take_while(is_foot)
                 .filter(|member| {
@@ -1102,6 +1110,14 @@ fn best_spread_center<'a>(
         }
     }
     best_id.map(|id| (id, best_cell))
+}
+
+/// Which cells a picker may count for `owner`: every cell, or for a fair
+/// strategy tier (not native) only those its own sight currently shows, as
+/// [`rally_entry`] admits.
+fn fair_sight(sim: &Simulation, owner: InternedId) -> Option<impl Fn((u16, u16)) -> bool + '_> {
+    let fair = sim.houses.get(&owner)?.fair_ai();
+    Some(move |(x, y): (u16, u16)| !fair || sim.fog.is_cell_visible(owner, x, y))
 }
 
 /// Whether a cell-list member is an object `test` accepts.

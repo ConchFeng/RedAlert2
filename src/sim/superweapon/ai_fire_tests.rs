@@ -750,6 +750,16 @@ fn the_genetic_mutator_target_matches_native() {
         // The new original control establishes the nonzero-cell early exit.
         // Exercise it on all existing positive/negative target fixtures, then
         // restore the original golden rather than duplicating its picker.
+        // A fair strategy tier counts nothing its own sight does not show.
+        let house = sim.houses.get_mut(&computer).unwrap();
+        house.set_ai_strategy(crate::sim::house_state::AiStrategy::Claude);
+        assert_eq!(
+            genetic_mutator_target(&sim, &rules, computer),
+            None,
+            "{row}"
+        );
+        let house = sim.houses.get_mut(&computer).unwrap();
+        house.set_ai_strategy(crate::sim::house_state::AiStrategy::Native);
         sim.houses
             .get_mut(&computer)
             .unwrap()
@@ -1344,6 +1354,16 @@ fn the_psychic_dominator_target_matches_native() {
             expected,
             "{row}"
         );
+        // A fair strategy tier counts nothing its own sight does not show.
+        let house = sim.houses.get_mut(&computer).unwrap();
+        house.set_ai_strategy(crate::sim::house_state::AiStrategy::Claude);
+        assert_eq!(
+            psychic_dominator_target(&sim, &rules, computer),
+            None,
+            "{row}"
+        );
+        let house = sim.houses.get_mut(&computer).unwrap();
+        house.set_ai_strategy(crate::sim::house_state::AiStrategy::Native);
         sim.houses
             .get_mut(&computer)
             .unwrap()

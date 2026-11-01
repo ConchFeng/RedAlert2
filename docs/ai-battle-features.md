@@ -67,12 +67,20 @@ consumes money through the production owner.
 [Open AI team selection](../src/sim/ai_team_creation.rs) favors operational
 domains that are underrepresented among its existing teams: ground, naval and
 air, including jumpjet Kirovs and Rocketeers. At 5,000 credits it increases the relative weight of offensive teams.
-Unavailable task-force types and already-forming Open AI team types do not waste
-a selection. Both tiers shorten their next team-creation delay as their bank
-grows. Retail trigger priorities, team caps, factories, weapons and movement
-continue to apply; a landlocked map does not promise naval combat. When an
-attack team has no observed target, it explores with its own house's fog through
-the existing team movement owner and a movement-domain-qualified exploration search, including explored fog.
+An already-forming Open AI team type does not waste a selection. In both tiers,
+task-force types the house cannot build do not waste a selection either, and the
+next team-creation delay shortens as the bank grows. Retail trigger priorities,
+team caps, factories, weapons and movement continue to apply; a landlocked map
+does not promise naval combat. When either tier's attack team has no observed
+target, it explores with its own house's fog through the existing team movement
+owner and a movement-domain-qualified exploration search, including explored fog.
+
+Superweapon targeting follows the same sight rule. The
+[AI firing owner](../src/sim/superweapon/ai_fire.rs) rallies only on placed
+targets the house currently sees, without Hard's under-construction candidates,
+and the Genetic Mutator and Psychic Dominator count only units in cells it
+currently sees. Residual: paradrop, spy plane and Psychic Reveal still seed from
+the enemy base cell whether or not the house has scouted it.
 
 Residual: a rich house can expand by ordinary nearby refinery placement, but it
 does not produce and relocate an MCV to establish a distant base. Distant ore
