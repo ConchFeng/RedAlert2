@@ -15,7 +15,7 @@ original eight-player setup to **one human and 29 computer opponents**, adds
 **Huge and Giant random maps**, and keeps the original game's assets and atmosphere.
 The current downloadable packages target **macOS on Apple Silicon**.
 
-[Download 1.0.0](#download-and-play) · [30-player walkthrough](docs/30-player-showcase.md) ·
+[Download 1.0.1](#download-and-play) · [30-player walkthrough](docs/30-player-showcase.md) ·
 [Architecture](#architecture) · [Developer documentation](docs/index.md)
 
 <img src="docs/images/30-player-random-map-settings.jpg" alt="Current macOS random-map screen with Giant selected and Players set to 30" width="100%">
@@ -78,13 +78,13 @@ preview, additional opponent pages, extended colors, and the current runtime lim
 
 ## Download and play
 
-The [1.0.0 release](https://github.com/ConchFeng/RedAlert2/releases/tag/v1.0.0)
+The [1.0.1 release](https://github.com/ConchFeng/RedAlert2/releases/tag/v1.0.1)
 provides two ZIP downloads for **Apple Silicon Macs (M1 or newer), macOS 11.0 or later**:
 
 | Package | Size | Contents |
 | --- | --- | --- |
-| [macOS Full ZIP](https://github.com/ConchFeng/RedAlert2/releases/download/v1.0.0/VERA20k-Conch-Edit-1.0.0-macos-arm64-Full.zip) | 418.55 MB | App, supplied Yuri resource files, maps, audio, and bilingual instructions. |
-| [macOS app ZIP](https://github.com/ConchFeng/RedAlert2/releases/download/v1.0.0/VERA20k-Conch-Edit-1.0.0-macos-arm64.zip) | 18.98 MB | App and instructions; provide your own Yuri's Revenge resources. |
+| [macOS Full ZIP](https://github.com/ConchFeng/RedAlert2/releases/download/v1.0.1/VERA20k-Conch-Edit-1.0.1-macos-arm64-Full.zip) | 418.60 MB | App, supplied Yuri resource files, maps, audio, and bilingual instructions. |
+| [macOS app ZIP](https://github.com/ConchFeng/RedAlert2/releases/download/v1.0.1/VERA20k-Conch-Edit-1.0.1-macos-arm64.zip) | 19.03 MB | App and instructions; provide your own Yuri's Revenge resources. |
 
 1. Extract the entire ZIP and open `VERA20K.app` from your preferred folder.
 2. Choose the game-resource folder when prompted. For the Full package, select
@@ -97,7 +97,7 @@ provides two ZIP downloads for **Apple Silicon Macs (M1 or newer), macOS 11.0 or
 
 The ZIPs contain native ARM64 macOS executables; Intel Mac, Windows, and Linux
 binaries are not included. The source remains cross-platform. The release/app
-bundle version is `1.0.0`; the internal engine version is `0.2.4`.
+bundle version is `1.0.1`; the internal engine version is `0.2.4`.
 
 The app is signed ad hoc and is not Apple-notarized. If macOS blocks its first
 launch, review the source and use **System Settings → Privacy & Security →
