@@ -66,18 +66,32 @@ pub(super) fn ion_blast_draws(
 
 /// This frame's draws from the match's blasts, camera, zoom and options.
 pub(super) fn draws(state: &crate::app::AppState) -> Vec<IonBlastDraw> {
-    let Some(runtime) = state.match_state.sim_runtime.as_ref() else {
-        return Vec::new();
-    };
     let input = &state.match_state.input;
     let (_, _, width, height) = crate::app::input::camera::tactical_viewport_px(state);
-    ion_blast_draws(
-        runtime.view().simulation().ion_blasts(),
+    draws_through(
+        state,
         [input.camera_x, input.camera_y],
         [
             width as f32 / input.zoom_level,
             height as f32 / input.zoom_level,
         ],
+    )
+}
+
+/// The draws for a view whose top-left `camera` and `viewport` are in world
+/// pixels; the second battlefield view passes its own.
+pub(super) fn draws_through(
+    state: &crate::app::AppState,
+    camera: [f32; 2],
+    viewport: [f32; 2],
+) -> Vec<IonBlastDraw> {
+    let Some(runtime) = state.match_state.sim_runtime.as_ref() else {
+        return Vec::new();
+    };
+    ion_blast_draws(
+        runtime.view().simulation().ion_blasts(),
+        camera,
+        viewport,
         state
             .match_state
             .match_presentation

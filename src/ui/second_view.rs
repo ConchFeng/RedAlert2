@@ -10,6 +10,9 @@ const GAP: i32 = 6;
 const BUTTON_HEIGHT: i32 = 28;
 const MIN_WIDTH: i32 = 280;
 const MIN_HEIGHT: i32 = 208;
+/// The panel's zoom range, narrower than the main camera's 0.25-4.0.
+const MIN_ZOOM: f32 = 0.5;
+const MAX_ZOOM: f32 = 3.0;
 
 #[derive(Clone, Copy, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CameraView {
@@ -105,7 +108,7 @@ impl SecondViewState {
                 .center
                 .map(|value| if value.is_finite() { value } else { 0.0 }),
             zoom: if camera.zoom.is_finite() {
-                camera.zoom.clamp(0.5, 3.0)
+                camera.zoom.clamp(MIN_ZOOM, MAX_ZOOM)
             } else {
                 1.0
             },
@@ -192,7 +195,13 @@ impl SecondViewState {
 
     pub(crate) fn swap_camera(&mut self, main: CameraView) -> CameraView {
         self.mode = FollowMode::Fixed;
-        std::mem::replace(&mut self.camera, main)
+        std::mem::replace(
+            &mut self.camera,
+            CameraView {
+                zoom: main.zoom.clamp(MIN_ZOOM, MAX_ZOOM),
+                ..main
+            },
+        )
     }
 
     pub(crate) fn activate(
@@ -237,8 +246,8 @@ impl SecondViewState {
                 }
             }
             ZoomOut | ZoomIn => {
-                self.camera.zoom =
-                    (self.camera.zoom * if control == ZoomIn { 1.25 } else { 0.8 }).clamp(0.5, 3.0);
+                self.camera.zoom = (self.camera.zoom * if control == ZoomIn { 1.25 } else { 0.8 })
+                    .clamp(MIN_ZOOM, MAX_ZOOM);
                 return SecondViewEffect::CameraChanged;
             }
         }
@@ -614,6 +623,12 @@ mod tests {
         );
         assert_eq!(state.camera.center, [200.0, 300.0]);
         assert_eq!(state.mode, FollowMode::Fixed);
+        // The main camera zooms out past the panel's range; the panel keeps its own.
+        state.swap_camera(CameraView {
+            center: [0.0; 2],
+            zoom: 0.25,
+        });
+        assert_eq!(state.camera.zoom, 0.5);
     }
 
     #[test]

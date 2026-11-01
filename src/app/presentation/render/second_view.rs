@@ -264,7 +264,14 @@ impl SecondViewRenderer {
         self.terrain.prepare_ion_blasts(
             &gpu.device,
             &gpu.queue,
-            &crate::app::presentation::ion_blasts::draws(state),
+            &crate::app::presentation::ion_blasts::draws_through(
+                state,
+                view.camera,
+                [
+                    view.size[0] as f32 / view.zoom,
+                    view.size[1] as f32 / view.zoom,
+                ],
+            ),
             camera.zoom,
         );
         let composition = self.lights.composition_view();
