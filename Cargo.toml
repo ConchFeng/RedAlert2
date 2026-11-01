@@ -1,6 +1,6 @@
 [package]
 name = "vera20k"
-version = "0.2.4"
+version.workspace = true
 edition = "2024"
 description = "Vera20k Engine — a from-scratch Rust engine for Red Alert 2: Yuri's Revenge"
 autobins = false
@@ -16,6 +16,9 @@ publish = false
 members = ["src", "services/relay-protocol", "services/relay"]
 # Plain `cargo build`/`cargo test --lib` cover both crates.
 default-members = [".", "src"]
+
+[workspace.package]
+version = "1.1.0"
 
 # Main game client
 [[bin]]

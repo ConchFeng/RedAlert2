@@ -22,14 +22,14 @@ A Rust reimplementation of *Command & Conquer: Red Alert 2 — Yuri’s Revenge*
 
 | 项目 / Item | 信息 / Details |
 | --- | --- |
-| 最新发行版 / Latest release | **[1.0.1](https://github.com/ConchFeng/RedAlert2/releases/tag/v1.0.1)** |
+| 最新发行版 / Latest release | **[1.1.0](https://github.com/ConchFeng/RedAlert2/releases/tag/v1.1.0)** |
 | 发行平台 / Release platform | macOS 11+ · Apple Silicon (M1 or newer / M1 及更新芯片) |
-| 引擎版本 / Engine version | **0.2.4** |
+| 引擎版本 / Engine version | **1.1.0** |
 | 本页功能 / Features on this page | **[`main`](https://github.com/ConchFeng/RedAlert2/tree/main)** — current source / 当前源码 |
 
-**版本说明：** 下方展示的是当前 `main` 分支中的功能；自动观战、排行榜、AI 联赛、指挥官选择、双视图和回放工具均晚于 1.0.1 发布，现有 1.0.1 下载包不包含这些更新。
+**版本说明：** 1.1.0 统一客户端、引擎与 App 的版本号，包含下方展示的 30 人大战、AI 指挥官、自动观战、实时排行、AI 联赛、双战场视图，以及回放书签、时间跳转与单位跟踪。
 
-**Release note:** The showcase below reflects current `main`. The spectator camera, standings, AI series, commander selector, second view, and replay tools were added after 1.0.1 and are not included in its existing downloads.
+**Release note:** Version 1.1.0 aligns the client, engine, and app versions and includes the features below: 30-player battles, AI commanders, automatic battle camera, live standings, AI series, a second battlefield view, replay bookmarks, time seeking, and unit tracking.
 
 <a id="license"></a>
 
