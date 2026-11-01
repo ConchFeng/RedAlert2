@@ -148,3 +148,27 @@ after each land blob.
 - `tools.cargo_run` stages the files it validates and skips the tests when the
   tree changes during a build ("Source changed during Cargo"); rerun the same
   command, which reuses the build. Check staged content before a commit.
+
+### Live standings in current source
+
+The observer toolbar shows **AIs: alive / initial**. Open **Standings** to browse
+up to seven AIs at a time. Shorter windows show fewer rows so the controls and
+selected player's details remain accessible. **Sort** cycles Army, Buildings,
+Credits, Kills, and Name, keeping surviving players first. Click an AI to visit
+its live base, or a surviving unit if its base is gone. The panel leaves part of the battlefield open, and
+the camera keeps the watched base or fight visible beside it. A house with no live
+target leaves the camera in place and shows **No surviving units**.
+
+The selected AI's details include its country, faction, commander, army
+replacement cost, live structures, spendable credits, and score kills. Hover
+for metric definitions. Army replacement cost excludes civilians, cargo,
+unarmed resource units, and healing-only support; damaged combat units retain
+their full replacement cost. Standings refresh at most twice a second and are
+available only to an offline observer or a player who has continued watching
+after defeat. Escape closes the panel.
+
+The projection is owned by
+[`spectator_standings.rs`](../src/app/presentation/spectator_standings.rs), with
+layout and navigation in
+[`spectator_standings_ui.rs`](../src/app/presentation/spectator_standings_ui.rs).
+This feature is available in current source, not the published 1.0.1 packages.

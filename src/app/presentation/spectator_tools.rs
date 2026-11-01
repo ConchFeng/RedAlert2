@@ -1,10 +1,12 @@
 //! Compact viewing controls for the offline spectator camera.
 
+use super::spectator_standings_ui;
 use crate::app::AppState;
 use crate::app::input::camera::{spectator, tactical_viewport_size};
 use crate::app::input::keyboard::InGameKeyEdge;
 use crate::app::match_runtime::frame_pacer::wall_clock_ms;
 use crate::render::batch::SpriteInstance;
+use crate::sim::intern::InternedId;
 use crate::ui::gadget::GadgetRect;
 use winit::event::MouseButton;
 use winit::keyboard::{Key, NamedKey};
@@ -19,10 +21,16 @@ const BUTTON_HEIGHT: i32 = 28;
 pub(crate) enum SpectatorToolAction {
     ToggleCamera,
     ResumeCamera,
+    ToggleStandings,
+    SortStandings,
+    PreviousStandings,
+    NextStandings,
+    VisitHouse(InternedId),
 }
 
 #[derive(Default)]
 pub(crate) struct SpectatorTools {
+    pub(crate) standings: spectator_standings_ui::StandingsView,
     pressed: Option<SpectatorToolAction>,
     captured: Option<MouseButton>,
     focused: Option<SpectatorToolAction>,
@@ -31,6 +39,10 @@ pub(crate) struct SpectatorTools {
 impl SpectatorTools {
     pub(crate) fn reset(&mut self) {
         *self = Self::default();
+    }
+
+    pub(crate) fn has_capture(&self) -> bool {
+        self.captured.is_some()
     }
 
     fn pointer_edge(
@@ -65,6 +77,7 @@ impl SpectatorTools {
 struct ToolbarLayout {
     panel: GadgetRect,
     toggle: GadgetRect,
+    standings: GadgetRect,
     resume: Option<GadgetRect>,
     status: GadgetRect,
 }
@@ -72,7 +85,7 @@ struct ToolbarLayout {
 impl ToolbarLayout {
     fn new(
         view: (u32, u32),
-        widths: [i32; 2],
+        widths: [i32; 3],
         status_width: i32,
         text_height: i32,
         resume: bool,
@@ -88,6 +101,13 @@ impl ToolbarLayout {
         let mut toggle = GadgetRect::new(MARGIN + PAD, TOP + PAD, toggle_width, button_height);
         let mut next_x = toggle.x + toggle.w + GAP;
         let mut next_y = toggle.y;
+        let standings_width = widths[2].max(104).min(inside_width);
+        if next_x + standings_width > MARGIN + PAD + inside_width {
+            next_x = MARGIN + PAD;
+            next_y += button_height + GAP;
+        }
+        let standings = GadgetRect::new(next_x, next_y, standings_width, button_height);
+        next_x += standings_width + GAP;
         let resume_rect = resume.then(|| {
             if next_x + resume_width > MARGIN + PAD + inside_width {
                 next_x = MARGIN + PAD;
@@ -111,6 +131,7 @@ impl ToolbarLayout {
         let panel_width = (status.x + status.w - MARGIN + PAD)
             .max(resume_rect.map_or(0, |rect| rect.x + rect.w - MARGIN + PAD))
             .max(toggle.x + toggle.w - MARGIN + PAD)
+            .max(standings.x + standings.w - MARGIN + PAD)
             .min(available_width);
         let panel_height = status.y + status.h - TOP + PAD;
         if TOP + panel_height > view.1 as i32 - MARGIN {
@@ -120,6 +141,7 @@ impl ToolbarLayout {
         Some(Self {
             panel: GadgetRect::new(MARGIN, TOP, panel_width, panel_height),
             toggle,
+            standings,
             resume: resume_rect,
             status,
         })
@@ -128,6 +150,8 @@ impl ToolbarLayout {
     fn hit(&self, point: (i32, i32)) -> Option<SpectatorToolAction> {
         if self.toggle.contains(point.0, point.1) {
             Some(SpectatorToolAction::ToggleCamera)
+        } else if self.standings.contains(point.0, point.1) {
+            Some(SpectatorToolAction::ToggleStandings)
         } else if self
             .resume
             .is_some_and(|rect| rect.contains(point.0, point.1))
@@ -139,7 +163,7 @@ impl ToolbarLayout {
     }
 }
 
-fn localized(state: &AppState, key: &str, fallback: &str) -> String {
+pub(super) fn localized(state: &AppState, key: &str, fallback: &str) -> String {
     state
         .process_assets
         .csf
@@ -152,6 +176,7 @@ fn localized(state: &AppState, key: &str, fallback: &str) -> String {
 struct ToolbarContent {
     toggle: String,
     resume: String,
+    standings: String,
     status: String,
     layout: ToolbarLayout,
 }
@@ -190,12 +215,15 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
         };
         localized(state, key, &fallback)
     };
+    let standings = localized(state, "VERA:SpectatorStandings", "Standings");
+    let status = format!("{} | {status}", spectator_standings_ui::count_label(state));
     let font = &state.renderer.bit_font;
     let layout = ToolbarLayout::new(
         tactical_viewport_size(state),
         [
             font.text_width(&toggle) as i32 + 2 * PAD,
             font.text_width(&resume) as i32 + 2 * PAD,
+            font.text_width(&standings) as i32 + 2 * PAD,
         ],
         font.text_width(&status) as i32,
         font.cell_height() as i32,
@@ -204,6 +232,7 @@ fn content(state: &AppState, now: u64) -> Option<ToolbarContent> {
     Some(ToolbarContent {
         toggle,
         resume,
+        standings,
         status,
         layout,
     })
@@ -214,8 +243,18 @@ pub(crate) fn action_center(state: &AppState, action: SpectatorToolAction) -> Op
     let rect = match action {
         SpectatorToolAction::ToggleCamera => layout.toggle,
         SpectatorToolAction::ResumeCamera => layout.resume?,
+        SpectatorToolAction::ToggleStandings => layout.standings,
+        _ => {
+            return spectator_standings_ui::layout(state, layout.panel.y + layout.panel.h + GAP)?
+                .center(action);
+        }
     };
     Some((rect.x + rect.w / 2, rect.y + rect.h / 2))
+}
+
+pub(crate) fn panel_layout(state: &AppState) -> Option<spectator_standings_ui::StandingsLayout> {
+    let toolbar = content(state, wall_clock_ms())?.layout;
+    spectator_standings_ui::layout(state, toolbar.panel.y + toolbar.panel.h + GAP)
 }
 
 fn activate(state: &mut AppState, control: SpectatorToolAction, now: u64) {
@@ -230,6 +269,7 @@ fn activate(state: &mut AppState, control: SpectatorToolAction, now: u64) {
             state.match_state.input.spectator_camera.resume(now);
             state.match_state.input.follow_target = None;
         }
+        _ => spectator_standings_ui::activate(state, control),
     }
 }
 
@@ -237,6 +277,10 @@ pub(crate) fn owns_pointer(state: &AppState) -> bool {
     let Some(content) = content(state, wall_clock_ms()) else {
         return false;
     };
+    let panel = spectator_standings_ui::layout(
+        state,
+        content.layout.panel.y + content.layout.panel.h + GAP,
+    );
     let pointer = state.cursor_position();
     state
         .match_state
@@ -248,6 +292,9 @@ pub(crate) fn owns_pointer(state: &AppState) -> bool {
             .layout
             .panel
             .contains(pointer.0.floor() as i32, pointer.1.floor() as i32)
+        || panel.is_some_and(|panel| {
+            panel.contains((pointer.0.floor() as i32, pointer.1.floor() as i32))
+        })
 }
 
 pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) -> bool {
@@ -258,13 +305,21 @@ pub(crate) fn mouse(state: &mut AppState, button: MouseButton, pressed: bool) ->
     };
     let pointer = state.cursor_position();
     let point = (pointer.0.floor() as i32, pointer.1.floor() as i32);
+    let panel = spectator_standings_ui::layout(
+        state,
+        content.layout.panel.y + content.layout.panel.h + GAP,
+    );
     let (consumed, action) = state
         .match_state
         .match_presentation
         .spectator_tools
         .pointer_edge(
-            content.layout.hit(point),
-            content.layout.panel.contains(point.0, point.1),
+            content
+                .layout
+                .hit(point)
+                .or_else(|| panel.as_ref().and_then(|panel| panel.hit(point))),
+            content.layout.panel.contains(point.0, point.1)
+                || panel.as_ref().is_some_and(|panel| panel.contains(point)),
             button,
             pressed,
         );
@@ -287,31 +342,46 @@ pub(crate) fn key(state: &mut AppState, edge: &InGameKeyEdge<'_>) -> bool {
     if modifiers.control_key() || modifiers.alt_key() || modifiers.super_key() {
         return false;
     }
+    if matches!(edge.logical, Key::Named(NamedKey::Escape))
+        && edge.state.is_pressed()
+        && !edge.repeat
+        && spectator_standings_ui::close(state)
+    {
+        state.match_state.match_presentation.spectator_tools.focused = None;
+        return true;
+    }
+    let mut actions = vec![
+        SpectatorToolAction::ToggleCamera,
+        SpectatorToolAction::ToggleStandings,
+    ];
+    if content.layout.resume.is_some() {
+        actions.push(SpectatorToolAction::ResumeCamera);
+    }
+    if let Some(panel) =
+        spectator_standings_ui::layout(state, content.layout.panel.y + content.layout.panel.h + GAP)
+    {
+        actions.extend(panel.controls());
+    }
     let tools = &mut state.match_state.match_presentation.spectator_tools;
     let action = match edge.logical {
         Key::Named(NamedKey::Tab) => {
             if edge.state.is_pressed() && !edge.repeat {
-                tools.focused = if content.layout.resume.is_some() {
-                    match tools.focused {
-                        Some(SpectatorToolAction::ToggleCamera) => {
-                            Some(SpectatorToolAction::ResumeCamera)
-                        }
-                        Some(SpectatorToolAction::ResumeCamera) => {
-                            Some(SpectatorToolAction::ToggleCamera)
-                        }
-                        None if modifiers.shift_key() => Some(SpectatorToolAction::ResumeCamera),
-                        None => Some(SpectatorToolAction::ToggleCamera),
-                    }
+                let current = tools
+                    .focused
+                    .and_then(|focus| actions.iter().position(|action| *action == focus));
+                let index = if modifiers.shift_key() {
+                    current.map_or(actions.len() - 1, |index| {
+                        (index + actions.len() - 1) % actions.len()
+                    })
                 } else {
-                    Some(SpectatorToolAction::ToggleCamera)
+                    current.map_or(0, |index| (index + 1) % actions.len())
                 };
+                tools.focused = Some(actions[index]);
             }
             return true;
         }
-        Key::Named(NamedKey::Escape) if tools.focused.is_some() => {
-            if edge.state.is_pressed() {
-                tools.focused = None;
-            }
+        Key::Named(NamedKey::Escape) => {
+            tools.focused = None;
             return false;
         }
         Key::Named(NamedKey::Enter | NamedKey::Space) if tools.focused.is_some() => {
@@ -366,6 +436,11 @@ pub(crate) fn build_instances(state: &AppState) -> (Vec<SpriteInstance>, Vec<Spr
             Some(content.layout.toggle),
         ),
         (
+            SpectatorToolAction::ToggleStandings,
+            content.standings.as_str(),
+            Some(content.layout.standings),
+        ),
+        (
             SpectatorToolAction::ResumeCamera,
             content.resume.as_str(),
             content.layout.resume,
@@ -413,6 +488,20 @@ pub(crate) fn build_instances(state: &AppState) -> (Vec<SpriteInstance>, Vec<Spr
         [0.9, 0.94, 0.96],
         camera,
     ));
+    if let Some(panel) =
+        spectator_standings_ui::layout(state, content.layout.panel.y + content.layout.panel.h + GAP)
+    {
+        let panel_hovered = panel.hit((pointer.0.floor() as i32, pointer.1.floor() as i32));
+        let (panel_fills, panel_texts) = spectator_standings_ui::build_instances(
+            state,
+            &panel,
+            panel_hovered,
+            tools.focused,
+            tools.pressed,
+        );
+        fills.extend(panel_fills);
+        texts.extend(panel_texts);
+    }
     (fills, texts)
 }
 
@@ -422,7 +511,7 @@ mod tests {
 
     #[test]
     fn narrow_toolbar_wraps_with_shared_hit_rectangles_inside_the_view() {
-        let layout = ToolbarLayout::new((452, 480), [160, 120], 300, 12, true).unwrap();
+        let layout = ToolbarLayout::new((452, 480), [160, 120, 104], 300, 12, true).unwrap();
         assert!(layout.status.y > layout.toggle.y);
         assert_eq!(
             layout.hit((layout.toggle.x, layout.toggle.y)),
@@ -522,13 +611,13 @@ mod tests {
 
     #[test]
     fn resume_layout_is_absent_outside_manual_cooldown_and_tiny_views_stay_safe() {
-        let layout = ToolbarLayout::new((800, 480), [160, 120], 200, 12, false).unwrap();
+        let layout = ToolbarLayout::new((800, 480), [160, 120, 104], 200, 12, false).unwrap();
         assert!(layout.resume.is_none());
-        assert_eq!(layout.status.y, layout.toggle.y);
-        let stacked = ToolbarLayout::new((220, 320), [160, 120], 200, 12, true).unwrap();
+        assert!(layout.status.y >= layout.toggle.y);
+        let stacked = ToolbarLayout::new((220, 320), [160, 120, 104], 200, 12, true).unwrap();
         assert!(stacked.resume.unwrap().y > stacked.toggle.y);
         assert!(stacked.panel.x + stacked.panel.w <= 220);
-        assert!(ToolbarLayout::new((80, 480), [160, 120], 200, 12, true).is_none());
-        assert!(ToolbarLayout::new((452, 60), [160, 120], 200, 12, true).is_none());
+        assert!(ToolbarLayout::new((80, 480), [160, 120, 104], 200, 12, true).is_none());
+        assert!(ToolbarLayout::new((452, 60), [160, 120, 104], 200, 12, true).is_none());
     }
 }

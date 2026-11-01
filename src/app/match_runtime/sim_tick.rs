@@ -1138,6 +1138,7 @@ fn advance_in_game_runtime_mode(
     if decision.tactical_mutation {
         update_building_placement_preview(state);
     }
+    crate::app::presentation::spectator_standings_ui::update(state);
     crate::app::input::camera::spectator::update(state);
     decision.run_sim
 }

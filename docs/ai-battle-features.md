@@ -6,8 +6,8 @@ title: AI battle and spectator feature design
 # AI battle and spectator feature design
 
 This is the functional specification for eight requested extensions, in delivery
-order. The automatic battle camera is implemented in current source; features
-2–8 remain planned. These extensions are not included in the 1.0.1 release.
+order. The automatic battle camera and live AI standings are implemented in
+current source; features 3–8 remain planned. These extensions are not included in the 1.0.1 release.
 Each numbered feature must finish its production path and validation before the
 next implementation starts. Prerequisites discovered below belong to that feature.
 
@@ -170,6 +170,33 @@ Accept with 29 AIs, tied values, multiple simultaneous eliminations, a lost base
 all players on later pages, a resized/zoomed window, and an active-human match
 where the panel is unavailable. Verify rendered text, hit testing, and source
 counter consistency.
+
+### Current implementation
+
+The compact spectator toolbar shows the live AI count and opens **Standings**.
+The panel displays up to seven color-coded entrants per page, with fewer rows
+when the window is shorter. **Sort** cycles through army value, buildings,
+credits, kills, and name; surviving AIs appear first and stable entrant order
+breaks ties. Clicking an entrant visits its current live base or a surviving
+unit and reveals its country, faction, commander, and all numeric statistics.
+The selected entrant stays on screen while rankings refresh. Escape closes the
+panel; the next Escape follows the normal Options path. Hover over a row or
+its details for metric definitions.
+
+The read-only projection refreshes at most twice per second. With the panel
+closed it reads houses only; opening it immediately samples live objects.
+Army value uses the existing per-house replacement-cost calculation for armed,
+scoring unit types, including temporal, mind-control, and parasite weapons.
+It excludes civilians, insignificant/unscored objects, cargo in limbo, unarmed
+resource units, and healing-only support. An armed harvester can contribute;
+unit damage does not reduce replacement cost. Buildings count live, on-map
+structures; credits and kills come directly from the house's existing owners.
+No display action changes simulation ordering, RNG, or hashes.
+
+The optional historical event list is reserved for a later extension. The
+`skirmish-observer-standings` production capture exercises all 29 entries,
+Previous/Next, every sort choice, and base navigation through actual input.
+These controls are current-source features and are absent from the 1.0.1 ZIPs.
 
 ## 3. AI league and automatic rematches
 

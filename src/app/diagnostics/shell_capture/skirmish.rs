@@ -226,6 +226,7 @@ pub(super) struct SkirmishCapture {
     observer_focused: bool,
     observer_battlefield_ready: bool,
     observer_camera_step: Option<ObserverCameraStep>,
+    observer_standings: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -437,6 +438,128 @@ impl SkirmishCapture {
             observer_camera_step: Some(ObserverCameraStep::Enable),
             ..Self::observer_generated_battlefield()
         }
+    }
+
+    pub(super) fn observer_standings() -> Self {
+        Self {
+            observer_standings: true,
+            ..Self::observer_generated_battlefield()
+        }
+    }
+
+    fn observe_standings_controls(&mut self, state: &mut AppState, frame: u32) -> Result<()> {
+        use crate::app::presentation::spectator_tools::{self, SpectatorToolAction};
+        if self.observer_initial_entities.is_none() || !self.observer_focused {
+            self.observe_generated_battlefield(state, frame)?;
+        }
+        let tick = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .context("standings runtime missing")?
+            .simulation
+            .session()
+            .tick();
+        if tick < 3_000 || self.observer_battlefield_ready {
+            return Ok(());
+        }
+        let before = Self::simulation_identity(state)?;
+        let open_point = Self::spectator_button(state, SpectatorToolAction::ToggleStandings)?;
+        let projection = state
+            .match_state
+            .match_presentation
+            .spectator_tools
+            .standings
+            .projection();
+        ensure!(
+            projection.initial_count() == 29 && projection.alive_count() > 0,
+            "standings participant counts are incorrect"
+        );
+        let rows: Vec<_> = projection.rows().iter().map(|row| json!({"owner":row.owner().index(), "entrant":row.ordinal(), "alive":row.alive(), "army":row.army_value(), "buildings":row.buildings(), "credits":row.credits(), "kills":row.kills()})).collect();
+        let mut visited = std::collections::HashSet::new();
+        for _ in 0..29 {
+            let layout = spectator_tools::panel_layout(state)
+                .context("standings panel does not fit the viewport")?;
+            let controls = layout.controls();
+            for control in &controls {
+                if let SpectatorToolAction::VisitHouse(owner) = control {
+                    visited.insert(*owner);
+                }
+            }
+            if !controls.contains(&SpectatorToolAction::NextStandings) {
+                break;
+            }
+            Self::spectator_button(state, SpectatorToolAction::NextStandings)?;
+        }
+        ensure!(
+            visited.len() == 29,
+            "standings pages did not expose all 29 AI entrants"
+        );
+        for _ in 0..29 {
+            let layout = spectator_tools::panel_layout(state).context("standings panel missing")?;
+            if !layout
+                .controls()
+                .contains(&SpectatorToolAction::PreviousStandings)
+            {
+                break;
+            }
+            Self::spectator_button(state, SpectatorToolAction::PreviousStandings)?;
+        }
+        let owner = spectator_tools::panel_layout(state)
+            .context("standings panel missing")?
+            .controls()
+            .into_iter()
+            .find_map(|action| match action {
+                SpectatorToolAction::VisitHouse(owner) => Some(owner),
+                _ => None,
+            })
+            .context("standings has no selectable row")?;
+        Self::spectator_button(state, SpectatorToolAction::VisitHouse(owner))?;
+        let point = state
+            .match_state
+            .sim_runtime
+            .as_ref()
+            .and_then(|runtime| {
+                state
+                    .match_state
+                    .match_presentation
+                    .spectator_tools
+                    .standings
+                    .projection()
+                    .focus_target(&runtime.simulation, owner)
+            })
+            .context("selected AI has no live base or unit")?;
+        let world = crate::util::lepton::absolute_leptons_to_screen(point[0], point[1], point[2]);
+        let camera = Self::camera_position(state);
+        let screen = (
+            (world.0 - camera.0) * state.match_state.input.zoom_level,
+            (world.1 - camera.1) * state.match_state.input.zoom_level,
+        );
+        let layout = spectator_tools::panel_layout(state).context("standings panel missing")?;
+        let viewport = crate::app::input::camera::tactical_viewport_size(state);
+        ensure!(
+            screen.0 > layout.right_edge() as f32
+                && screen.0 < viewport.0 as f32
+                && screen.1 >= 0.0
+                && screen.1 < viewport.1 as f32,
+            "selected base is hidden behind the standings panel or outside the viewport"
+        );
+        for _ in 0..5 {
+            Self::spectator_button(state, SpectatorToolAction::SortStandings)?;
+        }
+        ensure!(
+            spectator_tools::panel_layout(state).is_some_and(|layout| layout
+                .controls()
+                .contains(&SpectatorToolAction::VisitHouse(owner))),
+            "selected AI was not anchored after sorting"
+        );
+        ensure!(
+            Self::simulation_identity(state)? == before,
+            "standings controls changed simulation state"
+        );
+        self.route.push(json!({"screen":"in game", "frame":frame, "tick":tick, "action":"Standings29AiPagesAndBaseVisit", "open_point":open_point, "base_screen":screen, "panel_right":layout.right_edge(), "viewport":viewport, "visited_entrants":visited.len(), "selected_owner":owner.index(), "rows":rows, "simulation_unchanged":true}));
+        self.observer_battlefield_ready = true;
+        Ok(())
     }
 
     fn camera_position(state: &AppState) -> (f32, f32) {
@@ -1938,7 +2061,9 @@ impl SkirmishCapture {
                     && (state.frontend.screen == GameScreen::InGame
                         || App::score_shell_active(state)) =>
             {
-                if self.observer_camera_step.is_some() {
+                if self.observer_standings {
+                    self.observe_standings_controls(state, frame)?;
+                } else if self.observer_camera_step.is_some() {
                     self.observe_camera_controls(state, frame)?;
                 } else {
                     self.observe_generated_battlefield(state, frame)?;

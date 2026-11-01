@@ -319,13 +319,7 @@ pub(crate) fn update(state: &mut AppState) {
     let Some(target) = director.target(now) else {
         return;
     };
-    let (width, height) = super::tactical_viewport_size(state);
-    let target = super::tactical_camera_top_left(
-        target,
-        width as f32,
-        height as f32,
-        state.match_state.input.zoom_level,
-    );
+    let target = super::viewer_camera_top_left(state, target);
     let amount = 1.0 - (-(elapsed as f32) / 400.0).exp();
     let input = &mut state.match_state.input;
     let point = (

@@ -1815,15 +1815,22 @@ pub(crate) fn center_camera_on_lepton_point(
     let world = crate::util::lepton::absolute_leptons_to_screen(lepton_x, lepton_y, lepton_z);
     let sw = state.render_width() as f32;
     let sh = state.render_height() as f32;
-    let (tactical_w, tactical_h) = tactical_viewport_size(state);
-    let (cx, cy) = tactical_camera_top_left(
-        world,
-        tactical_w as f32,
-        tactical_h as f32,
-        state.match_state.input.zoom_level,
-    );
+    let (cx, cy) = viewer_camera_top_left(state, world);
     set_camera_position(&mut state.match_state.input, (cx, cy));
     clamp_camera_to_playable_area(state, sw, sh);
+}
+
+/// Spectator panels reserve the left side; keep watched objects in the open view.
+pub(crate) fn viewer_camera_top_left(state: &AppState, world: (f32, f32)) -> (f32, f32) {
+    let (width, height) = tactical_viewport_size(state);
+    let covered_width = crate::app::presentation::spectator_tools::panel_layout(state)
+        .map_or(0, |panel| panel.right_edge());
+    tactical_camera_top_left(
+        world,
+        width as f32 + covered_width as f32,
+        height as f32,
+        state.match_state.input.zoom_level,
+    )
 }
 
 /// Home7315A0: use the shared SetView6D6070 owner, then clear the Follow

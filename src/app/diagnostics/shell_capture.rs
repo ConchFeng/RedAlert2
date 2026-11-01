@@ -181,6 +181,7 @@ const CHECKPOINT_SKIRMISH_DEFEAT_CONTINUE: &str = "skirmish-defeat-continue";
 const CHECKPOINT_SKIRMISH_DEFEAT_REPLAY: &str = "skirmish-defeat-replay";
 const CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD: &str = "skirmish-observer-generated-battlefield";
 const CHECKPOINT_SKIRMISH_OBSERVER_CAMERA: &str = "skirmish-observer-camera";
+const CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS: &str = "skirmish-observer-standings";
 const CHECKPOINT_SKIRMISH_DIPLOMACY: &str = "skirmish-diplomacy";
 const CHECKPOINT_SCORE_0X108_STEADY: &str = "score-0x108-steady";
 const CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY: &str = "campaign-score-0x103-steady";
@@ -361,6 +362,7 @@ pub enum ShellCaptureCheckpoint {
     SkirmishDefeatReplay,
     SkirmishObserverBattlefield,
     SkirmishObserverCamera,
+    SkirmishObserverStandings,
     SkirmishDiplomacy,
     /// The score dialog `0x108` with the retail comparison game's values,
     /// settled.
@@ -583,6 +585,7 @@ impl ShellCaptureCheckpoint {
             CHECKPOINT_SKIRMISH_DEFEAT_REPLAY => Ok(Self::SkirmishDefeatReplay),
             CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD => Ok(Self::SkirmishObserverBattlefield),
             CHECKPOINT_SKIRMISH_OBSERVER_CAMERA => Ok(Self::SkirmishObserverCamera),
+            CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS => Ok(Self::SkirmishObserverStandings),
             CHECKPOINT_SKIRMISH_DIPLOMACY => Ok(Self::SkirmishDiplomacy),
             CHECKPOINT_SCORE_0X108_STEADY => Ok(Self::Score0x108Steady),
             CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY => Ok(Self::CampaignScore0x103Steady),
@@ -985,6 +988,7 @@ impl ShellCaptureCheckpoint {
             Self::SkirmishDefeatReplay => CHECKPOINT_SKIRMISH_DEFEAT_REPLAY,
             Self::SkirmishObserverBattlefield => CHECKPOINT_SKIRMISH_OBSERVER_BATTLEFIELD,
             Self::SkirmishObserverCamera => CHECKPOINT_SKIRMISH_OBSERVER_CAMERA,
+            Self::SkirmishObserverStandings => CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
             Self::SkirmishDiplomacy => CHECKPOINT_SKIRMISH_DIPLOMACY,
             Self::Score0x108Steady => CHECKPOINT_SCORE_0X108_STEADY,
             Self::CampaignScore0x103Steady => CHECKPOINT_CAMPAIGN_SCORE_0X103_STEADY,
@@ -2362,6 +2366,9 @@ impl ShellCaptureSession {
             ShellCaptureCheckpoint::SkirmishObserverCamera => {
                 Some(skirmish::SkirmishCapture::observer_camera())
             }
+            ShellCaptureCheckpoint::SkirmishObserverStandings => {
+                Some(skirmish::SkirmishCapture::observer_standings())
+            }
             ShellCaptureCheckpoint::SkirmishDiplomacy => Some(skirmish::SkirmishCapture::loading(
                 skirmish::LoadingTarget::Diplomacy,
             )),
@@ -2510,7 +2517,11 @@ impl ShellCaptureSession {
         if self.request.checkpoint == ShellCaptureCheckpoint::SkirmishObserverCamera {
             return 80_000;
         }
-        if self.request.checkpoint == ShellCaptureCheckpoint::SkirmishObserverBattlefield {
+        if matches!(
+            self.request.checkpoint,
+            ShellCaptureCheckpoint::SkirmishObserverBattlefield
+                | ShellCaptureCheckpoint::SkirmishObserverStandings
+        ) {
             return 40_000;
         }
         if self.request.live_lan.is_none() && self.request.live_online.is_none() {
@@ -4575,25 +4586,33 @@ mod tests {
     }
 
     #[test]
-    fn observer_camera_capture_has_its_own_production_route_and_bounded_budget() {
-        let output = new_output_path("observer-camera");
-        let mut values = valid_args(&output);
-        values[1] = OsString::from(CHECKPOINT_SKIRMISH_OBSERVER_CAMERA);
-        let AppLaunchMode::ShellCapture(request) = parse_launch_args(values).expect("parse") else {
-            panic!("expected capture");
-        };
-        let session = ShellCaptureSession::new(request);
-        assert_eq!(
-            session.request().checkpoint(),
-            ShellCaptureCheckpoint::SkirmishObserverCamera
-        );
-        assert_eq!(
-            session.request().checkpoint().as_str(),
-            CHECKPOINT_SKIRMISH_OBSERVER_CAMERA
-        );
-        assert_eq!(session.timeout(), Duration::from_secs(600));
-        assert_eq!(session.max_capture_frames(), 80_000);
-        assert!(session.skirmish.is_some());
+    fn observer_controls_have_production_routes_and_bounded_capture_budgets() {
+        for (name, checkpoint, budget) in [
+            (
+                CHECKPOINT_SKIRMISH_OBSERVER_CAMERA,
+                ShellCaptureCheckpoint::SkirmishObserverCamera,
+                80_000,
+            ),
+            (
+                CHECKPOINT_SKIRMISH_OBSERVER_STANDINGS,
+                ShellCaptureCheckpoint::SkirmishObserverStandings,
+                40_000,
+            ),
+        ] {
+            let output = new_output_path(name);
+            let mut values = valid_args(&output);
+            values[1] = OsString::from(name);
+            let AppLaunchMode::ShellCapture(request) = parse_launch_args(values).expect("parse")
+            else {
+                panic!("expected capture");
+            };
+            let session = ShellCaptureSession::new(request);
+            assert_eq!(session.request().checkpoint(), checkpoint);
+            assert_eq!(session.request().checkpoint().as_str(), name);
+            assert_eq!(session.timeout(), Duration::from_secs(600));
+            assert_eq!(session.max_capture_frames(), budget);
+            assert!(session.skirmish.is_some());
+        }
     }
 
     #[test]
