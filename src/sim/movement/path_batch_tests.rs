@@ -469,6 +469,46 @@ fn a_redirected_request_is_left_to_find_path() {
     assert_eq!(sim.path_batch.as_ref().unwrap().used, [0, 0]);
 }
 
+#[test]
+fn an_exhausted_building_redirect_finishes_the_failed_path() {
+    use crate::sim::movement::foot_path::FindPathResult;
+
+    let rules = rules();
+    let (mut sim, _) = arena(&rules);
+    sim.set_playfield_bounds_for_test(Some(crate::sim::cell_rect::PlayfieldBounds {
+        off_100: -1,
+        ..crate::sim::arena_fixture::OPEN_PLAYFIELD
+    }));
+    let tank = spawn(&mut sim, &rules, "TANK", (10, 10));
+    spawn(&mut sim, &rules, "HUT", (20, 10));
+    sim.resolved_terrain
+        .as_mut()
+        .unwrap()
+        .cell_mut_for_test(20, 10)
+        .unwrap()
+        .level = 3;
+    assert!(sim.rebuild_dynamic_navigation(&rules));
+    send(&mut sim, &rules, tank, (20, 10));
+    let request = sim.code2_ladder_request(tank, 1).unwrap();
+    assert_eq!(
+        sim.find_path_target_answer(tank, request.destination, &rules, None)
+            .unwrap(),
+        Some(7)
+    );
+    let result = sim.foot_find_path(&request, &rules, None, FrameEffects::default());
+    assert!(matches!(result, Ok(FindPathResult::Failed)), "{result:?}");
+    let actor = sim.substrate.entities.get(tank).unwrap();
+    assert!(actor.navigation.nav_com().is_none());
+    assert!(
+        actor
+            .navigation
+            .path_replay()
+            .remaining_directions()
+            .is_empty()
+    );
+    sim.advance_tick(&[], Some(&rules), None, None, 67);
+}
+
 /// Each answer is its search's own, whatever thread ran it: the same
 /// searches one at a time on this thread, reading every entry fact from the
 /// world, agree, for no-queue requests and code-2 ladders, the urgency-2

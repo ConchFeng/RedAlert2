@@ -1168,13 +1168,14 @@ impl Simulation {
                 {
                     return Ok(None);
                 }
-                //0x4D3DD8..0x4D3E03: the FNPC result is set and searched without
-                //an invalid-cell test; only an FNPC failure over the whole map
-                //radius would search cell (0,0), which no test fixture produces.
-                let near = self.find_path_nearby_cell(id, target, rules)?.ok_or(
-                    "Find_Path code-7 redirect found no passable cell near the Building target",
-                )?;
-                Ok(Some(near))
+                // FootClass::Find_Path 0x4D3DD8..0x4D3E03 (original instructions)
+                // sets and searches FNPC's result even when it is the null cell.
+                // MapClass::Find_Nearby_Passable_Cell 0x56E79A returns (0,0)
+                // when its bounded search fails; keep the normal failure cleanup.
+                Ok(Some(
+                    self.find_path_nearby_cell(id, target, rules)?
+                        .unwrap_or((0, 0)),
+                ))
             }
             _ => Ok(None),
         }
